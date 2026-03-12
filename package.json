@@ -8,7 +8,9 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build --compile src/index.ts --outfile dist/git-stack",
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test"
   },
   "devDependencies": {
     "@types/bun": "latest"

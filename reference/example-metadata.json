@@ -1,0 +1,21 @@
+{
+  "stacks": {
+    "podcast-custom-audioplayer": {
+      "description": "Podcast custom audio player",
+      "last_branch": "kiliman/audio-player-editor-WEB-6642",
+      "branches": {
+        "kiliman/composable-audio-player-WEB-6642": {
+          "parent": "main",
+          "pr": 21116,
+          "description": "feat: add composable audio player sub-elements and V2 serializer [WEB-6642]"
+        },
+        "kiliman/audio-player-editor-WEB-6642": {
+          "parent": "kiliman/composable-audio-player-WEB-6642",
+          "pr": 20971,
+          "description": "feat: add audio player mini-editor integration [WEB-6642]"
+        }
+      }
+    }
+  },
+  "current_stack": "podcast-custom-audioplayer"
+}

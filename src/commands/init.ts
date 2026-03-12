@@ -70,7 +70,7 @@ OPTIONS
     const result = await p.text({
       message: "Stack name",
       placeholder: "e.g., podcast-mvp",
-      validate: (val) => {
+      validate: (val = "") => {
         if (!val.trim()) return "Stack name is required";
         if (meta.stacks[val.trim()]) return `Stack "${val}" already exists`;
       },
@@ -107,9 +107,9 @@ OPTIONS
   p.log.success(`Created stack: ${pc.blue(stackName)}`);
 
   // Get parent branch
-  let parent = parentFlag;
+  let parent: string | undefined = parentFlag;
   if (!parent) {
-    parent = await selectParent(null, branch);
+    parent = (await selectParent(null, branch)) ?? undefined;
     if (!parent) {
       p.cancel("Cancelled");
       process.exit(0);

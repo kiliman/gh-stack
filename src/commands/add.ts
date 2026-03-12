@@ -108,7 +108,7 @@ OPTIONS
     if (ordered.length === 0) {
       parent = "main";
     } else {
-      parent = await selectParent(stack, branchToAdd);
+      parent = (await selectParent(stack, branchToAdd)) ?? undefined;
       if (!parent) {
         p.cancel("Cancelled");
         process.exit(0);

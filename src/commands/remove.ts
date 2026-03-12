@@ -31,11 +31,11 @@ If no branch is specified, shows interactive selector.
   // Get branch to remove
   let branchName = args[0];
   if (!branchName) {
-    branchName = await selectBranch(
+    branchName = (await selectBranch(
       stack,
       "Select branch to remove",
       currentBranch
-    );
+    )) ?? undefined;
     if (!branchName) {
       p.cancel("Cancelled");
       process.exit(0);

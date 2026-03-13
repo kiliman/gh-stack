@@ -134,7 +134,30 @@ async function handleResume(
   if (!stack) return;
 
   const chain = state.chain;
-  let currentIndex = state.current_index + 1;
+  const currentIndex = state.current_index + 1;
+
+  if (currentIndex < chain.length) {
+    // Create temporary tags for remaining branches (they may not exist
+    // if we're resuming from a sync that only saved state for the base)
+    p.log.info("Creating temporary base tags for remaining branches...");
+    for (let i = currentIndex; i < chain.length; i++) {
+      const branch = chain[i]!;
+      const parent = stack.branches[branch]?.parent;
+      if (!parent) continue;
+
+      const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
+      if (!(await git.tagExists(tagName))) {
+        const mb = await git.mergeBase(branch, parent);
+        if (mb) {
+          await git.createTag(tagName, mb);
+          console.log(
+            `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`
+          );
+        }
+      }
+    }
+    console.log();
+  }
 
   await processChain(meta, stackName, chain, currentIndex, rebasedBranches, false, verbose);
 }

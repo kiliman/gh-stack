@@ -6,6 +6,7 @@ import {
   findStackForBranch,
   getOrderedBranches,
   buildRebaseChain,
+  saveRestackState,
 } from "../lib/metadata.ts";
 import {
   ensureMetadata,
@@ -99,6 +100,15 @@ with the base branch included.
 
     p.log.info(`Checking out ${pc.yellow(baseBranch)}...`);
     await git.checkout(baseBranch);
+
+    // Save restack state BEFORE rebasing so --resume can find it.
+    // The chain is the full ordered list — base branch at index 0,
+    // so resume knows where we were and can continue with children.
+    await saveRestackState({
+      current_index: 0,
+      stack_name: stackName,
+      chain: ordered,
+    });
 
     p.log.info("Rebasing onto origin/main...");
     const success = await git.rebase("origin/main");

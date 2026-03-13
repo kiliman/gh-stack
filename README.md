@@ -130,7 +130,7 @@ undo
 
 ## Not Implemented Yet
 
-These are still intended, but not shipped in `v0.1.0`:
+These are still intended, but not shipped in `v0.1.1`:
 
 ```text
 split

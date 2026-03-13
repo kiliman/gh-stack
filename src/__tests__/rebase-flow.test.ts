@@ -17,6 +17,8 @@ import {
 import * as git from "../lib/git.ts";
 import { saveRestackState, loadRestackState, clearRestackState } from "../lib/metadata.ts";
 import { takeSnapshot, getLastSnapshot } from "../lib/snapshot.ts";
+import undo from "../commands/undo.ts";
+import { setAutoYes } from "../lib/ui.ts";
 
 let tmpDir: string;
 let remoteDir: string;
@@ -30,6 +32,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  setAutoYes(false);
   process.chdir(originalCwd);
   await cleanup(tmpDir, remoteDir);
 });
@@ -405,6 +408,38 @@ describe("snapshot system", () => {
     expect(current.snapshots!.length).toBe(5);
     expect(current.snapshots![0]!.operation).toBe("op-0");
     expect(current.snapshots![4]!.operation).toBe("op-4");
+  });
+
+  test("undo restores branch refs after a partial restack", async () => {
+    const { meta, shas } = await createLinearStack(tmpDir);
+
+    // Simulate review changes on the base branch before restack begins.
+    await checkout(tmpDir, "pr1");
+    const pr1UpdatedSha = await makeCommit(tmpDir, "pr1-fix.txt", "fix\n", "pr1: review fix");
+
+    const metaAfterSnapshot = await takeSnapshot(meta, "test-stack", "restack");
+    const snapshot = getLastSnapshot(metaAfterSnapshot);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.branches["pr1"]).toBe(pr1UpdatedSha);
+    expect(snapshot!.branches["pr2"]).toBe(shas.pr2);
+    expect(snapshot!.branches["pr3"]).toBe(shas.pr3);
+
+    // Simulate the first child successfully rebasing before a later failure.
+    await checkout(tmpDir, "pr2");
+    const mb = (await $`git merge-base pr2 pr1`.text()).trim();
+    await git.createTag(git.tempBaseTagName("pr2"), mb);
+    const rebased = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
+    expect(rebased).toBe(true);
+
+    const pr2RebasedSha = await getSha(tmpDir, "pr2");
+    expect(pr2RebasedSha).not.toBe(shas.pr2);
+
+    setAutoYes(true);
+    await undo([]);
+
+    expect(await getSha(tmpDir, "pr1")).toBe(pr1UpdatedSha);
+    expect(await getSha(tmpDir, "pr2")).toBe(shas.pr2!);
+    expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
   });
 });
 

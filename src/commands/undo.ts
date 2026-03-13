@@ -1,5 +1,6 @@
 // gh-stack undo — Restore from last snapshot
 import * as p from "@clack/prompts";
+import * as git from "../lib/git.ts";
 import pc from "picocolors";
 import { ensureMetadata, ensureCleanWorkingTree } from "../lib/safety.ts";
 import { getLastSnapshot, popSnapshot } from "../lib/snapshot.ts";
@@ -47,10 +48,21 @@ a destructive operation (restack, merge, sync, remove).
     process.exit(0);
   }
 
+  let activeBranch: string | null = null;
+  try {
+    activeBranch = await git.currentBranch();
+  } catch {
+    // Detached HEAD is fine — we can restore all branches with branch -f.
+  }
+
   // Restore each branch HEAD
   for (const [branch, sha] of Object.entries(snapshot.branches)) {
     try {
-      await $`git branch -f ${branch} ${sha}`.quiet();
+      if (branch === activeBranch) {
+        await $`git reset --hard ${sha}`.quiet();
+      } else {
+        await $`git branch -f ${branch} ${sha}`.quiet();
+      }
       p.log.success(`Restored ${pc.yellow(branch)} → ${sha.slice(0, 8)}`);
     } catch {
       p.log.error(`Failed to restore ${branch}`);

@@ -1,7 +1,6 @@
 // gh-stack undo — Restore from last snapshot
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import * as git from "../lib/git.ts";
 import { ensureMetadata, ensureCleanWorkingTree } from "../lib/safety.ts";
 import { getLastSnapshot, popSnapshot } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";

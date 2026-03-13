@@ -1,11 +1,5 @@
 // Read/write/validate .git/gh-stack-metadata.json
-import type {
-  StackMetadata,
-  StackMetadataV1,
-  Stack,
-  Branch,
-  RestackState,
-} from "../types.ts";
+import type { StackMetadata, StackMetadataV1, Stack, Branch, RestackState } from "../types.ts";
 import { gitDir } from "./git.ts";
 
 let cachedGitDir: string | null = null;
@@ -103,7 +97,7 @@ export function getCurrentStack(meta: StackMetadata): string | null {
  */
 export async function setCurrentStack(
   meta: StackMetadata,
-  stackName: string
+  stackName: string,
 ): Promise<StackMetadata> {
   meta.current_stack = stackName;
   await writeMetadata(meta);
@@ -113,10 +107,7 @@ export async function setCurrentStack(
 /**
  * Find which stack contains a given branch.
  */
-export function findStackForBranch(
-  meta: StackMetadata,
-  branch: string
-): string | null {
+export function findStackForBranch(meta: StackMetadata, branch: string): string | null {
   for (const [name, stack] of Object.entries(meta.stacks)) {
     if (branch in stack.branches) {
       return name;
@@ -131,7 +122,7 @@ export function findStackForBranch(
 export async function createStack(
   meta: StackMetadata,
   name: string,
-  description: string
+  description: string,
 ): Promise<StackMetadata> {
   meta.stacks[name] = {
     description,
@@ -150,7 +141,7 @@ export async function addBranchToStack(
   meta: StackMetadata,
   stackName: string,
   branchName: string,
-  branch: Branch
+  branch: Branch,
 ): Promise<StackMetadata> {
   const stack = meta.stacks[stackName];
   if (!stack) {
@@ -169,7 +160,7 @@ export async function addBranchToStack(
 export async function removeBranchFromStack(
   meta: StackMetadata,
   stackName: string,
-  branchName: string
+  branchName: string,
 ): Promise<StackMetadata> {
   const stack = meta.stacks[stackName];
   if (!stack) {
@@ -184,7 +175,7 @@ export async function removeBranchFromStack(
   const removedParent = branch.parent;
 
   // Re-parent children
-  for (const [name, b] of Object.entries(stack.branches)) {
+  for (const [, b] of Object.entries(stack.branches)) {
     if (b.parent === branchName) {
       b.parent = removedParent;
     }
@@ -244,10 +235,7 @@ export function getTopOfStack(stack: Stack): string | null {
 /**
  * Build the rebase chain: starting branch + all descendants (BFS order).
  */
-export function buildRebaseChain(
-  stack: Stack,
-  startBranch: string
-): string[] {
+export function buildRebaseChain(stack: Stack, startBranch: string): string[] {
   const chain: string[] = [startBranch];
   const queue: string[] = [startBranch];
 
@@ -270,7 +258,7 @@ export function buildRebaseChain(
 export async function updateLastBranch(
   meta: StackMetadata,
   stackName: string,
-  branch: string
+  branch: string,
 ): Promise<StackMetadata> {
   const stack = meta.stacks[stackName];
   if (stack) {

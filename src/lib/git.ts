@@ -51,8 +51,6 @@ export async function isCleanWorkingTree(): Promise<boolean> {
  */
 export async function isRebaseInProgress(): Promise<boolean> {
   const dir = await gitDir();
-  const rebaseMerge = Bun.file(`${dir}/rebase-merge`);
-  const rebaseApply = Bun.file(`${dir}/rebase-apply`);
 
   // Check if either directory exists by trying to read a known file
   try {
@@ -66,10 +64,8 @@ export async function isRebaseInProgress(): Promise<boolean> {
   } catch {}
 
   // Also check the directories themselves
-  const { exitCode: code1 } =
-    await $`test -d ${dir}/rebase-merge`.nothrow().quiet();
-  const { exitCode: code2 } =
-    await $`test -d ${dir}/rebase-apply`.nothrow().quiet();
+  const { exitCode: code1 } = await $`test -d ${dir}/rebase-merge`.nothrow().quiet();
+  const { exitCode: code2 } = await $`test -d ${dir}/rebase-apply`.nothrow().quiet();
 
   return code1 === 0 || code2 === 0;
 }
@@ -100,10 +96,7 @@ export async function revParse(ref: string): Promise<string> {
  * Get the merge-base of two refs.
  * Returns null if no common ancestor is found.
  */
-export async function mergeBase(
-  ref1: string,
-  ref2: string
-): Promise<string | null> {
+export async function mergeBase(ref1: string, ref2: string): Promise<string | null> {
   try {
     const result = await $`git merge-base ${ref1} ${ref2}`.text();
     return result.trim();
@@ -115,14 +108,10 @@ export async function mergeBase(
 /**
  * Check if ref1 is an ancestor of ref2.
  */
-export async function isAncestor(
-  ancestor: string,
-  descendant: string
-): Promise<boolean> {
-  const { exitCode } =
-    await $`git merge-base --is-ancestor ${ancestor} ${descendant}`
-      .nothrow()
-      .quiet();
+export async function isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+  const { exitCode } = await $`git merge-base --is-ancestor ${ancestor} ${descendant}`
+    .nothrow()
+    .quiet();
   return exitCode === 0;
 }
 
@@ -146,20 +135,16 @@ export async function forcePushWithLease(branch?: string): Promise<boolean> {
  * Check if a branch exists on the remote.
  */
 export async function remoteBranchExists(branch: string): Promise<boolean> {
-  const { exitCode } =
-    await $`git ls-remote --exit-code --heads origin ${branch}`
-      .nothrow()
-      .quiet();
+  const { exitCode } = await $`git ls-remote --exit-code --heads origin ${branch}`
+    .nothrow()
+    .quiet();
   return exitCode === 0;
 }
 
 /**
  * Create a temporary tag at a specific commit.
  */
-export async function createTag(
-  name: string,
-  commit: string
-): Promise<void> {
+export async function createTag(name: string, commit: string): Promise<void> {
   await $`git tag -f ${name} ${commit}`.quiet();
 }
 
@@ -182,8 +167,7 @@ export async function deleteTagsMatching(pattern: string): Promise<void> {
  * Check if a tag exists.
  */
 export async function tagExists(name: string): Promise<boolean> {
-  const { exitCode } =
-    await $`git rev-parse --verify ${name}`.nothrow().quiet();
+  const { exitCode } = await $`git rev-parse --verify ${name}`.nothrow().quiet();
   return exitCode === 0;
 }
 
@@ -195,10 +179,9 @@ export async function tagExists(name: string): Promise<boolean> {
 export async function rebaseOnto(
   newBase: string,
   oldBase: string,
-  branch: string
+  branch: string,
 ): Promise<boolean> {
-  const { exitCode } =
-    await $`git rebase --onto ${newBase} ${oldBase} ${branch}`.nothrow();
+  const { exitCode } = await $`git rebase --onto ${newBase} ${oldBase} ${branch}`.nothrow();
   return exitCode === 0;
 }
 
@@ -237,10 +220,7 @@ export async function fetchMain(): Promise<void> {
 /**
  * Get count of commits between two refs.
  */
-export async function commitCount(
-  from: string,
-  to: string
-): Promise<number> {
+export async function commitCount(from: string, to: string): Promise<number> {
   try {
     const result = await $`git rev-list --count ${from}..${to}`.text();
     return parseInt(result.trim(), 10);

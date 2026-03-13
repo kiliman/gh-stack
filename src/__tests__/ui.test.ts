@@ -5,6 +5,7 @@ import { renderStackTree } from "../lib/ui.ts";
 
 // Strip ANSI codes for easier assertion
 function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
   return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
@@ -98,9 +99,7 @@ describe("renderStackTree", () => {
       },
     };
 
-    const tree = stripAnsi(
-      renderStackTree(stack, "pr1", { showNumbers: false })
-    );
+    const tree = stripAnsi(renderStackTree(stack, "pr1", { showNumbers: false }));
     expect(tree).not.toContain("[1]");
   });
 

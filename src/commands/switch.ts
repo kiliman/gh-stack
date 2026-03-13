@@ -2,12 +2,7 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
-import {
-  readMetadata,
-  writeMetadata,
-  getOrderedBranches,
-  findStackForBranch,
-} from "../lib/metadata.ts";
+import { writeMetadata, getOrderedBranches, findStackForBranch } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
 import { selectBranch, selectStack } from "../lib/ui.ts";
 
@@ -56,18 +51,12 @@ TIP
     const lastBranch = stack.last_branch;
 
     if (lastBranch && lastBranch !== currentBranch) {
-      p.log.info(
-        `Switching to stack ${pc.yellow(stackName)}`
-      );
-      p.log.info(
-        `Checking out ${pc.yellow(lastBranch)}`
-      );
+      p.log.info(`Switching to stack ${pc.yellow(stackName)}`);
+      p.log.info(`Checking out ${pc.yellow(lastBranch)}`);
       await git.checkout(lastBranch);
     }
 
-    p.outro(
-      pc.green(`Switched to stack ${pc.yellow(stackName)}`)
-    );
+    p.outro(pc.green(`Switched to stack ${pc.yellow(stackName)}`));
   } else {
     // ── Branch switching ──
     // Find current stack
@@ -75,9 +64,7 @@ TIP
     if (!stackName) stackName = meta.current_stack;
 
     if (!stackName || !meta.stacks[stackName]) {
-      p.cancel(
-        `No active stack found.\n\n  Create one with:\n    ${pc.green("gh-stack init")}`
-      );
+      p.cancel(`No active stack found.\n\n  Create one with:\n    ${pc.green("gh-stack init")}`);
       process.exit(1);
     }
 
@@ -95,19 +82,13 @@ TIP
       // Switch by number
       const index = parseInt(numberArg, 10) - 1;
       if (index < 0 || index >= ordered.length) {
-        p.cancel(
-          `Invalid branch number. Valid range: 1-${ordered.length}`
-        );
+        p.cancel(`Invalid branch number. Valid range: 1-${ordered.length}`);
         process.exit(1);
       }
       targetBranch = ordered[index]!;
     } else {
       // Interactive selector
-      targetBranch = await selectBranch(
-        stack,
-        "Switch to branch",
-        currentBranch
-      );
+      targetBranch = await selectBranch(stack, "Switch to branch", currentBranch);
     }
 
     if (!targetBranch) {
@@ -116,15 +97,11 @@ TIP
     }
 
     if (targetBranch === currentBranch) {
-      p.log.info(
-        `Already on ${pc.yellow(targetBranch)}`
-      );
+      p.log.info(`Already on ${pc.yellow(targetBranch)}`);
       return;
     }
 
-    p.log.info(
-      `Switching to ${pc.yellow(targetBranch)}`
-    );
+    p.log.info(`Switching to ${pc.yellow(targetBranch)}`);
     await git.checkout(targetBranch);
 
     // Update last_branch

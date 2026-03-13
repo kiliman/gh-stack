@@ -8,8 +8,7 @@ import type { PrInfo, PrStatus } from "../types.ts";
  */
 export async function getPrNumber(branch: string): Promise<number | null> {
   try {
-    const result =
-      await $`gh pr list --head ${branch} --json number --jq '.[0].number'`.text();
+    const result = await $`gh pr list --head ${branch} --json number --jq '.[0].number'`.text();
     const num = parseInt(result.trim(), 10);
     return isNaN(num) ? null : num;
   } catch {
@@ -53,27 +52,23 @@ export async function getMyOpenPrs(): Promise<PrStatus[]> {
       const checks = pr.statusCheckRollup || [];
       const validChecks = checks.filter((c: any) => c.name != null);
       const passed = validChecks.filter(
-        (c: any) =>
-          c.conclusion === "SUCCESS" || c.conclusion === "NEUTRAL"
+        (c: any) => c.conclusion === "SUCCESS" || c.conclusion === "NEUTRAL",
       ).length;
       const failed = validChecks.filter(
         (c: any) =>
           c.conclusion === "FAILURE" ||
           c.conclusion === "CANCELLED" ||
-          c.conclusion === "TIMED_OUT"
+          c.conclusion === "TIMED_OUT",
       ).length;
       const pending = validChecks.filter(
-        (c: any) =>
-          c.status === "IN_PROGRESS" ||
-          c.status === "QUEUED" ||
-          c.status === "PENDING"
+        (c: any) => c.status === "IN_PROGRESS" || c.status === "QUEUED" || c.status === "PENDING",
       ).length;
       const failedNames = validChecks
         .filter(
           (c: any) =>
             c.conclusion === "FAILURE" ||
             c.conclusion === "CANCELLED" ||
-            c.conclusion === "TIMED_OUT"
+            c.conclusion === "TIMED_OUT",
         )
         .map((c: any) => c.name)
         .slice(0, 3);
@@ -103,10 +98,7 @@ export async function getMyOpenPrs(): Promise<PrStatus[]> {
 /**
  * Update a PR's body (description).
  */
-export async function updatePrBody(
-  prNumber: number,
-  body: string
-): Promise<boolean> {
+export async function updatePrBody(prNumber: number, body: string): Promise<boolean> {
   try {
     // Write to a temp file to avoid shell escaping issues
     const tmpFile = `${await import("node:os").then((os) => os.tmpdir())}/gh-stack-pr-body-${prNumber}.md`;
@@ -125,8 +117,7 @@ export async function updatePrBody(
  */
 export async function getPrBody(prNumber: number): Promise<string | null> {
   try {
-    const result =
-      await $`gh pr view ${prNumber} --json body --jq '.body'`.text();
+    const result = await $`gh pr view ${prNumber} --json body --jq '.body'`.text();
     return result.trim();
   } catch {
     return null;
@@ -136,10 +127,7 @@ export async function getPrBody(prNumber: number): Promise<string | null> {
 /**
  * Close a PR with a comment.
  */
-export async function closePr(
-  prNumber: number,
-  comment?: string
-): Promise<boolean> {
+export async function closePr(prNumber: number, comment?: string): Promise<boolean> {
   try {
     if (comment) {
       await $`gh pr close ${prNumber} --comment ${comment}`.quiet();
@@ -155,9 +143,7 @@ export async function closePr(
 /**
  * Get review decision emoji for display.
  */
-export function reviewEmoji(
-  decision: string | null | undefined
-): string {
+export function reviewEmoji(decision: string | null | undefined): string {
   switch (decision) {
     case "APPROVED":
       return "\u2705"; // ✅

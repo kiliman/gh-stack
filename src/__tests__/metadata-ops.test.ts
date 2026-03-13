@@ -1,6 +1,5 @@
 // Tests for metadata operations: create, add, remove, re-parent, ordered branches
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import * as fs from "node:fs/promises";
 import type { StackMetadata, Stack } from "../types.ts";
 import {
   createTempRepo,
@@ -12,7 +11,6 @@ import {
 } from "./helpers.ts";
 import {
   getOrderedBranches,
-  getChildren,
   buildRebaseChain,
   findStackForBranch,
   removeBranchFromStack,
@@ -289,10 +287,7 @@ describe("metadata migration", () => {
       },
     };
 
-    await Bun.write(
-      `${tmpDir}/.git/gh-stack-metadata.json`,
-      JSON.stringify(v1, null, 2)
-    );
+    await Bun.write(`${tmpDir}/.git/gh-stack-metadata.json`, JSON.stringify(v1, null, 2));
 
     // Import and read — should auto-migrate
     // We need to reset the cached git dir since we're in a different repo

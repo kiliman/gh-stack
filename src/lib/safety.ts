@@ -21,7 +21,7 @@ export async function ensureGitRepo(): Promise<void> {
 export async function ensureMetadata(): Promise<StackMetadata> {
   if (!(await metadataExists())) {
     p.cancel(
-      `No stack metadata found.\n\n  Create your first stack with:\n    ${pc.green("gh-stack init")}`
+      `No stack metadata found.\n\n  Create your first stack with:\n    ${pc.green("gh-stack init")}`,
     );
     process.exit(1);
   }
@@ -42,7 +42,7 @@ export function ensureCurrentStack(meta: StackMetadata): string {
   const stack = meta.current_stack;
   if (!stack || !meta.stacks[stack]) {
     p.cancel(
-      `No current stack set.\n\n  Create a new stack with:\n    ${pc.green("gh-stack init")}`
+      `No current stack set.\n\n  Create a new stack with:\n    ${pc.green("gh-stack init")}`,
     );
     process.exit(1);
   }
@@ -52,15 +52,13 @@ export function ensureCurrentStack(meta: StackMetadata): string {
 /**
  * Ensure current branch is in a stack. Returns the stack name.
  */
-export async function ensureBranchInStack(
-  meta: StackMetadata
-): Promise<string> {
+export async function ensureBranchInStack(meta: StackMetadata): Promise<string> {
   const branch = await git.currentBranch();
   const stackName = findStackForBranch(meta, branch);
 
   if (!stackName) {
     p.cancel(
-      `Branch ${pc.blue(branch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}\n\n  Or create a new stack:\n    ${pc.green("gh-stack init")}`
+      `Branch ${pc.blue(branch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}\n\n  Or create a new stack:\n    ${pc.green("gh-stack init")}`,
     );
     process.exit(1);
   }

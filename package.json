@@ -8,21 +8,53 @@
     "type": "git",
     "url": "https://github.com/kiliman/gh-stack"
   },
-  "keywords": ["git", "github", "stacked-prs", "squash-merge", "cli"],
-  "module": "src/index.ts",
+  "keywords": [
+    "git",
+    "github",
+    "stacked-prs",
+    "squash-merge",
+    "cli",
+    "pull-requests",
+    "rebase",
+    "bun"
+  ],
   "type": "module",
   "bin": {
     "gh-stack": "src/index.ts"
+  },
+  "files": [
+    "src",
+    "!src/**/__tests__",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
   },
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build --compile src/index.ts --outfile dist/gh-stack",
     "test": "bun test",
+    "lint": "oxlint src/",
+    "format": "oxfmt --write src/",
+    "format:check": "oxfmt --check src/",
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun test"
+    "check": "bun run lint && bun run typecheck && bun test",
+    "prepublishOnly": "bun run check",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "oxlint",
+      "oxfmt --write"
+    ]
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.3.3",
+    "oxfmt": "^0.40.0",
+    "oxlint": "^1.55.0"
   },
   "peerDependencies": {
     "typescript": "^5"

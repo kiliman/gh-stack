@@ -1,5 +1,5 @@
 // Snapshot system for undo support
-import type { StackMetadata, Snapshot, Stack } from "../types.ts";
+import type { StackMetadata, Snapshot } from "../types.ts";
 import * as git from "./git.ts";
 import { writeMetadata, getOrderedBranches } from "./metadata.ts";
 
@@ -11,7 +11,7 @@ const MAX_SNAPSHOTS = 10;
 export async function takeSnapshot(
   meta: StackMetadata,
   stackName: string,
-  operation: string
+  operation: string,
 ): Promise<StackMetadata> {
   const stack = meta.stacks[stackName];
   if (!stack) return meta;
@@ -62,7 +62,7 @@ export function getLastSnapshot(meta: StackMetadata): Snapshot | null {
  * Pop the last snapshot (remove it after restoring).
  */
 export async function popSnapshot(
-  meta: StackMetadata
+  meta: StackMetadata,
 ): Promise<{ meta: StackMetadata; snapshot: Snapshot | null }> {
   if (!meta.snapshots || meta.snapshots.length === 0) {
     return { meta, snapshot: null };

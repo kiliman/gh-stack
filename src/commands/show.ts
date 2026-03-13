@@ -37,9 +37,7 @@ export default async function show(_args: string[]): Promise<void> {
   }
 
   if (!stackName || !meta.stacks[stackName]) {
-    p.log.warn(
-      `Branch ${pc.blue(branch)} is not in any stack`
-    );
+    p.log.warn(`Branch ${pc.blue(branch)} is not in any stack`);
     console.log();
     console.log(`  Add it to a stack with:`);
     console.log(`    ${pc.green("gh-stack add")}`);
@@ -58,9 +56,7 @@ export default async function show(_args: string[]): Promise<void> {
 
   // Header
   console.log();
-  console.log(
-    `${pc.blue("📚 PR Stack:")} ${pc.yellow(stackName)}`
-  );
+  console.log(`${pc.blue("📚 PR Stack:")} ${pc.yellow(stackName)}`);
   if (stack.description) {
     console.log(`   ${pc.dim(stack.description)}`);
   }
@@ -72,8 +68,6 @@ export default async function show(_args: string[]): Promise<void> {
   console.log();
 
   // Tip
-  console.log(
-    pc.dim(`Tip: Switch stacks with 'gh-stack switch --stack'`)
-  );
+  console.log(pc.dim(`Tip: Switch stacks with 'gh-stack switch --stack'`));
   console.log();
 }

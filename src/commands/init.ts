@@ -50,9 +50,7 @@ OPTIONS
 
   p.intro(pc.cyan("Create New Stack"));
 
-  console.log(
-    `  Initializing stack with: ${pc.yellow(branch)}`
-  );
+  console.log(`  Initializing stack with: ${pc.yellow(branch)}`);
   console.log();
 
   // Get or create metadata
@@ -152,13 +150,7 @@ OPTIONS
 
   console.log();
   console.log("  Next steps:");
-  console.log(
-    `    ${pc.blue("gh-stack add")}          — Add more branches`
-  );
-  console.log(
-    `    ${pc.blue("gh-stack")}              — View stack`
-  );
-  console.log(
-    `    ${pc.blue("gh-stack restack")}      — Sync stack`
-  );
+  console.log(`    ${pc.blue("gh-stack add")}          — Add more branches`);
+  console.log(`    ${pc.blue("gh-stack")}              — View stack`);
+  console.log(`    ${pc.blue("gh-stack restack")}      — Sync stack`);
 }

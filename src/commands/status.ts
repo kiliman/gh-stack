@@ -8,13 +8,8 @@ import {
   getOrderedBranches,
   findStackForBranch,
 } from "../lib/metadata.ts";
-import {
-  getMyOpenPrs,
-  getPrInfo,
-  reviewEmoji,
-  ciEmoji,
-} from "../lib/github.ts";
-import type { PrStatus, StackMetadata } from "../types.ts";
+import { getMyOpenPrs, reviewEmoji, ciEmoji } from "../lib/github.ts";
+import type { PrStatus } from "../types.ts";
 
 export default async function status(args: string[]): Promise<void> {
   if (args.includes("--help")) {
@@ -133,7 +128,7 @@ async function outputJson(
   prMap: Map<number, PrStatus>,
   currentOnly: boolean,
   currentStackName: string | null,
-  currentPrNumber: number | null
+  currentPrNumber: number | null,
 ): Promise<void> {
   const stackedPrNumbers = new Set<number>();
   const stacks: any[] = [];
@@ -207,11 +202,7 @@ async function outputJson(
       if (currentOnly) return pr.number === currentPrNumber;
       return true;
     })
-    .sort(
-      (a, b) =>
-        new Date(b.updatedAt || "").getTime() -
-        new Date(a.updatedAt || "").getTime()
-    );
+    .sort((a, b) => new Date(b.updatedAt || "").getTime() - new Date(a.updatedAt || "").getTime());
 
   const standalone = filteredStandalone.map((pr) => ({
     pr: pr.number,
@@ -254,14 +245,12 @@ async function outputHuman(
   currentOnly: boolean,
   currentStackName: string | null,
   currentBranch: string | null,
-  currentPrNumber: number | null
+  currentPrNumber: number | null,
 ): Promise<void> {
   const stackedPrNumbers = new Set<number>();
 
   console.log();
-  console.log(
-    `${pc.bold("📊 My Open PRs")}  ${pc.dim(`(${prs.length} open)`)}`
-  );
+  console.log(`${pc.bold("📊 My Open PRs")}  ${pc.dim(`(${prs.length} open)`)}`);
   console.log();
 
   // ── Stacked PRs ──
@@ -285,9 +274,7 @@ async function outputHuman(
 
         if (openPrsInStack.length === 0) continue;
 
-        console.log(
-          `${pc.cyan("📚 Stack:")} ${pc.yellow(stackName)}`
-        );
+        console.log(`${pc.cyan("📚 Stack:")} ${pc.yellow(stackName)}`);
         if (stack.description) {
           console.log(`   ${pc.dim(stack.description)}`);
         }
@@ -329,9 +316,7 @@ async function outputHuman(
         return true;
       })
       .sort(
-        (a, b) =>
-          new Date(b.updatedAt || "").getTime() -
-          new Date(a.updatedAt || "").getTime()
+        (a, b) => new Date(b.updatedAt || "").getTime() - new Date(a.updatedAt || "").getTime(),
       );
 
     if (standalonePrs.length > 0) {
@@ -363,8 +348,7 @@ function formatPr(pr: PrStatus): { line1: string; line2: string } {
   const reviewIcon = reviewEmoji(pr.reviewDecision);
   const reviewStr = reviewText(pr.reviewDecision);
   const ci = ciEmoji(pr);
-  const title =
-    pr.title.length > 70 ? pr.title.slice(0, 67) + "..." : pr.title;
+  const title = pr.title.length > 70 ? pr.title.slice(0, 67) + "..." : pr.title;
 
   return {
     line1: `${stateIcon} #${pr.number}: ${title}`,

@@ -1,11 +1,7 @@
 // gh-stack list — Lightweight branch listing (agent-friendly)
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
-import {
-  findStackForBranch,
-  getOrderedBranches,
-  writeMetadata,
-} from "../lib/metadata.ts";
+import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
 
 export default async function list(args: string[]): Promise<void> {

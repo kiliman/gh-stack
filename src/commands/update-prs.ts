@@ -3,17 +3,9 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
-import {
-  findStackForBranch,
-  getOrderedBranches,
-} from "../lib/metadata.ts";
+import { findStackForBranch, getOrderedBranches } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
-import {
-  getPrInfo,
-  getPrBody,
-  updatePrBody,
-  reviewEmoji,
-} from "../lib/github.ts";
+import { getPrInfo, getPrBody, updatePrBody, reviewEmoji } from "../lib/github.ts";
 
 export default async function updatePrs(args: string[]): Promise<void> {
   if (args.includes("--help")) {
@@ -34,9 +26,7 @@ showing the tree structure, PR links, and review status.
   const stackName = findStackForBranch(meta, branch);
 
   if (!stackName) {
-    p.cancel(
-      `Branch ${pc.blue(branch)} not found in any stack`
-    );
+    p.cancel(`Branch ${pc.blue(branch)} not found in any stack`);
     process.exit(1);
   }
 
@@ -93,9 +83,7 @@ showing the tree structure, PR links, and review status.
     const target = branchInfos[targetIdx]!;
 
     if (!target.prNumber) {
-      p.log.info(
-        `${pc.dim("⏭")} ${target.branch} — no PR, skipping`
-      );
+      p.log.info(`${pc.dim("⏭")} ${target.branch} — no PR, skipping`);
       skipped++;
       continue;
     }
@@ -119,29 +107,23 @@ showing the tree structure, PR links, and review status.
     }
 
     // Append new stack section
-    const newBody = updatedBody
-      ? `${updatedBody}\n\n${stackViz}`
-      : stackViz;
+    const newBody = updatedBody ? `${updatedBody}\n\n${stackViz}` : stackViz;
 
     // Update PR
     const ok = await updatePrBody(target.prNumber, newBody);
     if (ok) {
-      p.log.success(
-        `PR #${target.prNumber} ${target.prTitle}`
-      );
+      p.log.success(`PR #${target.prNumber} ${target.prTitle}`);
       updated++;
     } else {
-      p.log.error(
-        `Failed to update PR #${target.prNumber}`
-      );
+      p.log.error(`Failed to update PR #${target.prNumber}`);
     }
   }
 
   console.log();
   p.outro(
     pc.green(
-      `Done! Updated ${updated} PR(s)${skipped > 0 ? `, skipped ${skipped} without PRs` : ""}`
-    )
+      `Done! Updated ${updated} PR(s)${skipped > 0 ? `, skipped ${skipped} without PRs` : ""}`,
+    ),
   );
 }
 
@@ -152,10 +134,7 @@ interface BranchPrInfo {
   reviewEmojiStr: string;
 }
 
-function buildStackViz(
-  branches: BranchPrInfo[],
-  targetIndex: number
-): string {
+function buildStackViz(branches: BranchPrInfo[], targetIndex: number): string {
   const lines: string[] = ["### 📚 Stacked on", ""];
 
   if (branches.length === 1) {
@@ -186,9 +165,7 @@ function buildStackViz(
     // Tree character
     const tree = isLast ? "┗━" : "┣━";
 
-    lines.push(
-      `${tree} ${info.reviewEmojiStr} ${prLink} ${info.prTitle}${marker}`
-    );
+    lines.push(`${tree} ${info.reviewEmojiStr} ${prLink} ${info.prTitle}${marker}`);
 
     if (!isLast) {
       lines.push("┃");

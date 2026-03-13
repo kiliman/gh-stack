@@ -3,15 +3,8 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
-import {
-  findStackForBranch,
-  getOrderedBranches,
-  writeMetadata,
-} from "../lib/metadata.ts";
-import {
-  ensureMetadata,
-  ensureCleanWorkingTree,
-} from "../lib/safety.ts";
+import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
+import { ensureMetadata, ensureCleanWorkingTree } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { closePr } from "../lib/github.ts";
 import { confirmAction } from "../lib/ui.ts";
@@ -41,9 +34,7 @@ This keeps all commits local (avoiding orphaned squash commits).
   const stackName = findStackForBranch(meta, currentBranch);
 
   if (!stackName) {
-    p.cancel(
-      `Branch ${pc.blue(currentBranch)} not found in any stack`
-    );
+    p.cancel(`Branch ${pc.blue(currentBranch)} not found in any stack`);
     process.exit(1);
   }
 
@@ -68,13 +59,9 @@ This keeps all commits local (avoiding orphaned squash commits).
     const child = reversed[i]!;
     const parent = stack.branches[child]?.parent || "???";
     const childPr = stack.branches[child]?.pr;
-    console.log(
-      `    ${pc.yellow(child)}${childPr ? ` (#${childPr})` : ""} → ${pc.blue(parent)}`
-    );
+    console.log(`    ${pc.yellow(child)}${childPr ? ` (#${childPr})` : ""} → ${pc.blue(parent)}`);
   }
-  console.log(
-    `    ${pc.blue(ordered[0]!)} → ${pc.green("main")} (via GitHub)`
-  );
+  console.log(`    ${pc.blue(ordered[0]!)} → ${pc.green("main")} (via GitHub)`);
   console.log();
 
   if (dryRun) {
@@ -98,14 +85,11 @@ This keeps all commits local (avoiding orphaned squash commits).
     if (!parentBranch || parentBranch === "main") continue;
 
     const childPr = stack.branches[childBranch]?.pr;
-    const childTitle =
-      stack.branches[childBranch]?.description || childBranch;
+    const childTitle = stack.branches[childBranch]?.description || childBranch;
 
     console.log();
     console.log(pc.cyan("━".repeat(40)));
-    console.log(
-      `${pc.blue("Merge:")} ${pc.yellow(childBranch)} → ${pc.blue(parentBranch)}`
-    );
+    console.log(`${pc.blue("Merge:")} ${pc.yellow(childBranch)} → ${pc.blue(parentBranch)}`);
     console.log(pc.cyan("━".repeat(40)));
     console.log();
 
@@ -123,9 +107,7 @@ This keeps all commits local (avoiding orphaned squash commits).
     }
 
     // Commit
-    const commitMsg = childPr
-      ? `squash: ${childTitle} (#${childPr})`
-      : `squash: ${childTitle}`;
+    const commitMsg = childPr ? `squash: ${childTitle} (#${childPr})` : `squash: ${childTitle}`;
 
     await git.commit(commitMsg);
     p.log.success(`Merged ${childBranch} into ${parentBranch}`);
@@ -134,9 +116,7 @@ This keeps all commits local (avoiding orphaned squash commits).
   // Optionally rebase base onto main
   console.log();
   const baseBranch = ordered[0]!;
-  const rebaseConfirmed = await confirmAction(
-    `Rebase ${pc.yellow(baseBranch)} onto latest main?`
-  );
+  const rebaseConfirmed = await confirmAction(`Rebase ${pc.yellow(baseBranch)} onto latest main?`);
 
   if (rebaseConfirmed) {
     p.log.info("Fetching latest main...");
@@ -156,9 +136,7 @@ This keeps all commits local (avoiding orphaned squash commits).
 
   // Close intermediate PRs
   console.log();
-  const closePrs = await confirmAction(
-    "Close intermediate PRs on GitHub?"
-  );
+  const closePrs = await confirmAction("Close intermediate PRs on GitHub?");
 
   if (closePrs) {
     const basePr = stack.branches[ordered[0]!]?.pr;
@@ -192,10 +170,6 @@ This keeps all commits local (avoiding orphaned squash commits).
 
   console.log();
   console.log("  Next steps:");
-  console.log(
-    `    1. Push ${pc.yellow(baseBranch)} and let CI run`
-  );
-  console.log(
-    `    2. Squash-merge ${pc.yellow(baseBranch)} into main via GitHub`
-  );
+  console.log(`    1. Push ${pc.yellow(baseBranch)} and let CI run`);
+  console.log(`    2. Squash-merge ${pc.yellow(baseBranch)} into main via GitHub`);
 }

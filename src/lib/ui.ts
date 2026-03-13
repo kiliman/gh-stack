@@ -1,7 +1,7 @@
 // TUI helpers: tree rendering, formatting, prompts
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import type { Stack, Branch, StackMetadata } from "../types.ts";
+import type { Stack, StackMetadata } from "../types.ts";
 import { getOrderedBranches } from "./metadata.ts";
 
 // ── Auto-yes mode (for agents/CI) ──
@@ -26,7 +26,7 @@ export function isAutoYes(): boolean {
 export function renderStackTree(
   stack: Stack,
   currentBranch: string,
-  options?: { showNumbers?: boolean }
+  options?: { showNumbers?: boolean },
 ): string {
   const ordered = getOrderedBranches(stack);
   const showNumbers = options?.showNumbers ?? true;
@@ -44,9 +44,7 @@ export function renderStackTree(
     const tree = isLast ? "┗━◯" : "┣━◯";
 
     // Branch number label
-    const numLabel = showNumbers
-      ? `[${pc.blue(String(i + 1))}] `
-      : "";
+    const numLabel = showNumbers ? `[${pc.blue(String(i + 1))}] ` : "";
 
     // Current marker
     const marker = isCurrent ? ` ${pc.yellow("(current)")}` : "";
@@ -91,7 +89,7 @@ export function footer(title: string): void {
 export async function selectBranch(
   stack: Stack,
   message: string,
-  currentBranch?: string
+  currentBranch?: string,
 ): Promise<string | null> {
   const ordered = getOrderedBranches(stack);
 
@@ -130,10 +128,7 @@ export async function selectBranch(
  * Interactive stack selector.
  * Returns the selected stack name, or null if cancelled.
  */
-export async function selectStack(
-  meta: StackMetadata,
-  message: string
-): Promise<string | null> {
+export async function selectStack(meta: StackMetadata, message: string): Promise<string | null> {
   const stackNames = Object.keys(meta.stacks);
 
   if (stackNames.length === 0) {
@@ -172,7 +167,7 @@ export async function selectStack(
  */
 export async function selectParent(
   stack: Stack | null,
-  currentBranch: string
+  currentBranch: string,
 ): Promise<string | null> {
   // In auto-yes mode, default to "main"
   if (_autoYes) {

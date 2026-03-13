@@ -2,16 +2,14 @@
 import { $ } from "bun";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import type { StackMetadata, Branch } from "../types.ts";
+import type { StackMetadata } from "../types.ts";
 
 /**
  * Create a temp git repo with an initial commit on main.
  * Returns the directory path. Caller must clean up.
  */
 export async function createTempRepo(): Promise<string> {
-  const dir = await fs.mkdtemp(
-    path.join(await fs.realpath("/tmp"), "gh-stack-test-")
-  );
+  const dir = await fs.mkdtemp(path.join(await fs.realpath("/tmp"), "gh-stack-test-"));
 
   await $`git init ${dir}`.quiet();
   await $`git -C ${dir} config user.email "test@test.com"`.quiet();
@@ -33,7 +31,7 @@ export async function makeCommit(
   dir: string,
   filename: string,
   content: string,
-  message: string
+  message: string,
 ): Promise<string> {
   await Bun.write(`${dir}/${filename}`, content);
   await $`git -C ${dir} add ${filename}`.quiet();
@@ -45,11 +43,7 @@ export async function makeCommit(
 /**
  * Create a branch in a temp repo.
  */
-export async function createBranch(
-  dir: string,
-  name: string,
-  from?: string
-): Promise<void> {
+export async function createBranch(dir: string, name: string, from?: string): Promise<void> {
   if (from) {
     await $`git -C ${dir} checkout ${from}`.quiet();
   }
@@ -83,26 +77,19 @@ export async function getSha(dir: string, ref: string): Promise<string> {
 export async function isAncestor(
   dir: string,
   ancestor: string,
-  descendant: string
+  descendant: string,
 ): Promise<boolean> {
-  const { exitCode } =
-    await $`git -C ${dir} merge-base --is-ancestor ${ancestor} ${descendant}`
-      .nothrow()
-      .quiet();
+  const { exitCode } = await $`git -C ${dir} merge-base --is-ancestor ${ancestor} ${descendant}`
+    .nothrow()
+    .quiet();
   return exitCode === 0;
 }
 
 /**
  * Write metadata directly to a temp repo's .git dir.
  */
-export async function writeMetadata(
-  dir: string,
-  meta: StackMetadata
-): Promise<void> {
-  await Bun.write(
-    `${dir}/.git/gh-stack-metadata.json`,
-    JSON.stringify(meta, null, 2) + "\n"
-  );
+export async function writeMetadata(dir: string, meta: StackMetadata): Promise<void> {
+  await Bun.write(`${dir}/.git/gh-stack-metadata.json`, JSON.stringify(meta, null, 2) + "\n");
 }
 
 /**
@@ -128,7 +115,7 @@ export async function metadataExists(dir: string): Promise<boolean> {
  */
 export async function createLinearStack(
   dir: string,
-  opts?: { conflicting?: boolean }
+  opts?: { conflicting?: boolean },
 ): Promise<{
   meta: StackMetadata;
   shas: Record<string, string>;
@@ -184,9 +171,7 @@ export async function createLinearStack(
  *   main → pr1 → pr2a
  *               → pr2b → pr3
  */
-export async function createBranchingStack(
-  dir: string
-): Promise<{
+export async function createBranchingStack(dir: string): Promise<{
   meta: StackMetadata;
   shas: Record<string, string>;
 }> {
@@ -239,7 +224,7 @@ export async function createBranchingStack(
 export async function addConflictingMainCommit(
   dir: string,
   filename: string = "shared.txt",
-  content: string = "main version\n"
+  content: string = "main version\n",
 ): Promise<string> {
   await checkout(dir, "main");
   return makeCommit(dir, filename, content, "main: conflicting change");
@@ -249,9 +234,7 @@ export async function addConflictingMainCommit(
  * Simulate an "origin/main" by creating a bare remote and pushing.
  */
 export async function setupRemote(dir: string): Promise<string> {
-  const remoteDir = await fs.mkdtemp(
-    path.join(await fs.realpath("/tmp"), "gh-stack-remote-")
-  );
+  const remoteDir = await fs.mkdtemp(path.join(await fs.realpath("/tmp"), "gh-stack-remote-"));
   await $`git init --bare ${remoteDir}`.quiet();
   await $`git -C ${dir} remote add origin ${remoteDir}`.quiet();
   await $`git -C ${dir} push -u origin main`.quiet();

@@ -31,11 +31,7 @@ If no branch is specified, shows interactive selector.
   // Get branch to remove
   let branchName = args[0];
   if (!branchName) {
-    branchName = (await selectBranch(
-      stack,
-      "Select branch to remove",
-      currentBranch
-    )) ?? undefined;
+    branchName = (await selectBranch(stack, "Select branch to remove", currentBranch)) ?? undefined;
     if (!branchName) {
       p.cancel("Cancelled");
       process.exit(0);
@@ -45,9 +41,7 @@ If no branch is specified, shows interactive selector.
   // Validate
   const branch = stack.branches[branchName];
   if (!branch) {
-    p.cancel(
-      `Branch ${pc.yellow(branchName)} not found in stack ${pc.blue(stackName)}`
-    );
+    p.cancel(`Branch ${pc.yellow(branchName)} not found in stack ${pc.blue(stackName)}`);
     process.exit(1);
   }
 
@@ -58,7 +52,7 @@ If no branch is specified, shows interactive selector.
 
   if (children.length > 0) {
     p.log.info(
-      `Re-parenting ${children.length} child branch${children.length > 1 ? "es" : ""} to ${pc.dim(branch.parent)}`
+      `Re-parenting ${children.length} child branch${children.length > 1 ? "es" : ""} to ${pc.dim(branch.parent)}`,
     );
     for (const child of children) {
       console.log(`    ${pc.dim("→")} ${child}`);
@@ -80,9 +74,5 @@ If no branch is specified, shows interactive selector.
   // Remove branch
   await removeBranchFromStack(meta, stackName, branchName);
 
-  p.outro(
-    pc.green(
-      `Removed ${pc.yellow(branchName)} from stack ${pc.blue(stackName)}`
-    )
-  );
+  p.outro(pc.green(`Removed ${pc.yellow(branchName)} from stack ${pc.blue(stackName)}`));
 }

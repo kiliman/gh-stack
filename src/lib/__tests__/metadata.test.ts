@@ -1,8 +1,5 @@
 // Tests for metadata module
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { $ } from "bun";
-import * as path from "node:path";
-import * as fs from "node:fs/promises";
+import { describe, test, expect } from "bun:test";
 import type { StackMetadata, Stack } from "../../types.ts";
 import {
   getOrderedBranches,

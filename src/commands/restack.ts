@@ -4,20 +4,13 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import {
-  readMetadata,
   findStackForBranch,
   buildRebaseChain,
-  getOrderedBranches,
   saveRestackState,
   loadRestackState,
   clearRestackState,
-  writeMetadata,
 } from "../lib/metadata.ts";
-import {
-  ensureMetadata,
-  ensureCleanWorkingTree,
-  ensureNotMain,
-} from "../lib/safety.ts";
+import { ensureMetadata, ensureCleanWorkingTree, ensureNotMain } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
@@ -87,7 +80,7 @@ ALIASES
 async function handleResume(
   meta: StackMetadata,
   rebasedBranches: string[],
-  verbose: boolean
+  verbose: boolean,
 ): Promise<void> {
   p.log.warn("Resuming from saved state...");
 
@@ -100,7 +93,7 @@ async function handleResume(
   // Check if rebase is still in progress
   if (await git.isRebaseInProgress()) {
     p.cancel(
-      `Rebase still in progress.\n\n  Complete it first:\n    ${pc.green("git rebase --continue")}\n\n  Or abort:\n    ${pc.red("git rebase --abort")}`
+      `Rebase still in progress.\n\n  Complete it first:\n    ${pc.green("git rebase --continue")}\n\n  Or abort:\n    ${pc.red("git rebase --abort")}`,
     );
     process.exit(1);
   }
@@ -114,14 +107,10 @@ async function handleResume(
     p.log.info(`Expected: ${pc.blue(expectedBranch)}`);
     p.log.info(`Current:  ${pc.blue(currentBranch)}`);
     console.log();
-    p.log.info(
-      "This likely means the rebase was aborted. Cleaning up stale state..."
-    );
+    p.log.info("This likely means the rebase was aborted. Cleaning up stale state...");
     await clearRestackState();
     console.log();
-    console.log(
-      `  State cleared. To sync the stack, run from the desired branch:`
-    );
+    console.log(`  State cleared. To sync the stack, run from the desired branch:`);
     console.log(`    ${pc.green("gh-stack restack")}`);
     return;
   }
@@ -157,7 +146,7 @@ async function handleResume(
       if (await git.tagExists(tagName)) {
         const tagSha = await git.revParse(tagName);
         console.log(
-          `  ${pc.green("✓")} Pre-existing tag for ${branch}: ${pc.cyan(tagName)} (${tagSha.slice(0, 8)})`
+          `  ${pc.green("✓")} Pre-existing tag for ${branch}: ${pc.cyan(tagName)} (${tagSha.slice(0, 8)})`,
         );
       } else {
         // Fallback: create tag now (may be inaccurate if parent already rebased)
@@ -166,7 +155,7 @@ async function handleResume(
         if (mb) {
           await git.createTag(tagName, mb);
           console.log(
-            `  ${pc.yellow("⚠")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`
+            `  ${pc.yellow("⚠")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,
           );
         }
       }
@@ -181,14 +170,14 @@ async function handleFreshRestack(
   meta: StackMetadata,
   rebasedBranches: string[],
   dryRun: boolean,
-  verbose: boolean
+  verbose: boolean,
 ): Promise<void> {
   const currentBranch = await git.currentBranch();
   const stackName = findStackForBranch(meta, currentBranch);
 
   if (!stackName) {
     p.cancel(
-      `Branch ${pc.blue(currentBranch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}`
+      `Branch ${pc.blue(currentBranch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}`,
     );
     process.exit(1);
   }
@@ -211,28 +200,20 @@ async function handleFreshRestack(
   p.log.success(`Found ${chain.length} branch(es) to process:`);
   for (const branch of chain) {
     const parent = stack.branches[branch]?.parent || "(unknown)";
-    console.log(
-      `  ${pc.yellow("→")} ${branch} ${pc.blue(`(parent: ${parent})`)}`
-    );
+    console.log(`  ${pc.yellow("→")} ${branch} ${pc.blue(`(parent: ${parent})`)}`);
   }
   console.log();
 
   // Skip base branches (parent = main) unless this is a sync
-  const baseBranches = chain.filter(
-    (b) => stack.branches[b]?.parent === "main"
-  );
+  const baseBranches = chain.filter((b) => stack.branches[b]?.parent === "main");
   if (baseBranches.length > 0) {
     p.log.warn("Skipping base branch(es) (parent: main):");
     for (const base of baseBranches) {
       console.log(`  ${pc.cyan("Skip:")} ${base} ${pc.blue("(parent: main)")}`);
     }
     console.log();
-    console.log(
-      `  ${pc.dim("This is a restack — propagating changes from parent to children.")}`
-    );
-    console.log(
-      `  ${pc.dim(`To include rebasing onto main, use: ${pc.green("gh-stack sync")}`)}`
-    );
+    console.log(`  ${pc.dim("This is a restack — propagating changes from parent to children.")}`);
+    console.log(`  ${pc.dim(`To include rebasing onto main, use: ${pc.green("gh-stack sync")}`)}`);
     console.log();
 
     chain = chain.filter((b) => stack.branches[b]?.parent !== "main");
@@ -242,18 +223,14 @@ async function handleFreshRestack(
       console.log();
       console.log("  Either:");
       console.log("    1. Run from a child branch (e.g., PR2)");
-      console.log(
-        `    2. Use ${pc.green("gh-stack sync")} to include rebasing base onto main`
-      );
+      console.log(`    2. Use ${pc.green("gh-stack sync")} to include rebasing base onto main`);
       return;
     }
 
     p.log.success(`Processing ${chain.length} branch(es):`);
     for (const branch of chain) {
       const parent = stack.branches[branch]?.parent || "(unknown)";
-      console.log(
-        `  ${pc.yellow("→")} ${branch} ${pc.blue(`(parent: ${parent})`)}`
-      );
+      console.log(`  ${pc.yellow("→")} ${branch} ${pc.blue(`(parent: ${parent})`)}`);
     }
     console.log();
   }
@@ -272,7 +249,7 @@ async function handleFreshRestack(
       const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
       await git.createTag(tagName, mb);
       console.log(
-        `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`
+        `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,
       );
     }
   }
@@ -289,7 +266,7 @@ async function processChain(
   startIndex: number,
   rebasedBranches: string[],
   dryRun: boolean,
-  verbose: boolean
+  verbose: boolean,
 ): Promise<void> {
   const stack = meta.stacks[stackName]!;
 
@@ -322,9 +299,7 @@ async function processChain(
     }
 
     // Prompt for rebase
-    const confirmed = await confirmAction(
-      `Rebase ${pc.yellow(branch)} onto ${pc.yellow(parent)}?`
-    );
+    const confirmed = await confirmAction(`Rebase ${pc.yellow(branch)} onto ${pc.yellow(parent)}?`);
     if (!confirmed) {
       p.log.warn("Skipping rebase");
       continue;
@@ -347,29 +322,19 @@ async function processChain(
 
     if (await git.tagExists(tagName)) {
       const taggedBase = await git.revParse(tagName);
-      p.log.info(
-        `Using tagged base: ${pc.cyan(tagName)} (${taggedBase.slice(0, 8)})`
-      );
+      p.log.info(`Using tagged base: ${pc.cyan(tagName)} (${taggedBase.slice(0, 8)})`);
 
       if (verbose) {
         const currentMb = await git.mergeBase(branch, parent);
         console.log();
         console.log(pc.yellow("  Diagnostic: Tag vs Merge-Base"));
-        console.log(
-          `  ${pc.cyan("Tagged base:")}      ${taggedBase.slice(0, 8)}`
-        );
+        console.log(`  ${pc.cyan("Tagged base:")}      ${taggedBase.slice(0, 8)}`);
         if (currentMb) {
-          console.log(
-            `  ${pc.cyan("Current merge-base:")} ${currentMb.slice(0, 8)}`
-          );
+          console.log(`  ${pc.cyan("Current merge-base:")} ${currentMb.slice(0, 8)}`);
           if (taggedBase === currentMb) {
-            console.log(
-              `  ${pc.green("✓ Same")} — Parent hasn't been updated`
-            );
+            console.log(`  ${pc.green("✓ Same")} — Parent hasn't been updated`);
           } else {
-            console.log(
-              `  ${pc.yellow("⚠ Different")} — Parent was rebased (tag protects us!)`
-            );
+            console.log(`  ${pc.yellow("⚠ Different")} — Parent was rebased (tag protects us!)`);
           }
         }
         console.log();

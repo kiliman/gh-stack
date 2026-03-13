@@ -2,16 +2,8 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
-import {
-  findStackForBranch,
-  getOrderedBranches,
-  buildRebaseChain,
-  saveRestackState,
-} from "../lib/metadata.ts";
-import {
-  ensureMetadata,
-  ensureCleanWorkingTree,
-} from "../lib/safety.ts";
+import { findStackForBranch, getOrderedBranches, saveRestackState } from "../lib/metadata.ts";
+import { ensureMetadata, ensureCleanWorkingTree } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
 
@@ -39,9 +31,7 @@ with the base branch included.
   const stackName = findStackForBranch(meta, currentBranch);
 
   if (!stackName) {
-    p.cancel(
-      `Branch ${pc.blue(currentBranch)} not found in any stack`
-    );
+    p.cancel(`Branch ${pc.blue(currentBranch)} not found in any stack`);
     process.exit(1);
   }
 
@@ -60,9 +50,7 @@ with the base branch included.
   const baseParent = stack.branches[baseBranch]?.parent;
 
   if (baseParent !== "main") {
-    p.cancel(
-      `Base branch ${pc.yellow(baseBranch)} doesn't have main as parent`
-    );
+    p.cancel(`Base branch ${pc.yellow(baseBranch)} doesn't have main as parent`);
     process.exit(1);
   }
 
@@ -91,7 +79,7 @@ with the base branch included.
       const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
       await git.createTag(tagName, mb);
       console.log(
-        `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`
+        `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,
       );
     }
   }
@@ -108,13 +96,9 @@ with the base branch included.
   if (await git.isAncestor("origin/main", baseBranch)) {
     p.log.success(`${baseBranch} is already up to date with main`);
   } else if (dryRun) {
-    p.log.warn(
-      `[DRY RUN] Would rebase ${baseBranch} onto origin/main`
-    );
+    p.log.warn(`[DRY RUN] Would rebase ${baseBranch} onto origin/main`);
   } else {
-    const confirmed = await confirmAction(
-      `Rebase ${pc.yellow(baseBranch)} onto origin/main?`
-    );
+    const confirmed = await confirmAction(`Rebase ${pc.yellow(baseBranch)} onto origin/main?`);
     if (!confirmed) {
       p.cancel("Cancelled");
       process.exit(0);
@@ -189,9 +173,7 @@ async function promptForcePush(branch: string): Promise<void> {
   if (localSha === remoteSha) return;
 
   console.log();
-  p.log.info(
-    `${pc.yellow("⚠")} ${branch} is out of sync with remote`
-  );
+  p.log.info(`${pc.yellow("⚠")} ${branch} is out of sync with remote`);
 
   const confirmed = await confirmAction("Push with --force-with-lease?");
   if (confirmed) {

@@ -1,11 +1,11 @@
 // gh-stack archive — Manage archived stacks
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { writeMetadata, getOrderedBranches } from "../lib/metadata.ts";
+import { writeMetadata } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
 
 export default async function archive(args: string[]): Promise<void> {
-  const listMode = args.includes("--list") || args.length === 0;
+  const _listMode = args.includes("--list") || args.length === 0;
   const restoreIdx = args.indexOf("--restore");
   const restoreName = restoreIdx !== -1 ? args[restoreIdx + 1] : undefined;
 
@@ -34,9 +34,7 @@ USAGE
     meta.current_stack = restoreName;
     await writeMetadata(meta);
 
-    p.log.success(
-      `Restored stack ${pc.yellow(restoreName)} from archive`
-    );
+    p.log.success(`Restored stack ${pc.yellow(restoreName)} from archive`);
     return;
   }
 
@@ -51,7 +49,7 @@ USAGE
   for (const [name, stack] of Object.entries(meta.archive)) {
     const branchCount = Object.keys(stack.branches).length;
     console.log(
-      `  ${pc.blue("○")} ${pc.yellow(name)} (${branchCount} branch${branchCount !== 1 ? "es" : ""})`
+      `  ${pc.blue("○")} ${pc.yellow(name)} (${branchCount} branch${branchCount !== 1 ? "es" : ""})`,
     );
     if (stack.description) {
       console.log(`    ${pc.dim(stack.description)}`);
@@ -59,9 +57,5 @@ USAGE
     console.log();
   }
 
-  console.log(
-    pc.dim(
-      `  Restore with: gh-stack archive --restore <name>`
-    )
-  );
+  console.log(pc.dim(`  Restore with: gh-stack archive --restore <name>`));
 }

@@ -2,30 +2,20 @@
 // These test the core tag-based rebase logic that prevents conflict re-surfacing.
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { $ } from "bun";
-import type { StackMetadata } from "../types.ts";
 import {
   createTempRepo,
   createLinearStack,
   createBranchingStack,
   makeCommit,
   checkout,
-  getCurrentBranch,
   getSha,
   isAncestor,
-  writeMetadata,
-  readMetadata,
   setupRemote,
   pushAllBranches,
   cleanup,
 } from "./helpers.ts";
 import * as git from "../lib/git.ts";
-import {
-  getOrderedBranches,
-  buildRebaseChain,
-  saveRestackState,
-  loadRestackState,
-  clearRestackState,
-} from "../lib/metadata.ts";
+import { saveRestackState, loadRestackState, clearRestackState } from "../lib/metadata.ts";
 import { takeSnapshot, getLastSnapshot } from "../lib/snapshot.ts";
 
 let tmpDir: string;
@@ -50,13 +40,11 @@ afterEach(async () => {
 
 describe("tag-based rebase: core correctness", () => {
   test("tags capture correct divergence points before rebase", async () => {
-    const { shas } = await createLinearStack(tmpDir);
+    await createLinearStack(tmpDir);
     await checkout(tmpDir, "pr2");
 
     // Get merge-base of pr2 and pr1 BEFORE any rebasing
-    const mbBefore = (
-      await $`git merge-base pr2 pr1`.text()
-    ).trim();
+    const mbBefore = (await $`git merge-base pr2 pr1`.text()).trim();
 
     // Create tag for pr2's base
     const tagName = `stack-sync-base-pr2`;
@@ -68,9 +56,7 @@ describe("tag-based rebase: core correctness", () => {
 
     // After pr1 changed, merge-base of pr2 and pr1 might be different
     await checkout(tmpDir, "pr2");
-    const mbAfter = (
-      await $`git merge-base pr2 pr1`.text()
-    ).trim();
+    const _mbAfter = (await $`git merge-base pr2 pr1`.text()).trim();
 
     // The tag still points to the original merge-base
     const tagSha = await git.revParse(tagName);
@@ -82,7 +68,7 @@ describe("tag-based rebase: core correctness", () => {
   });
 
   test("rebase --onto with tag moves only branch's own commits", async () => {
-    const { shas } = await createLinearStack(tmpDir);
+    await createLinearStack(tmpDir);
 
     // Add a new commit to pr1 (simulating review changes)
     await checkout(tmpDir, "pr1");
@@ -90,7 +76,7 @@ describe("tag-based rebase: core correctness", () => {
       tmpDir,
       "pr1-review-fix.txt",
       "review fix\n",
-      "pr1: fix from review"
+      "pr1: fix from review",
     );
 
     // Before rebasing pr2, tag the merge-base while history is intact
@@ -116,14 +102,11 @@ describe("tag-based rebase: core correctness", () => {
   });
 
   test("tag-based rebase prevents replaying parent commits", async () => {
-    const { shas } = await createLinearStack(tmpDir);
+    await createLinearStack(tmpDir);
 
     // Count commits unique to pr2 (between pr1 and pr2)
     await checkout(tmpDir, "pr2");
-    const commitsBefore = parseInt(
-      (await $`git rev-list --count pr1..pr2`.text()).trim(),
-      10
-    );
+    const commitsBefore = parseInt((await $`git rev-list --count pr1..pr2`.text()).trim(), 10);
     expect(commitsBefore).toBe(1); // Just pr2's own commit
 
     // Tag pr2's divergence point
@@ -139,10 +122,7 @@ describe("tag-based rebase: core correctness", () => {
     expect(success).toBe(true);
 
     // Count pr2's unique commits after rebase — should still be 1
-    const commitsAfter = parseInt(
-      (await $`git rev-list --count pr1..pr2`.text()).trim(),
-      10
-    );
+    const commitsAfter = parseInt((await $`git rev-list --count pr1..pr2`.text()).trim(), 10);
     expect(commitsAfter).toBe(1);
   });
 });
@@ -153,42 +133,28 @@ describe("tag-based rebase: core correctness", () => {
 
 describe("full chain rebase flow", () => {
   test("restacking 3-branch linear stack after pr1 update", async () => {
-    const { shas } = await createLinearStack(tmpDir);
+    await createLinearStack(tmpDir);
 
     // Update pr1 with review feedback
     await checkout(tmpDir, "pr1");
     await makeCommit(tmpDir, "pr1-fix.txt", "fix\n", "pr1: review fix");
-    const pr1NewSha = await getSha(tmpDir, "pr1");
+    const _pr1NewSha = await getSha(tmpDir, "pr1");
 
     // Tag ALL branches before starting (like sync does)
     const branches = ["pr2", "pr3"];
     for (const branch of branches) {
-      const parent =
-        branch === "pr2" ? "pr1" : "pr2";
-      const mb = (
-        await $`git merge-base ${branch} ${parent}`.text()
-      ).trim();
-      await git.createTag(
-        `stack-sync-base-${branch}`,
-        mb
-      );
+      const parent = branch === "pr2" ? "pr1" : "pr2";
+      const mb = (await $`git merge-base ${branch} ${parent}`.text()).trim();
+      await git.createTag(`stack-sync-base-${branch}`, mb);
     }
 
     // Rebase pr2 onto updated pr1
-    const ok1 = await git.rebaseOnto(
-      "pr1",
-      "stack-sync-base-pr2",
-      "pr2"
-    );
+    const ok1 = await git.rebaseOnto("pr1", "stack-sync-base-pr2", "pr2");
     expect(ok1).toBe(true);
     expect(await isAncestor(tmpDir, "pr1", "pr2")).toBe(true);
 
     // Rebase pr3 onto updated pr2
-    const ok2 = await git.rebaseOnto(
-      "pr2",
-      "stack-sync-base-pr3",
-      "pr3"
-    );
+    const ok2 = await git.rebaseOnto("pr2", "stack-sync-base-pr3", "pr3");
     expect(ok2).toBe(true);
     expect(await isAncestor(tmpDir, "pr2", "pr3")).toBe(true);
 
@@ -204,7 +170,7 @@ describe("full chain rebase flow", () => {
   });
 
   test("already up-to-date branches are skipped", async () => {
-    const { shas } = await createLinearStack(tmpDir);
+    await createLinearStack(tmpDir);
 
     // Without any changes, pr2 is already based on pr1
     await checkout(tmpDir, "pr2");
@@ -215,7 +181,7 @@ describe("full chain rebase flow", () => {
   });
 
   test("branching stack: rebasing one subtree doesn't affect sibling", async () => {
-    const { shas } = await createBranchingStack(tmpDir);
+    await createBranchingStack(tmpDir);
 
     // Update pr1
     await checkout(tmpDir, "pr1");
@@ -250,19 +216,14 @@ describe("full chain rebase flow", () => {
 
 describe("sync flow: rebase base onto main then restack", () => {
   test("full sync: main update propagates through entire stack", async () => {
-    const { shas } = await createLinearStack(tmpDir);
+    await createLinearStack(tmpDir);
 
     // Push all branches so we have origin refs
     await pushAllBranches(tmpDir);
 
     // Add a commit to main (simulating merged PRs from other devs)
     await checkout(tmpDir, "main");
-    await makeCommit(
-      tmpDir,
-      "main-update.txt",
-      "new feature\n",
-      "main: someone else's PR"
-    );
+    await makeCommit(tmpDir, "main-update.txt", "new feature\n", "main: someone else's PR");
     await $`git -C ${tmpDir} push origin main`.quiet();
 
     // Fetch so origin/main is updated
@@ -271,11 +232,8 @@ describe("sync flow: rebase base onto main then restack", () => {
     // Tag ALL branches before any rebasing (this is the key fix!)
     const ordered = ["pr1", "pr2", "pr3"];
     for (const branch of ordered) {
-      const parent =
-        branch === "pr1" ? "origin/main" : ordered[ordered.indexOf(branch) - 1]!;
-      const mb = (
-        await $`git merge-base ${branch} ${parent}`.text()
-      ).trim();
+      const parent = branch === "pr1" ? "origin/main" : ordered[ordered.indexOf(branch) - 1]!;
+      const mb = (await $`git merge-base ${branch} ${parent}`.text()).trim();
       await git.createTag(`stack-sync-base-${branch}`, mb);
     }
 
@@ -307,7 +265,7 @@ describe("sync flow: rebase base onto main then restack", () => {
   });
 
   test("sync when base already up-to-date skips to children", async () => {
-    const { shas } = await createLinearStack(tmpDir);
+    await createLinearStack(tmpDir);
     await pushAllBranches(tmpDir);
 
     // No changes to main — pr1 is already up to date
@@ -324,7 +282,7 @@ describe("sync flow: rebase base onto main then restack", () => {
 
 describe("tag stability across rebases", () => {
   test("pr2 tag survives pr1 rebase and gives correct onto base", async () => {
-    const { shas } = await createLinearStack(tmpDir);
+    await createLinearStack(tmpDir);
     await pushAllBranches(tmpDir);
 
     // Advance main
@@ -348,7 +306,7 @@ describe("tag stability across rebases", () => {
     await git.rebase("origin/main");
 
     // After pr1 rebased, merge-base of pr2 and pr1 has changed
-    const newMb = (await $`git merge-base pr2 pr1`.text()).trim();
+    const _newMb = (await $`git merge-base pr2 pr1`.text()).trim();
     // The tag should still point to the OLD merge-base
     const tagSha = await git.revParse("stack-sync-base-pr2");
     expect(tagSha).toBe(mbPr2);
@@ -358,10 +316,7 @@ describe("tag stability across rebases", () => {
     expect(ok).toBe(true);
 
     // Verify only pr2's commits moved
-    const pr2CommitCount = parseInt(
-      (await $`git rev-list --count pr1..pr2`.text()).trim(),
-      10
-    );
+    const pr2CommitCount = parseInt((await $`git rev-list --count pr1..pr2`.text()).trim(), 10);
     expect(pr2CommitCount).toBe(1);
 
     // And the chain is correct
@@ -467,20 +422,10 @@ describe("conflict handling", () => {
 
     // Create branches that will conflict on the same file
     await checkout(tmpDir, "main");
-    await makeCommit(
-      tmpDir,
-      "shared.txt",
-      "main version\n",
-      "main: add shared"
-    );
+    await makeCommit(tmpDir, "shared.txt", "main version\n", "main: add shared");
 
     await $`git -C ${tmpDir} checkout -b conflict-branch HEAD~1`.quiet();
-    await makeCommit(
-      tmpDir,
-      "shared.txt",
-      "branch version\n",
-      "branch: add shared"
-    );
+    await makeCommit(tmpDir, "shared.txt", "branch version\n", "branch: add shared");
 
     // This rebase should conflict
     const success = await git.rebase("main");
@@ -493,22 +438,17 @@ describe("conflict handling", () => {
   test("rebaseOnto returns false when conflicts exist", async () => {
     // Create a scenario where rebase --onto will conflict
     await checkout(tmpDir, "main");
-    const mainSha = await makeCommit(
+    const _mainSha = await makeCommit(
       tmpDir,
       "conflict-file.txt",
       "main version\n",
-      "main: add conflict file"
+      "main: add conflict file",
     );
 
     // Create branch from before the main commit
     await $`git -C ${tmpDir} checkout -b old-base HEAD~1`.quiet();
     await $`git -C ${tmpDir} checkout -b conflict-branch`.quiet();
-    await makeCommit(
-      tmpDir,
-      "conflict-file.txt",
-      "branch version\n",
-      "branch: add conflict file"
-    );
+    await makeCommit(tmpDir, "conflict-file.txt", "branch version\n", "branch: add conflict file");
 
     const oldBaseSha = await getSha(tmpDir, "old-base");
     const success = await git.rebaseOnto("main", oldBaseSha, "conflict-branch");
@@ -533,12 +473,7 @@ describe("deep stacks", () => {
       const parent = i === 1 ? "main" : `b${i - 1}`;
       await checkout(tmpDir, parent);
       await $`git -C ${tmpDir} checkout -b b${i}`.quiet();
-      shas[`b${i}`] = await makeCommit(
-        tmpDir,
-        `b${i}.txt`,
-        `b${i} content\n`,
-        `b${i}: add file`
-      );
+      shas[`b${i}`] = await makeCommit(tmpDir, `b${i}.txt`, `b${i} content\n`, `b${i}: add file`);
     }
 
     // Update b1 with review changes
@@ -549,9 +484,7 @@ describe("deep stacks", () => {
     for (let i = 2; i <= 5; i++) {
       const branch = `b${i}`;
       const parent = `b${i - 1}`;
-      const mb = (
-        await $`git merge-base ${branch} ${parent}`.text()
-      ).trim();
+      const mb = (await $`git merge-base ${branch} ${parent}`.text()).trim();
       await git.createTag(`stack-sync-base-${branch}`, mb);
     }
 
@@ -559,27 +492,19 @@ describe("deep stacks", () => {
     for (let i = 2; i <= 5; i++) {
       const branch = `b${i}`;
       const parent = `b${i - 1}`;
-      const ok = await git.rebaseOnto(
-        parent,
-        `stack-sync-base-${branch}`,
-        branch
-      );
+      const ok = await git.rebaseOnto(parent, `stack-sync-base-${branch}`, branch);
       expect(ok).toBe(true);
     }
 
     // Verify full chain
     for (let i = 1; i <= 4; i++) {
-      expect(
-        await isAncestor(tmpDir, `b${i}`, `b${i + 1}`)
-      ).toBe(true);
+      expect(await isAncestor(tmpDir, `b${i}`, `b${i + 1}`)).toBe(true);
     }
 
     // All files present at tip
     await checkout(tmpDir, "b5");
     for (let i = 1; i <= 5; i++) {
-      expect(
-        await Bun.file(`${tmpDir}/b${i}.txt`).exists()
-      ).toBe(true);
+      expect(await Bun.file(`${tmpDir}/b${i}.txt`).exists()).toBe(true);
     }
     expect(await Bun.file(`${tmpDir}/b1-fix.txt`).exists()).toBe(true);
   });

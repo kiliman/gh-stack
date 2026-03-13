@@ -2,12 +2,7 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
-import {
-  readMetadata,
-  addBranchToStack,
-  getTopOfStack,
-  getOrderedBranches,
-} from "../lib/metadata.ts";
+import { addBranchToStack, getTopOfStack, getOrderedBranches } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCurrentStack } from "../lib/safety.ts";
 import { getPrNumber } from "../lib/github.ts";
 import { selectParent } from "../lib/ui.ts";
@@ -73,9 +68,7 @@ OPTIONS
       await git.checkout(topBranch);
     }
 
-    p.log.info(
-      `Creating branch off top of stack: ${pc.yellow(topBranch)}`
-    );
+    p.log.info(`Creating branch off top of stack: ${pc.yellow(topBranch)}`);
     await git.createBranch(createFlag);
     p.log.success(`Created branch: ${pc.yellow(createFlag)}`);
 
@@ -87,22 +80,18 @@ OPTIONS
 
   // Check if branch is already in the stack
   if (stack.branches[branchToAdd]) {
-    p.cancel(
-      `Branch ${pc.yellow(branchToAdd)} is already in stack ${pc.blue(stackName)}`
-    );
+    p.cancel(`Branch ${pc.yellow(branchToAdd)} is already in stack ${pc.blue(stackName)}`);
     process.exit(1);
   }
 
-  console.log(
-    `  Adding: ${pc.yellow(branchToAdd)}`
-  );
+  console.log(`  Adding: ${pc.yellow(branchToAdd)}`);
   console.log();
 
   // Get parent
   let parent = parentFlag;
   if (!parent) {
     // Default to top of stack
-    const topBranch = getTopOfStack(stack);
+    const _topBranch = getTopOfStack(stack);
     const ordered = getOrderedBranches(stack);
 
     if (ordered.length === 0) {
@@ -145,9 +134,5 @@ OPTIONS
 
   await addBranchToStack(meta, stackName, branchToAdd, branchData);
 
-  p.outro(
-    pc.green(
-      `Added ${pc.yellow(branchToAdd)} to stack ${pc.blue(stackName)}`
-    )
-  );
+  p.outro(pc.green(`Added ${pc.yellow(branchToAdd)} to stack ${pc.blue(stackName)}`));
 }

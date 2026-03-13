@@ -9,9 +9,7 @@ let tmpDir: string;
 let originalCwd: string;
 
 async function createTempRepo(): Promise<string> {
-  const dir = await fs.mkdtemp(
-    path.join(await fs.realpath("/tmp"), "gh-stack-test-")
-  );
+  const dir = await fs.mkdtemp(path.join(await fs.realpath("/tmp"), "gh-stack-test-"));
 
   await $`git init ${dir}`.quiet();
   await $`git -C ${dir} config user.email "test@test.com"`.quiet();
@@ -56,9 +54,7 @@ describe("isGitRepo", () => {
   });
 
   test("returns false outside a git repo", async () => {
-    const nonGitDir = await fs.mkdtemp(
-      path.join(await fs.realpath("/tmp"), "non-git-")
-    );
+    const nonGitDir = await fs.mkdtemp(path.join(await fs.realpath("/tmp"), "non-git-"));
     process.chdir(nonGitDir);
     expect(await git.isGitRepo()).toBe(false);
     process.chdir(tmpDir);
@@ -94,7 +90,7 @@ describe("mergeBase", () => {
 
 describe("isAncestor", () => {
   test("returns true when ancestor", async () => {
-    const mainSha = (await $`git rev-parse main`.text()).trim();
+    const _mainSha = (await $`git rev-parse main`.text()).trim();
 
     await $`git checkout -b feature-1`.quiet();
     await Bun.write(`${tmpDir}/feature.txt`, "feature\n");
@@ -167,9 +163,7 @@ describe("rebaseOnto", () => {
 
 describe("sanitizeBranchForTag", () => {
   test("replaces special chars with underscores", () => {
-    expect(git.sanitizeBranchForTag("kiliman/feature-WEB-1234")).toBe(
-      "kiliman_feature-WEB-1234"
-    );
+    expect(git.sanitizeBranchForTag("kiliman/feature-WEB-1234")).toBe("kiliman_feature-WEB-1234");
   });
 
   test("keeps alphanumeric and hyphens", () => {

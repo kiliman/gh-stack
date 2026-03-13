@@ -137,7 +137,8 @@ undo
 ## Environment Variables
 
 ```
-GIT_STACK_YES=1       Skip all confirmations (same as --yes)
+GH_STACK_YES=1         Skip all confirmations (same as --yes)
+GH_STACK_NO_COLOR=1    Disable colored output
 ```
 
 ## How It Works
@@ -210,7 +211,7 @@ gh-stack is designed to be used by AI agents and CI pipelines:
 
 ```bash
 # Non-interactive mode
-export GIT_STACK_YES=1
+export GH_STACK_YES=1
 gh-stack sync
 gh-stack restack
 

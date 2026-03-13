@@ -320,8 +320,8 @@ METADATA
         }
 
 ENVIRONMENT
-    GIT_STACK_NO_COLOR    Disable colored output
-    GIT_STACK_VERBOSE     Always show verbose output
+    GH_STACK_NO_COLOR    Disable colored output
+    GH_STACK_VERBOSE     Always show verbose output
 
 EXIT CODES
     0    Success

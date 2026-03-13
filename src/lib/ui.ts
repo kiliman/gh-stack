@@ -10,7 +10,7 @@ let _autoYes = false;
 
 /**
  * Enable/disable auto-yes mode (skip all confirmations).
- * Set via --yes flag or GIT_STACK_YES=1 env var.
+ * Set via --yes flag or GH_STACK_YES=1 env var.
  */
 export function setAutoYes(enabled: boolean): void {
   _autoYes = enabled;

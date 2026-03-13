@@ -1,5 +1,11 @@
 #!/usr/bin/env bun
 // gh-stack — Unified stacked PR manager for squash-merge workflows
+
+// Map GH_STACK_NO_COLOR → NO_COLOR so picocolors (and other tools) respect it
+if (process.env.GH_STACK_NO_COLOR) {
+  process.env.NO_COLOR = "1";
+}
+
 import { ensureGitRepo } from "./lib/safety.ts";
 import { setAutoYes } from "./lib/ui.ts";
 
@@ -20,7 +26,7 @@ if (args.includes("--help") && !args[0]) {
 }
 
 // Global --yes flag: skip all interactive confirmations (for agents/CI)
-if (args.includes("--yes") || args.includes("-y") || process.env.GIT_STACK_YES === "1") {
+if (args.includes("--yes") || args.includes("-y") || process.env.GH_STACK_YES === "1") {
   setAutoYes(true);
 }
 
@@ -124,17 +130,17 @@ ${bold("GLOBAL OPTIONS")}
   --version, -V    Show version
 
 ${bold("ENVIRONMENT")}
-  GIT_STACK_YES=1       Same as --yes
-  GIT_STACK_NO_COLOR    Disable colored output
+  GH_STACK_YES=1       Same as --yes
+  GH_STACK_NO_COLOR    Disable colored output
 `);
 }
 
 function bold(s: string) {
-  return `\x1b[1m${s}\x1b[0m`;
+  return process.env.NO_COLOR ? s : `\x1b[1m${s}\x1b[0m`;
 }
 function green(s: string) {
-  return `\x1b[32m${s}\x1b[0m`;
+  return process.env.NO_COLOR ? s : `\x1b[32m${s}\x1b[0m`;
 }
 function dim(s: string) {
-  return `\x1b[2m${s}\x1b[0m`;
+  return process.env.NO_COLOR ? s : `\x1b[2m${s}\x1b[0m`;
 }

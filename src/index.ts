@@ -7,26 +7,28 @@ if (process.env.GH_STACK_NO_COLOR) {
 }
 
 import { ensureGitRepo } from "./lib/safety.ts";
+import { parseCliArgs } from "./lib/cli.ts";
 import { setAutoYes } from "./lib/ui.ts";
 
 const { version: VERSION } = await import("../package.json");
 
 const args = process.argv.slice(2);
-const command = args[0] || "show";
+const parsed = parseCliArgs(args, process.env);
+const command = parsed.command;
 
 // Handle global flags
-if (args.includes("--version") || args.includes("-V")) {
+if (parsed.showVersion) {
   console.log(`gh-stack v${VERSION}`);
   process.exit(0);
 }
 
-if (args.includes("--help") && !args[0]) {
+if (parsed.showGlobalHelp) {
   printHelp();
   process.exit(0);
 }
 
 // Global --yes flag: skip all interactive confirmations (for agents/CI)
-if (args.includes("--yes") || args.includes("-y") || process.env.GH_STACK_YES === "1") {
+if (parsed.autoYes) {
   setAutoYes(true);
 }
 
@@ -34,7 +36,7 @@ if (args.includes("--yes") || args.includes("-y") || process.env.GH_STACK_YES ==
 await ensureGitRepo();
 
 // Route to subcommand — strip global flags from command args
-const commandArgs = args.slice(1).filter((a) => a !== "--yes" && a !== "-y");
+const commandArgs = parsed.commandArgs;
 
 switch (command) {
   case "show":

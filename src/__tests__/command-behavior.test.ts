@@ -10,10 +10,12 @@ import {
 } from "./helpers.ts";
 import restack from "../commands/restack.ts";
 import sync from "../commands/sync.ts";
+import merge from "../commands/merge.ts";
 import show from "../commands/show.ts";
 import list from "../commands/list.ts";
 import { buildStackViz } from "../commands/update-prs.ts";
 import { STACK_SYNC_TAG_GLOB } from "../lib/git.ts";
+import { getCurrentBranch, getSha } from "./helpers.ts";
 
 let tmpDir: string;
 let originalCwd: string;
@@ -54,6 +56,21 @@ describe("command dry-run safety", () => {
 
     const tags = (await $`git tag -l ${STACK_SYNC_TAG_GLOB}`.text()).trim();
     expect(tags).toBe("");
+  });
+
+  test("merge --dry-run does not change refs or metadata", async () => {
+    const { shas } = await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr3");
+
+    await merge(["--dry-run"]);
+
+    const meta = await readMetadata(tmpDir);
+    expect(meta.snapshots).toBeUndefined();
+    expect(meta.archive).toBeUndefined();
+    expect(await getCurrentBranch(tmpDir)).toBe("pr3");
+    expect(await getSha(tmpDir, "pr1")).toBe(shas.pr1!);
+    expect(await getSha(tmpDir, "pr2")).toBe(shas.pr2!);
+    expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
   });
 });
 

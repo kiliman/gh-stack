@@ -42,6 +42,7 @@ export interface PrInfo {
   isDraft: boolean;
   url: string;
   updatedAt?: string;
+  headRefName?: string; // branch name
   statusCheckRollup?: CheckRun[];
 }
 

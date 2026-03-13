@@ -86,6 +86,7 @@ export async function getMyOpenPrs(): Promise<PrStatus[]> {
         isDraft: pr.isDraft || false,
         url: pr.url,
         updatedAt: pr.updatedAt,
+        headRefName: pr.headRefName,
         statusCheckRollup: checks,
         totalChecks: validChecks.length,
         passedChecks: passed,

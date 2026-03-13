@@ -202,7 +202,9 @@ async function outputJson(
       if (currentOnly) return pr.number === currentPrNumber;
       return true;
     })
-    .sort((a, b) => new Date(b.updatedAt || "").getTime() - new Date(a.updatedAt || "").getTime());
+    .toSorted(
+      (a, b) => new Date(b.updatedAt || "").getTime() - new Date(a.updatedAt || "").getTime(),
+    );
 
   const standalone = filteredStandalone.map((pr) => ({
     pr: pr.number,
@@ -315,7 +317,7 @@ async function outputHuman(
         if (currentOnly) return pr.number === currentPrNumber;
         return true;
       })
-      .sort(
+      .toSorted(
         (a, b) => new Date(b.updatedAt || "").getTime() - new Date(a.updatedAt || "").getTime(),
       );
 

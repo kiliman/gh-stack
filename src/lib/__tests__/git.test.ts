@@ -90,8 +90,6 @@ describe("mergeBase", () => {
 
 describe("isAncestor", () => {
   test("returns true when ancestor", async () => {
-    const _mainSha = (await $`git rev-parse main`.text()).trim();
-
     await $`git checkout -b feature-1`.quiet();
     await Bun.write(`${tmpDir}/feature.txt`, "feature\n");
     await $`git add .`.quiet();

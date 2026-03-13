@@ -53,7 +53,7 @@ This keeps all commits local (avoiding orphaned squash commits).
   console.log();
 
   // Show the merge plan: from top to bottom
-  const reversed = [...ordered].reverse();
+  const reversed = ordered.toReversed();
   console.log(`  ${pc.bold("Merge plan:")}`);
   for (let i = 0; i < reversed.length - 1; i++) {
     const child = reversed[i]!;

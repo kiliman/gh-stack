@@ -56,7 +56,6 @@ describe("tag-based rebase: core correctness", () => {
 
     // After pr1 changed, merge-base of pr2 and pr1 might be different
     await checkout(tmpDir, "pr2");
-    const _mbAfter = (await $`git merge-base pr2 pr1`.text()).trim();
 
     // The tag still points to the original merge-base
     const tagSha = await git.revParse(tagName);
@@ -138,7 +137,6 @@ describe("full chain rebase flow", () => {
     // Update pr1 with review feedback
     await checkout(tmpDir, "pr1");
     await makeCommit(tmpDir, "pr1-fix.txt", "fix\n", "pr1: review fix");
-    const _pr1NewSha = await getSha(tmpDir, "pr1");
 
     // Tag ALL branches before starting (like sync does)
     const branches = ["pr2", "pr3"];
@@ -305,8 +303,6 @@ describe("tag stability across rebases", () => {
     await checkout(tmpDir, "pr1");
     await git.rebase("origin/main");
 
-    // After pr1 rebased, merge-base of pr2 and pr1 has changed
-    const _newMb = (await $`git merge-base pr2 pr1`.text()).trim();
     // The tag should still point to the OLD merge-base
     const tagSha = await git.revParse("stack-sync-base-pr2");
     expect(tagSha).toBe(mbPr2);
@@ -438,12 +434,7 @@ describe("conflict handling", () => {
   test("rebaseOnto returns false when conflicts exist", async () => {
     // Create a scenario where rebase --onto will conflict
     await checkout(tmpDir, "main");
-    const _mainSha = await makeCommit(
-      tmpDir,
-      "conflict-file.txt",
-      "main version\n",
-      "main: add conflict file",
-    );
+    await makeCommit(tmpDir, "conflict-file.txt", "main version\n", "main: add conflict file");
 
     // Create branch from before the main commit
     await $`git -C ${tmpDir} checkout -b old-base HEAD~1`.quiet();

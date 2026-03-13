@@ -5,7 +5,6 @@ import { writeMetadata } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
 
 export default async function archive(args: string[]): Promise<void> {
-  const _listMode = args.includes("--list") || args.length === 0;
   const restoreIdx = args.indexOf("--restore");
   const restoreName = restoreIdx !== -1 ? args[restoreIdx + 1] : undefined;
 

@@ -91,7 +91,6 @@ OPTIONS
   let parent = parentFlag;
   if (!parent) {
     // Default to top of stack
-    const _topBranch = getTopOfStack(stack);
     const ordered = getOrderedBranches(stack);
 
     if (ordered.length === 0) {

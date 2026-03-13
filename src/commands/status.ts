@@ -229,6 +229,18 @@ async function outputJson(
     },
   }));
 
+  // --current mode: return a single unwrapped object (stack or standalone PR)
+  if (currentOnly) {
+    if (stacks.length > 0) {
+      console.log(JSON.stringify(stacks[0], null, 2));
+    } else if (standalone.length > 0) {
+      console.log(JSON.stringify(standalone[0], null, 2));
+    } else {
+      console.log(JSON.stringify(null));
+    }
+    return;
+  }
+
   console.log(JSON.stringify({ stacks, standalone }, null, 2));
 }
 

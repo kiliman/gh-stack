@@ -1,7 +1,14 @@
 {
   "name": "gh-stack",
-  "version": "2.0.0",
-  "description": "Unified stacked PR manager for squash-merge workflows",
+  "version": "0.1.0",
+  "description": "Stacked PR manager for squash-merge workflows",
+  "author": "Kiliman <kiliman@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kiliman/gh-stack"
+  },
+  "keywords": ["git", "github", "stacked-prs", "squash-merge", "cli"],
   "module": "src/index.ts",
   "type": "module",
   "bin": {

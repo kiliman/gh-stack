@@ -4,7 +4,9 @@
   "description": "Unified stacked PR manager for squash-merge workflows",
   "module": "src/index.ts",
   "type": "module",
-  "private": true,
+  "bin": {
+    "gh-stack": "src/index.ts"
+  },
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build --compile src/index.ts --outfile dist/gh-stack",

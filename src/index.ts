@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // git-stack — Unified stacked PR manager for squash-merge workflows
 import { ensureGitRepo } from "./lib/safety.ts";
+import { setAutoYes } from "./lib/ui.ts";
 
 const VERSION = "2.0.0";
 
@@ -18,11 +19,16 @@ if (args.includes("--help") && !args[0]) {
   process.exit(0);
 }
 
+// Global --yes flag: skip all interactive confirmations (for agents/CI)
+if (args.includes("--yes") || args.includes("-y") || process.env.GIT_STACK_YES === "1") {
+  setAutoYes(true);
+}
+
 // Ensure we're in a git repo for all commands
 await ensureGitRepo();
 
-// Route to subcommand
-const commandArgs = args.slice(1);
+// Route to subcommand — strip global flags from command args
+const commandArgs = args.slice(1).filter((a) => a !== "--yes" && a !== "-y");
 
 switch (command) {
   case "show":
@@ -43,6 +49,11 @@ switch (command) {
 
   case "switch":
     await (await import("./commands/switch.ts")).default(commandArgs);
+    break;
+
+  case "list":
+  case "ls":
+    await (await import("./commands/list.ts")).default(commandArgs);
     break;
 
   case "restack":
@@ -94,6 +105,7 @@ ${bold("USAGE")}
 
 ${bold("COMMANDS")}
   ${green("show")}           Display current stack tree ${dim("(default)")}
+  ${green("list")}           List branches with numbers ${dim("(alias: ls)")}
   ${green("init")}           Create a new stack
   ${green("add")}            Add a branch to the current stack
   ${green("remove")}         Remove a branch from the stack
@@ -106,9 +118,14 @@ ${bold("COMMANDS")}
   ${green("undo")}           Restore from last snapshot
   ${green("archive")}        Manage archived stacks
 
-${bold("OPTIONS")}
+${bold("GLOBAL OPTIONS")}
+  --yes, -y        Skip confirmations ${dim("(for agents/CI)")}
   --help           Show help
   --version, -V    Show version
+
+${bold("ENVIRONMENT")}
+  GIT_STACK_YES=1       Same as --yes
+  GIT_STACK_NO_COLOR    Disable colored output
 `);
 }
 

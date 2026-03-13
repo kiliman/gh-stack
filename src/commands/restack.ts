@@ -35,9 +35,15 @@ USAGE
   git-stack restack [options]
 
 OPTIONS
+  --yes, -y   Skip confirmations (auto-accept all rebases and pushes)
   --resume    Resume after resolving rebase conflicts
   --dry-run   Show what would happen without executing
   --verbose   Show diagnostic info (tag vs merge-base)
+
+EXAMPLES
+  git-stack restack              Interactive (prompts before each rebase)
+  git-stack restack --yes        Non-interactive (for agents/CI)
+  git-stack restack --resume     Continue after resolving conflicts
 
 ALIASES
   git-stack rebase

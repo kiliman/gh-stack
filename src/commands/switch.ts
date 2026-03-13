@@ -20,8 +20,16 @@ export default async function switchCmd(args: string[]): Promise<void> {
 git-stack switch — Switch branch or stack
 
 USAGE
-  git-stack switch [<number>]    Switch to branch by position
-  git-stack switch --stack       Switch between stacks
+  git-stack switch <number>      Switch to branch by position (non-interactive)
+  git-stack switch               Interactive branch picker (arrow keys)
+  git-stack switch --stack       Switch between stacks (interactive)
+
+EXAMPLES
+  git-stack switch 1             Jump to first branch in stack (base)
+  git-stack switch 2             Jump to second branch in stack
+
+TIP
+  Use 'git-stack list' to see branch numbers.
 `);
     return;
   }

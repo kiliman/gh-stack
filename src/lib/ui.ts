@@ -4,6 +4,22 @@ import pc from "picocolors";
 import type { Stack, Branch, StackMetadata } from "../types.ts";
 import { getOrderedBranches } from "./metadata.ts";
 
+// ── Auto-yes mode (for agents/CI) ──
+
+let _autoYes = false;
+
+/**
+ * Enable/disable auto-yes mode (skip all confirmations).
+ * Set via --yes flag or GIT_STACK_YES=1 env var.
+ */
+export function setAutoYes(enabled: boolean): void {
+  _autoYes = enabled;
+}
+
+export function isAutoYes(): boolean {
+  return _autoYes;
+}
+
 /**
  * Render a stack as a tree with branch numbers, PR info, and current marker.
  */
@@ -84,6 +100,12 @@ export async function selectBranch(
     return null;
   }
 
+  // In auto-yes mode, can't select — return null (caller should use explicit args)
+  if (_autoYes) {
+    p.log.warn("Interactive selection skipped (--yes mode). Use explicit arguments.");
+    return null;
+  }
+
   const options = ordered.map((name) => {
     const branch = stack.branches[name]!;
     const prNum = branch.pr ? `#${branch.pr}` : "";
@@ -119,6 +141,12 @@ export async function selectStack(
     return null;
   }
 
+  // In auto-yes mode, can't select — return null
+  if (_autoYes) {
+    p.log.warn("Interactive selection skipped (--yes mode). Use explicit arguments.");
+    return null;
+  }
+
   const options = stackNames.map((name) => {
     const stack = meta.stacks[name]!;
     const branchCount = Object.keys(stack.branches).length;
@@ -146,6 +174,12 @@ export async function selectParent(
   stack: Stack | null,
   currentBranch: string
 ): Promise<string | null> {
+  // In auto-yes mode, default to "main"
+  if (_autoYes) {
+    p.log.info("Auto-selecting parent: main (--yes mode)");
+    return "main";
+  }
+
   const options: { value: string; label: string; hint?: string }[] = [
     { value: "main", label: "main", hint: "Base branch" },
   ];
@@ -177,8 +211,14 @@ export async function selectParent(
 
 /**
  * Confirm a destructive action.
+ * In auto-yes mode, returns true immediately without prompting.
  */
 export async function confirmAction(message: string): Promise<boolean> {
+  if (_autoYes) {
+    p.log.info(`${message} ${pc.dim("(auto-yes)")}`);
+    return true;
+  }
+
   const result = await p.confirm({ message });
   if (p.isCancel(result)) return false;
   return result;

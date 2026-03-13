@@ -3,7 +3,7 @@
 import { ensureGitRepo } from "./lib/safety.ts";
 import { setAutoYes } from "./lib/ui.ts";
 
-const VERSION = "0.1.0";
+const { version: VERSION } = await import("../package.json");
 
 const args = process.argv.slice(2);
 const command = args[0] || "show";

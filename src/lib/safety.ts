@@ -1,7 +1,7 @@
 // Pre-flight safety checks
 import * as git from "./git.ts";
 import { metadataExists, readMetadata, findStackForBranch } from "./metadata.ts";
-import type { StackMetadata } from "../types.ts";
+import type { StackMetadata, Stack } from "../types.ts";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 
@@ -95,4 +95,112 @@ export function ensureNotMain(branch: string): void {
     p.cancel(`${pc.red("REFUSED:")} Cannot force-push ${pc.red(branch)}`);
     process.exit(1);
   }
+}
+
+/**
+ * Validate stack metadata before destructive operations.
+ */
+export async function validateStack(meta: StackMetadata, stackName: string): Promise<string[]> {
+  const stack = meta.stacks[stackName];
+  if (!stack) return [`Stack "${stackName}" not found`];
+
+  const branchNames = Object.keys(stack.branches);
+  const errors: string[] = [];
+
+  for (const branchName of branchNames) {
+    const branch = stack.branches[branchName]!;
+
+    if (!(await git.localBranchExists(branchName))) {
+      errors.push(`Branch "${branchName}" does not exist locally`);
+    }
+
+    if (branch.parent === branchName) {
+      errors.push(`Branch "${branchName}" cannot be its own parent`);
+    }
+
+    if (branch.parent !== "main" && branch.parent !== "master" && !stack.branches[branch.parent]) {
+      errors.push(`Branch "${branchName}" has unknown parent "${branch.parent}"`);
+    }
+  }
+
+  errors.push(...validateStackGraph(stack));
+  return errors;
+}
+
+export async function ensureValidStack(meta: StackMetadata, stackName: string): Promise<void> {
+  const errors = await validateStack(meta, stackName);
+  if (errors.length === 0) return;
+
+  p.cancel(`Invalid stack metadata for ${pc.yellow(stackName)}`);
+  console.log();
+  for (const error of errors) {
+    console.log(`  ${pc.red("•")} ${error}`);
+  }
+  console.log();
+  console.log(
+    pc.dim("Fix .git/gh-stack-metadata.json or repair the local branches before retrying."),
+  );
+  process.exit(1);
+}
+
+function validateStackGraph(stack: Stack): string[] {
+  const branchNames = Object.keys(stack.branches);
+  if (branchNames.length === 0) return [];
+
+  const errors: string[] = [];
+  const roots = branchNames.filter((branchName) => {
+    const parent = stack.branches[branchName]!.parent;
+    return parent === "main" || parent === "master";
+  });
+
+  if (roots.length === 0) {
+    errors.push("Stack has no root branch with parent main/master");
+  }
+  if (roots.length > 1) {
+    errors.push(`Stack must have exactly one root branch; found ${roots.length}`);
+  }
+
+  const childrenByParent = new Map<string, string[]>();
+  for (const [branchName, branch] of Object.entries(stack.branches)) {
+    const siblings = childrenByParent.get(branch.parent) ?? [];
+    siblings.push(branchName);
+    childrenByParent.set(branch.parent, siblings);
+  }
+
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+
+  function walk(branchName: string) {
+    if (visiting.has(branchName)) {
+      errors.push(`Cycle detected involving "${branchName}"`);
+      return;
+    }
+    if (visited.has(branchName)) return;
+
+    visiting.add(branchName);
+    for (const child of childrenByParent.get(branchName) ?? []) {
+      walk(child);
+    }
+    visiting.delete(branchName);
+    visited.add(branchName);
+  }
+
+  for (const root of roots) {
+    walk(root);
+  }
+
+  // If the graph is malformed, walk any remaining nodes so we can report
+  // cycles/unreachable branches instead of stopping at the root error.
+  for (const branchName of branchNames) {
+    if (!visited.has(branchName)) {
+      walk(branchName);
+    }
+  }
+
+  if (visited.size !== branchNames.length) {
+    const unreachable = branchNames.filter((branchName) => !visited.has(branchName));
+    errors.push(`Unreachable or cyclic branches detected: ${unreachable.join(", ")}`);
+  }
+
+  return errors;
 }

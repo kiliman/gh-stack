@@ -47,7 +47,7 @@ describe("tag-based rebase: core correctness", () => {
     const mbBefore = (await $`git merge-base pr2 pr1`.text()).trim();
 
     // Create tag for pr2's base
-    const tagName = `stack-sync-base-pr2`;
+    const tagName = git.tempBaseTagName("pr2");
     await git.createTag(tagName, mbBefore);
 
     // Now simulate rebasing pr1 (which changes its history)
@@ -81,10 +81,10 @@ describe("tag-based rebase: core correctness", () => {
     // Before rebasing pr2, tag the merge-base while history is intact
     await checkout(tmpDir, "pr2");
     const mb = (await $`git merge-base pr2 pr1`.text()).trim();
-    await git.createTag("stack-sync-base-pr2", mb);
+    await git.createTag(git.tempBaseTagName("pr2"), mb);
 
     // Now rebase pr2 onto pr1 using the tag
-    const success = await git.rebaseOnto("pr1", "stack-sync-base-pr2", "pr2");
+    const success = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(success).toBe(true);
 
     // Verify: pr1 is now an ancestor of pr2
@@ -110,14 +110,14 @@ describe("tag-based rebase: core correctness", () => {
 
     // Tag pr2's divergence point
     const mb = (await $`git merge-base pr2 pr1`.text()).trim();
-    await git.createTag("stack-sync-base-pr2", mb);
+    await git.createTag(git.tempBaseTagName("pr2"), mb);
 
     // Update pr1 with a new commit
     await checkout(tmpDir, "pr1");
     await makeCommit(tmpDir, "pr1-new.txt", "new\n", "pr1: new commit");
 
     // Rebase pr2 using tag
-    const success = await git.rebaseOnto("pr1", "stack-sync-base-pr2", "pr2");
+    const success = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(success).toBe(true);
 
     // Count pr2's unique commits after rebase — should still be 1
@@ -143,16 +143,16 @@ describe("full chain rebase flow", () => {
     for (const branch of branches) {
       const parent = branch === "pr2" ? "pr1" : "pr2";
       const mb = (await $`git merge-base ${branch} ${parent}`.text()).trim();
-      await git.createTag(`stack-sync-base-${branch}`, mb);
+      await git.createTag(git.tempBaseTagName(branch), mb);
     }
 
     // Rebase pr2 onto updated pr1
-    const ok1 = await git.rebaseOnto("pr1", "stack-sync-base-pr2", "pr2");
+    const ok1 = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(ok1).toBe(true);
     expect(await isAncestor(tmpDir, "pr1", "pr2")).toBe(true);
 
     // Rebase pr3 onto updated pr2
-    const ok2 = await git.rebaseOnto("pr2", "stack-sync-base-pr3", "pr3");
+    const ok2 = await git.rebaseOnto("pr2", git.tempBaseTagName("pr3"), "pr3");
     expect(ok2).toBe(true);
     expect(await isAncestor(tmpDir, "pr2", "pr3")).toBe(true);
 
@@ -190,13 +190,13 @@ describe("full chain rebase flow", () => {
 
     // Tag pr2b and pr3
     const mb2b = (await $`git merge-base pr2b pr1`.text()).trim();
-    await git.createTag("stack-sync-base-pr2b", mb2b);
+    await git.createTag(git.tempBaseTagName("pr2b"), mb2b);
     const mb3 = (await $`git merge-base pr3 pr2b`.text()).trim();
-    await git.createTag("stack-sync-base-pr3", mb3);
+    await git.createTag(git.tempBaseTagName("pr3"), mb3);
 
     // Rebase only pr2b subtree (pr2b and pr3)
-    await git.rebaseOnto("pr1", "stack-sync-base-pr2b", "pr2b");
-    await git.rebaseOnto("pr2b", "stack-sync-base-pr3", "pr3");
+    await git.rebaseOnto("pr1", git.tempBaseTagName("pr2b"), "pr2b");
+    await git.rebaseOnto("pr2b", git.tempBaseTagName("pr3"), "pr3");
 
     // pr2b and pr3 should now be on updated pr1
     expect(await isAncestor(tmpDir, "pr1", "pr2b")).toBe(true);
@@ -232,7 +232,7 @@ describe("sync flow: rebase base onto main then restack", () => {
     for (const branch of ordered) {
       const parent = branch === "pr1" ? "origin/main" : ordered[ordered.indexOf(branch) - 1]!;
       const mb = (await $`git merge-base ${branch} ${parent}`.text()).trim();
-      await git.createTag(`stack-sync-base-${branch}`, mb);
+      await git.createTag(git.tempBaseTagName(branch), mb);
     }
 
     // Step 1: Rebase pr1 onto origin/main
@@ -242,12 +242,12 @@ describe("sync flow: rebase base onto main then restack", () => {
     expect(await isAncestor(tmpDir, "origin/main", "pr1")).toBe(true);
 
     // Step 2: Restack pr2 onto updated pr1 (using tag)
-    const ok2 = await git.rebaseOnto("pr1", "stack-sync-base-pr2", "pr2");
+    const ok2 = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(ok2).toBe(true);
     expect(await isAncestor(tmpDir, "pr1", "pr2")).toBe(true);
 
     // Step 3: Restack pr3 onto updated pr2 (using tag)
-    const ok3 = await git.rebaseOnto("pr2", "stack-sync-base-pr3", "pr3");
+    const ok3 = await git.rebaseOnto("pr2", git.tempBaseTagName("pr3"), "pr3");
     expect(ok3).toBe(true);
     expect(await isAncestor(tmpDir, "pr2", "pr3")).toBe(true);
 
@@ -291,24 +291,24 @@ describe("tag stability across rebases", () => {
 
     // Tag ALL before any rebasing
     const mbPr1 = (await $`git merge-base pr1 origin/main`.text()).trim();
-    await git.createTag("stack-sync-base-pr1", mbPr1);
+    await git.createTag(git.tempBaseTagName("pr1"), mbPr1);
 
     const mbPr2 = (await $`git merge-base pr2 pr1`.text()).trim();
-    await git.createTag("stack-sync-base-pr2", mbPr2);
+    await git.createTag(git.tempBaseTagName("pr2"), mbPr2);
 
     const mbPr3 = (await $`git merge-base pr3 pr2`.text()).trim();
-    await git.createTag("stack-sync-base-pr3", mbPr3);
+    await git.createTag(git.tempBaseTagName("pr3"), mbPr3);
 
     // Rebase pr1 onto origin/main — this changes pr1's history!
     await checkout(tmpDir, "pr1");
     await git.rebase("origin/main");
 
     // The tag should still point to the OLD merge-base
-    const tagSha = await git.revParse("stack-sync-base-pr2");
+    const tagSha = await git.revParse(git.tempBaseTagName("pr2"));
     expect(tagSha).toBe(mbPr2);
 
     // Now rebase pr2 using the tag (not the wrong new merge-base)
-    const ok = await git.rebaseOnto("pr1", "stack-sync-base-pr2", "pr2");
+    const ok = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(ok).toBe(true);
 
     // Verify only pr2's commits moved
@@ -476,14 +476,14 @@ describe("deep stacks", () => {
       const branch = `b${i}`;
       const parent = `b${i - 1}`;
       const mb = (await $`git merge-base ${branch} ${parent}`.text()).trim();
-      await git.createTag(`stack-sync-base-${branch}`, mb);
+      await git.createTag(git.tempBaseTagName(branch), mb);
     }
 
     // Rebase chain: b2 → b3 → b4 → b5
     for (let i = 2; i <= 5; i++) {
       const branch = `b${i}`;
       const parent = `b${i - 1}`;
-      const ok = await git.rebaseOnto(parent, `stack-sync-base-${branch}`, branch);
+      const ok = await git.rebaseOnto(parent, git.tempBaseTagName(branch), branch);
       expect(ok).toBe(true);
     }
 
@@ -564,19 +564,19 @@ describe("tag cleanup", () => {
   test("deleteTagsMatching removes only matching tags", async () => {
     const sha = await getSha(tmpDir, "HEAD");
 
-    await git.createTag("stack-sync-base-pr1", sha);
-    await git.createTag("stack-sync-base-pr2", sha);
+    await git.createTag(git.tempBaseTagName("pr1"), sha);
+    await git.createTag(git.tempBaseTagName("pr2"), sha);
     await git.createTag("keep-this-tag", sha);
 
-    await git.deleteTagsMatching("stack-sync-*");
+    await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
-    expect(await git.tagExists("stack-sync-base-pr1")).toBe(false);
-    expect(await git.tagExists("stack-sync-base-pr2")).toBe(false);
+    expect(await git.tagExists(git.tempBaseTagName("pr1"))).toBe(false);
+    expect(await git.tagExists(git.tempBaseTagName("pr2"))).toBe(false);
     expect(await git.tagExists("keep-this-tag")).toBe(true);
   });
 
   test("deleteTagsMatching is safe when no tags exist", async () => {
     // Should not throw
-    await git.deleteTagsMatching("stack-sync-*");
+    await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
   });
 });

@@ -10,7 +10,12 @@ import {
   loadRestackState,
   clearRestackState,
 } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCleanWorkingTree, ensureNotMain } from "../lib/safety.ts";
+import {
+  ensureMetadata,
+  ensureCleanWorkingTree,
+  ensureNotMain,
+  ensureValidStack,
+} from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
@@ -72,7 +77,7 @@ ALIASES
   }
 
   // Cleanup tags
-  await git.deleteTagsMatching("stack-sync-*");
+  await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
   p.outro(pc.green("Stack Restack Complete!"));
 }
@@ -142,7 +147,7 @@ async function handleResume(
       const parent = stack.branches[branch]?.parent;
       if (!parent) continue;
 
-      const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
+      const tagName = git.tempBaseTagName(branch);
       if (await git.tagExists(tagName)) {
         const tagSha = await git.revParse(tagName);
         console.log(
@@ -183,6 +188,7 @@ async function handleFreshRestack(
   }
 
   const stack = meta.stacks[stackName]!;
+  await ensureValidStack(meta, stackName);
 
   // Check for stale tags from previous runs
   await handleStaleTags();
@@ -247,7 +253,7 @@ async function handleFreshRestack(
 
       const mb = await git.mergeBase(branch, parent);
       if (mb) {
-        const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
+        const tagName = git.tempBaseTagName(branch);
         await git.createTag(tagName, mb);
         console.log(
           `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,
@@ -319,7 +325,7 @@ async function processChain(
     });
 
     // Use temporary tag as stable base reference
-    const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
+    const tagName = git.tempBaseTagName(branch);
     let success: boolean;
 
     if (await git.tagExists(tagName)) {
@@ -433,11 +439,11 @@ async function promptPush(branch: string): Promise<void> {
 async function handleStaleTags(): Promise<void> {
   try {
     const { $ } = await import("bun");
-    const result = await $`git tag -l "stack-sync-*"`.text();
+    const result = await $`git tag -l ${git.STACK_SYNC_TAG_GLOB}`.text();
     const tags = result.trim();
     if (!tags) return;
 
-    p.log.warn("Found stale stack-sync-* tags from a previous run");
+    p.log.warn(`Found stale ${git.STACK_SYNC_TAG_GLOB} tags from a previous run`);
     console.log();
 
     const action = await p.select({
@@ -462,7 +468,7 @@ async function handleStaleTags(): Promise<void> {
 
     if (action === "clean") {
       p.log.info("Cleaning up stale tags...");
-      await git.deleteTagsMatching("stack-sync-*");
+      await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
       p.log.success("Tags cleaned");
     }
 

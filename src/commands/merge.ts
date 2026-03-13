@@ -4,7 +4,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCleanWorkingTree } from "../lib/safety.ts";
+import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { closePr } from "../lib/github.ts";
 import { confirmAction } from "../lib/ui.ts";
@@ -39,6 +39,7 @@ This keeps all commits local (avoiding orphaned squash commits).
   }
 
   const stack = meta.stacks[stackName]!;
+  await ensureValidStack(meta, stackName);
   const ordered = getOrderedBranches(stack);
 
   if (ordered.length <= 1) {

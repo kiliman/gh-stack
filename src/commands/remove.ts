@@ -2,7 +2,7 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { removeBranchFromStack, getChildren } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCurrentStack } from "../lib/safety.ts";
+import { ensureMetadata, ensureCurrentStack, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { selectBranch } from "../lib/ui.ts";
 import * as git from "../lib/git.ts";
@@ -23,6 +23,7 @@ If no branch is specified, shows interactive selector.
 
   const meta = await ensureMetadata();
   const stackName = ensureCurrentStack(meta);
+  await ensureValidStack(meta, stackName);
   const stack = meta.stacks[stackName]!;
   const currentBranch = await git.currentBranch();
 

@@ -1,5 +1,9 @@
 // Git command helpers using Bun's shell API
 import { $ } from "bun";
+import { createHash } from "node:crypto";
+
+export const STACK_SYNC_TAG_PREFIX = "stack-sync-base";
+export const STACK_SYNC_TAG_GLOB = `${STACK_SYNC_TAG_PREFIX}-*`;
 
 /**
  * Get the current branch name.
@@ -142,6 +146,16 @@ export async function remoteBranchExists(branch: string): Promise<boolean> {
 }
 
 /**
+ * Check if a branch exists locally.
+ */
+export async function localBranchExists(branch: string): Promise<boolean> {
+  const { exitCode } = await $`git show-ref --verify --quiet refs/heads/${branch}`
+    .nothrow()
+    .quiet();
+  return exitCode === 0;
+}
+
+/**
  * Create a temporary tag at a specific commit.
  */
 export async function createTag(name: string, commit: string): Promise<void> {
@@ -230,8 +244,16 @@ export async function commitCount(from: string, to: string): Promise<number> {
 }
 
 /**
- * Sanitize a branch name for use in tag names.
+ * Build a deterministic temp tag name for a branch.
+ * Includes a readable slug plus a stable hash to avoid collisions.
  */
-export function sanitizeBranchForTag(branch: string): string {
-  return branch.replace(/[^a-zA-Z0-9-]/g, "_");
+export function tempBaseTagName(branch: string): string {
+  const slug =
+    branch
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 24) || "branch";
+  const hash = createHash("sha256").update(branch).digest("hex").slice(0, 10);
+  return `${STACK_SYNC_TAG_PREFIX}-${slug}-${hash}`;
 }

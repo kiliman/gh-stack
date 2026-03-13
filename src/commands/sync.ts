@@ -3,7 +3,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches, saveRestackState } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCleanWorkingTree } from "../lib/safety.ts";
+import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
 
@@ -36,6 +36,7 @@ with the base branch included.
   }
 
   const stack = meta.stacks[stackName]!;
+  await ensureValidStack(meta, stackName);
   const ordered = getOrderedBranches(stack);
 
   if (ordered.length === 0) {
@@ -98,7 +99,7 @@ with the base branch included.
     const parentRef = parent === "main" ? "origin/main" : parent;
     const mb = await git.mergeBase(branch, parentRef);
     if (mb) {
-      const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
+      const tagName = git.tempBaseTagName(branch);
       await git.createTag(tagName, mb);
       console.log(
         `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,

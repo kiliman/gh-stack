@@ -13,6 +13,7 @@ import sync from "../commands/sync.ts";
 import show from "../commands/show.ts";
 import list from "../commands/list.ts";
 import { buildStackViz } from "../commands/update-prs.ts";
+import { STACK_SYNC_TAG_GLOB } from "../lib/git.ts";
 
 let tmpDir: string;
 let originalCwd: string;
@@ -38,7 +39,7 @@ describe("command dry-run safety", () => {
     const meta = await readMetadata(tmpDir);
     expect(meta.snapshots).toBeUndefined();
 
-    const tags = (await $`git tag -l ${"stack-sync-*"}`.text()).trim();
+    const tags = (await $`git tag -l ${STACK_SYNC_TAG_GLOB}`.text()).trim();
     expect(tags).toBe("");
   });
 
@@ -51,7 +52,7 @@ describe("command dry-run safety", () => {
     const meta = await readMetadata(tmpDir);
     expect(meta.snapshots).toBeUndefined();
 
-    const tags = (await $`git tag -l ${"stack-sync-*"}`.text()).trim();
+    const tags = (await $`git tag -l ${STACK_SYNC_TAG_GLOB}`.text()).trim();
     expect(tags).toBe("");
   });
 });

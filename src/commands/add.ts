@@ -3,7 +3,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { addBranchToStack, getTopOfStack, getOrderedBranches } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCurrentStack } from "../lib/safety.ts";
+import { ensureMetadata, ensureCurrentStack, ensureValidStack } from "../lib/safety.ts";
 import { getPrNumber } from "../lib/github.ts";
 import { isAutoYes, selectParent } from "../lib/ui.ts";
 import type { Branch } from "../types.ts";
@@ -48,6 +48,7 @@ OPTIONS
 
   const meta = await ensureMetadata();
   const stackName = ensureCurrentStack(meta);
+  await ensureValidStack(meta, stackName);
   const stack = meta.stacks[stackName]!;
 
   p.intro(pc.cyan(`Add branch to ${pc.yellow(stackName)}`));

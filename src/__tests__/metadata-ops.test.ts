@@ -16,6 +16,7 @@ import {
   removeBranchFromStack,
   addBranchToStack,
 } from "../lib/metadata.ts";
+import { validateStack } from "../lib/safety.ts";
 
 let tmpDir: string;
 let originalCwd: string;
@@ -264,6 +265,49 @@ describe("multiple stacks", () => {
     const result = await readMetadata(tmpDir);
     expect(Object.keys(result.stacks["stack-a"]!.branches)).toContain("pr1b");
     expect(Object.keys(result.stacks["stack-b"]!.branches)).toEqual(["pr2"]);
+  });
+});
+
+describe("validateStack", () => {
+  test("accepts a valid linear stack", async () => {
+    const { meta } = await createLinearStack(tmpDir);
+    expect(await validateStack(meta, "test-stack")).toEqual([]);
+  });
+
+  test("rejects missing local branches", async () => {
+    const { meta } = await createLinearStack(tmpDir);
+    delete meta.stacks["test-stack"]!.branches["pr2"];
+    meta.stacks["test-stack"]!.branches["missing-branch"] = { parent: "pr1", pr: 99 };
+
+    const errors = await validateStack(meta, "test-stack");
+    expect(
+      errors.some((error) => error.includes('Branch "missing-branch" does not exist locally')),
+    ).toBe(true);
+  });
+
+  test("rejects unknown parents", async () => {
+    const { meta } = await createLinearStack(tmpDir);
+    meta.stacks["test-stack"]!.branches["pr3"]!.parent = "ghost-parent";
+
+    const errors = await validateStack(meta, "test-stack");
+    expect(errors.some((error) => error.includes('unknown parent "ghost-parent"'))).toBe(true);
+  });
+
+  test("rejects multiple roots", async () => {
+    const { meta } = await createLinearStack(tmpDir);
+    meta.stacks["test-stack"]!.branches["pr2"]!.parent = "main";
+
+    const errors = await validateStack(meta, "test-stack");
+    expect(errors).toContain("Stack must have exactly one root branch; found 2");
+  });
+
+  test("rejects cycles", async () => {
+    const { meta } = await createLinearStack(tmpDir);
+    meta.stacks["test-stack"]!.branches["pr1"]!.parent = "pr3";
+
+    const errors = await validateStack(meta, "test-stack");
+    expect(errors.some((error) => error.includes("no root branch"))).toBe(true);
+    expect(errors.some((error) => error.includes("Cycle detected"))).toBe(true);
   });
 });
 

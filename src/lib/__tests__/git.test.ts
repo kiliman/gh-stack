@@ -118,14 +118,16 @@ describe("tags", () => {
 
   test("delete tags matching pattern", async () => {
     const sha = (await $`git rev-parse HEAD`.text()).trim();
-    await git.createTag("stack-sync-1", sha);
-    await git.createTag("stack-sync-2", sha);
+    const tag1 = git.tempBaseTagName("feature/one");
+    const tag2 = git.tempBaseTagName("feature/two");
+    await git.createTag(tag1, sha);
+    await git.createTag(tag2, sha);
     await git.createTag("other-tag", sha);
 
-    await git.deleteTagsMatching("stack-sync-*");
+    await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
-    expect(await git.tagExists("stack-sync-1")).toBe(false);
-    expect(await git.tagExists("stack-sync-2")).toBe(false);
+    expect(await git.tagExists(tag1)).toBe(false);
+    expect(await git.tagExists(tag2)).toBe(false);
     expect(await git.tagExists("other-tag")).toBe(true);
   });
 });
@@ -159,12 +161,18 @@ describe("rebaseOnto", () => {
   });
 });
 
-describe("sanitizeBranchForTag", () => {
-  test("replaces special chars with underscores", () => {
-    expect(git.sanitizeBranchForTag("kiliman/feature-WEB-1234")).toBe("kiliman_feature-WEB-1234");
+describe("tempBaseTagName", () => {
+  test("includes a readable slug", () => {
+    expect(git.tempBaseTagName("kiliman/feature-WEB-1234")).toContain(
+      "stack-sync-base-kiliman-feature-web-123",
+    );
   });
 
-  test("keeps alphanumeric and hyphens", () => {
-    expect(git.sanitizeBranchForTag("simple-branch")).toBe("simple-branch");
+  test("is deterministic for the same branch", () => {
+    expect(git.tempBaseTagName("simple-branch")).toBe(git.tempBaseTagName("simple-branch"));
+  });
+
+  test("avoids collisions for similarly normalized names", () => {
+    expect(git.tempBaseTagName("foo/bar")).not.toBe(git.tempBaseTagName("foo_bar"));
   });
 });

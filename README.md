@@ -47,23 +47,24 @@ gh-stack status
 ### Stack Management
 
 ```
-init [--name <name>] [--description <desc>]
+init [--name <name>] [--description <desc>] [--parent <branch>]
     Create a new stack and add the current branch as the first entry.
 
-add [<branch>] [--parent <branch>] [--create] [--description <desc>]
+add [<branch>] [--parent <branch>] [--create <branch>] [--description <desc>]
     Add a branch to the current stack. Defaults to the current branch.
-    --create makes a new branch off the top of stack first.
+    --create <branch> makes a new branch off the top of stack first.
 
-remove <branch>
+remove [<branch>]
     Remove a branch from the stack and re-parent its children.
+    If omitted, an interactive selector is shown.
 ```
 
 ### Navigation
 
 ```
 show
-    Display the current stack as a tree with PR numbers, titles,
-    review status, and CI state. This is the default command.
+    Display the current stack as a tree with branch numbers,
+    PR numbers, and descriptions. This is the default command.
 
 list
     List branches with position numbers. Lightweight output for
@@ -104,6 +105,7 @@ merge [--dry-run]
     Squash-merge the stack top-down locally (PR3 -> PR2 -> PR1),
     then optionally rebase onto main. Keeps all commits local to
     avoid orphaned squash commits from GitHub-only merges.
+    Can also close intermediate PRs and archives the stack on completion.
 
 update-prs
     Update all PR descriptions with a stack visualization:
@@ -119,11 +121,23 @@ update-prs
 ### Maintenance
 
 ```
-archive [--list] [--restore <name>]
-    Manage archived stacks.
+archive [--restore <name>]
+    List archived stacks by default, or restore one by name.
 
 undo
     Restore the last snapshot taken before a destructive operation.
+```
+
+## Not Implemented Yet
+
+These are still intended, but not shipped in `v0.1.0`:
+
+```text
+split
+    Guided helper for splitting a branch/PR into two and updating stack metadata.
+
+insert
+    Insert a branch into the middle of an existing stack and re-parent the chain.
 ```
 
 ## Global Options

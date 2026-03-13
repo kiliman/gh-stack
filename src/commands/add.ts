@@ -5,7 +5,7 @@ import * as git from "../lib/git.ts";
 import { addBranchToStack, getTopOfStack, getOrderedBranches } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCurrentStack } from "../lib/safety.ts";
 import { getPrNumber } from "../lib/github.ts";
-import { selectParent } from "../lib/ui.ts";
+import { isAutoYes, selectParent } from "../lib/ui.ts";
 import type { Branch } from "../types.ts";
 
 export default async function add(args: string[]): Promise<void> {
@@ -95,6 +95,8 @@ OPTIONS
 
     if (ordered.length === 0) {
       parent = "main";
+    } else if (isAutoYes()) {
+      parent = getTopOfStack(stack) ?? "main";
     } else {
       parent = (await selectParent(stack, branchToAdd)) ?? undefined;
       if (!parent) {

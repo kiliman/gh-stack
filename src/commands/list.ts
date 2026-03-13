@@ -26,7 +26,8 @@ ALIASES
   const currentBranch = await git.currentBranch();
 
   // Find which stack contains the current branch
-  let stackName = findStackForBranch(meta, currentBranch);
+  const branchStackName = findStackForBranch(meta, currentBranch);
+  let stackName = branchStackName;
   if (!stackName) stackName = meta.current_stack;
 
   if (!stackName || !meta.stacks[stackName]) {
@@ -39,7 +40,9 @@ ALIASES
 
   // Update tracking
   meta.current_stack = stackName;
-  stack.last_branch = currentBranch;
+  if (branchStackName === stackName) {
+    stack.last_branch = currentBranch;
+  }
   await writeMetadata(meta);
 
   // Header

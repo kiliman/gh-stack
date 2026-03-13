@@ -235,25 +235,27 @@ async function handleFreshRestack(
     console.log();
   }
 
-  // Take snapshot before destructive operation
-  await takeSnapshot(meta, stackName, "restack");
+  if (!dryRun) {
+    // Take snapshot before destructive operation
+    await takeSnapshot(meta, stackName, "restack");
 
-  // Create temporary tags for stable base references
-  p.log.info("Creating temporary base tags...");
-  for (const branch of chain) {
-    const parent = stack.branches[branch]?.parent;
-    if (!parent) continue;
+    // Create temporary tags for stable base references
+    p.log.info("Creating temporary base tags...");
+    for (const branch of chain) {
+      const parent = stack.branches[branch]?.parent;
+      if (!parent) continue;
 
-    const mb = await git.mergeBase(branch, parent);
-    if (mb) {
-      const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
-      await git.createTag(tagName, mb);
-      console.log(
-        `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,
-      );
+      const mb = await git.mergeBase(branch, parent);
+      if (mb) {
+        const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
+        await git.createTag(tagName, mb);
+        console.log(
+          `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,
+        );
+      }
     }
+    console.log();
   }
-  console.log();
 
   // Process the chain
   await processChain(meta, stackName, chain, 0, rebasedBranches, dryRun, verbose);

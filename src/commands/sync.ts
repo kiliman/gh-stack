@@ -54,6 +54,28 @@ with the base branch included.
     process.exit(1);
   }
 
+  if (dryRun) {
+    p.log.warn("[DRY RUN] No changes will be made");
+    p.log.info("Planned operations:");
+    console.log(`  ${pc.yellow("1.")} Fetch latest ${pc.cyan("origin/main")}`);
+    console.log(
+      `  ${pc.yellow("2.")} Rebase ${pc.yellow(baseBranch)} onto ${pc.cyan("origin/main")}`,
+    );
+
+    const children = ordered.slice(1);
+    if (children.length === 0) {
+      console.log(`  ${pc.yellow("3.")} No child branches to restack`);
+    } else {
+      console.log(`  ${pc.yellow("3.")} Restack child branches in order:`);
+      for (const branch of children) {
+        const parent = stack.branches[branch]?.parent || "(unknown)";
+        console.log(`     ${pc.yellow("→")} ${branch} ${pc.blue(`(parent: ${parent})`)}`);
+      }
+    }
+    p.outro(pc.green("Sync dry run complete"));
+    return;
+  }
+
   // Fetch main
   const fetchSpinner = p.spinner();
   fetchSpinner.start("Fetching latest main...");

@@ -29,7 +29,8 @@ export default async function show(_args: string[]): Promise<void> {
   const branch = await git.currentBranch();
 
   // Find which stack contains the current branch
-  let stackName = findStackForBranch(meta, branch);
+  const branchStackName = findStackForBranch(meta, branch);
+  let stackName = branchStackName;
 
   if (!stackName) {
     // Fall back to current_stack
@@ -51,7 +52,9 @@ export default async function show(_args: string[]): Promise<void> {
 
   // Update current_stack and last_branch
   meta.current_stack = stackName;
-  stack.last_branch = branch;
+  if (branchStackName === stackName) {
+    stack.last_branch = branch;
+  }
   await writeMetadata(meta);
 
   // Header

@@ -73,12 +73,12 @@ Here's what would happen if we decide we need to split work into a separate PR t
 | 5 | Merge down stack after approval (local squash-merge) | `gh-stack merge` | B15 |
 | 6 | Sync base branch with main, then restack entire stack | `gh-stack sync` | C1 |
 | 7 | Update PR descriptions with stack visualization | `gh-stack update-prs` | B8 |
-| 8 | Split PR and update stack metadata | `gh-stack split` | C2 |
+| 8 | Split PR and update stack metadata | Not yet implemented | C2 |
 | 9 | Switch between stacks | `gh-stack switch --stack` | C3 |
 | 10 | View archived stacks | `gh-stack archive` | C4 |
 | 11 | PR status dashboard (CI, reviews, merge state) | `gh-stack status` | — |
 | 12 | Remove branch from stack (re-link parent chain) | `gh-stack remove` | C5 |
-| 13 | Insert branch into stack at specific position | `gh-stack insert` | C6 |
+| 13 | Insert branch into stack at specific position | Not yet implemented | C6 |
 | 14 | Undo last destructive operation | `gh-stack undo` | — |
 
 ## Design Decisions
@@ -127,31 +127,33 @@ DESCRIPTION
     .git/gh-stack-metadata.json. Designed for repositories that use
     squash-merge (where tools like Graphite break down).
 
-    All commands operate on the "current stack" unless --stack is specified.
+    Most commands operate on the current stack in metadata, or infer the
+    stack from the current branch when possible.
 
 COMMANDS
 
   Stack Management
   ────────────────
 
-    init [--name <name>] [--description <desc>]
+    init [--name <name>] [--description <desc>] [--parent <branch>]
         Create a new stack and add the current branch as the first entry.
         If --name is omitted, prompts interactively.
 
         Options:
             --name <name>         Stack name (skip prompt)
             --description <desc>  Stack description
+            --parent <branch>     Parent branch for current branch
 
         Examples:
             gh-stack init
             gh-stack init --name podcast-mvp --description "Podcast MVP features"
 
-    add [<branch>] [--parent <branch>] [--create] [--description <desc>]
+    add [<branch>] [--parent <branch>] [--create <branch>] [--description <desc>]
         Add a branch to the current stack. Defaults to the current branch.
 
         Options:
             --parent <branch>     Parent branch (skip prompt; default: top of stack)
-            --create              Create a new branch off the top of stack first
+            --create <branch>     Create a new branch off the top of stack first
             --description <desc>  Description for the branch
 
         Examples:
@@ -159,27 +161,20 @@ COMMANDS
             gh-stack add --create kiliman/new-feature-WEB-1234
             gh-stack add --parent kiliman/pr1-branch --description "API layer"
 
-    remove <branch>
+    remove [<branch>]
         Remove a branch from the current stack and re-link the parent chain.
         If the removed branch has children, they are re-parented to the
-        removed branch's parent.
+        removed branch's parent. If omitted, prompts interactively.
 
         Example:
             gh-stack remove kiliman/abandoned-pr-WEB-5678
-
-    insert <branch> --after <branch>
-        Insert a branch into the stack after the specified branch.
-        Re-parents the next branch in the chain to point to the inserted one.
-
-        Example:
-            gh-stack insert kiliman/prep-work-WEB-9999 --after kiliman/pr1-WEB-1234
 
   Navigation
   ──────────
 
     show
-        Display the current stack as a tree with PR numbers, titles,
-        review status, and CI state. Highlights the current branch.
+        Display the current stack as a tree with branch numbers,
+        PR numbers, and descriptions. Highlights the current branch.
         This is the default command when no subcommand is given.
 
         Aliases: (none — this is the default)
@@ -200,8 +195,6 @@ COMMANDS
         Show a dashboard of all open PRs across all stacks with:
         review state (✅/❌/👀/⏳), CI status (pass/fail/pending counts),
         draft state, and merge readiness.
-
-        Uses local caching — only fetches updates for PRs that changed.
 
   Rebase & Sync
   ─────────────
@@ -242,7 +235,6 @@ COMMANDS
         After merge:
         - Close intermediate PRs on GitHub (with comment linking to base PR)
         - Archive the stack in metadata
-        - Optionally delete local and remote branches
 
         Options:
             --dry-run   Preview the merge plan without executing
@@ -266,11 +258,10 @@ COMMANDS
   Maintenance
   ───────────
 
-    archive [--list] [--restore <name>]
-        Manage archived stacks (stacks whose PRs are all merged).
+    archive [--restore <name>]
+        List archived stacks by default, or restore one by name.
 
         Options:
-            --list              List all archived stacks
             --restore <name>    Restore an archived stack to active
 
     undo
@@ -278,17 +269,18 @@ COMMANDS
         (restack, merge, sync, remove). Resets branch HEADs to their
         saved positions.
 
-    split <branch>
-        Interactive helper to split a branch into two. Creates a new
-        branch, lets you cherry-pick or move commits/files between them,
-        and updates the stack metadata.
-
-        This is a guided process — not fully automated.
-
 GLOBAL OPTIONS
-    --stack <name>    Operate on a specific stack (override current)
+    --yes, -y         Skip confirmations (for agents/CI)
     --help            Show help for a command
     --version         Show version
+
+NOT YET IMPLEMENTED
+    split
+        Guided helper to split a branch into two and update the stack metadata.
+
+    insert
+        Insert a branch into the middle of an existing stack and re-parent
+        the following branch to point at the inserted branch.
 
 METADATA
     Stored in .git/gh-stack-metadata.json (not committed).

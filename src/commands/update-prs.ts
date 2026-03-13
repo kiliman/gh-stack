@@ -46,6 +46,7 @@ showing the tree structure, PR links, and review status.
     branch: string;
     prNumber: number | null;
     prTitle: string;
+    prUrl: string | null;
     reviewEmojiStr: string;
   }
 
@@ -55,12 +56,14 @@ showing the tree structure, PR links, and review status.
     const branchMeta = stack.branches[branchName]!;
     const prNumber = branchMeta.pr ?? null;
     let prTitle = branchMeta.description || branchName;
+    let prUrl: string | null = null;
     let review = "PENDING";
 
     if (prNumber) {
       const info = await getPrInfo(prNumber);
       if (info) {
         prTitle = info.title || prTitle;
+        prUrl = info.url;
         review = info.reviewDecision || "PENDING";
       }
     }
@@ -69,6 +72,7 @@ showing the tree structure, PR links, and review status.
       branch: branchName,
       prNumber,
       prTitle,
+      prUrl,
       reviewEmojiStr: reviewEmoji(review),
     });
   }
@@ -131,10 +135,11 @@ interface BranchPrInfo {
   branch: string;
   prNumber: number | null;
   prTitle: string;
+  prUrl: string | null;
   reviewEmojiStr: string;
 }
 
-function buildStackViz(branches: BranchPrInfo[], targetIndex: number): string {
+export function buildStackViz(branches: BranchPrInfo[], targetIndex: number): string {
   const lines: string[] = ["### 📚 Stacked on", ""];
 
   if (branches.length === 1) {
@@ -154,7 +159,7 @@ function buildStackViz(branches: BranchPrInfo[], targetIndex: number): string {
     // PR link
     let prLink: string;
     if (info.prNumber) {
-      prLink = `<a href="https://github.com/beehiiv/swarm/pull/${info.prNumber}">#${info.prNumber}</a>`;
+      prLink = info.prUrl ? `<a href="${info.prUrl}">#${info.prNumber}</a>` : `#${info.prNumber}`;
     } else {
       prLink = "(no PR yet)";
     }

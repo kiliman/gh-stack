@@ -1,5 +1,5 @@
 {
-  "name": "git-stack",
+  "name": "gh-stack",
   "version": "2.0.0",
   "description": "Unified stacked PR manager for squash-merge workflows",
   "module": "src/index.ts",
@@ -7,7 +7,7 @@
   "private": true,
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "bun build --compile src/index.ts --outfile dist/git-stack",
+    "build": "bun build --compile src/index.ts --outfile dist/gh-stack",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun test"

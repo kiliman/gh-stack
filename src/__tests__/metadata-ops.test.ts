@@ -290,7 +290,7 @@ describe("metadata migration", () => {
     };
 
     await Bun.write(
-      `${tmpDir}/.git/git-stack-metadata.json`,
+      `${tmpDir}/.git/gh-stack-metadata.json`,
       JSON.stringify(v1, null, 2)
     );
 

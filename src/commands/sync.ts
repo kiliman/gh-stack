@@ -1,4 +1,4 @@
-// git-stack sync — Fetch main, rebase base branch onto main, then restack all
+// gh-stack sync — Fetch main, rebase base branch onto main, then restack all
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -20,10 +20,10 @@ export default async function sync(args: string[]): Promise<void> {
 
   if (args.includes("--help")) {
     console.log(`
-git-stack sync — Sync base with main + restack all
+gh-stack sync — Sync base with main + restack all
 
 USAGE
-  git-stack sync [--dry-run]
+  gh-stack sync [--dry-run]
 
 Fetches latest main, rebases the base branch onto main,
 then restacks all children. Equivalent to running restack
@@ -139,7 +139,7 @@ with the base branch included.
       console.log();
       p.log.error("Rebase conflict — resolve and run:");
       console.log(`  ${pc.green("git rebase --continue")}`);
-      console.log(`  ${pc.green("git-stack restack --resume")}`);
+      console.log(`  ${pc.green("gh-stack restack --resume")}`);
       process.exit(2);
     }
 

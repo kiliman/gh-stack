@@ -1,8 +1,8 @@
-# git-stack — Claude Code Instructions
+# gh-stack — Claude Code Instructions
 
 ## Project Overview
 
-A Bun-compiled CLI tool for managing stacked PRs in Git repos that use squash-merge. Replaces 7+ bash scripts with a single `git-stack` binary.
+A Bun-compiled CLI tool for managing stacked PRs in Git repos that use squash-merge. Replaces 7+ bash scripts with a single `gh-stack` binary.
 
 **Key docs:**
 - `PLAN.md` — Full implementation plan, project structure, phased approach, key behaviors to preserve
@@ -13,7 +13,7 @@ A Bun-compiled CLI tool for managing stacked PRs in Git repos that use squash-me
 
 ```bash
 bun install              # Install deps
-bun run build            # Compile standalone binary → dist/git-stack
+bun run build            # Compile standalone binary → dist/gh-stack
 bun run src/index.ts     # Run in dev mode
 bun test                 # Run tests
 ```
@@ -39,7 +39,7 @@ bun test                 # Run tests
 - Use `Bun.spawn` / `Bun.spawnSync` for git/gh commands
 - All user-facing output goes through `@clack/prompts` or `picocolors`
 - Never modify metadata without reading it fresh first (avoid stale state)
-- Metadata lives at `.git/git-stack-metadata.json` (never committed)
+- Metadata lives at `.git/gh-stack-metadata.json` (never committed)
 - All destructive operations (restack, merge, sync, remove) must take a snapshot first
 - Reject rebase operations if working tree is dirty (force user to stash/commit)
 - Never force-push main
@@ -47,12 +47,12 @@ bun test                 # Run tests
 ## Building
 
 ```bash
-bun build --compile src/index.ts --outfile dist/git-stack
+bun build --compile src/index.ts --outfile dist/gh-stack
 ```
 
 The compiled binary can be symlinked to PATH:
 ```bash
-ln -s ~/Projects/oss/git-stack/dist/git-stack /usr/local/bin/git-stack
+ln -s ~/Projects/oss/gh-stack/dist/gh-stack /usr/local/bin/gh-stack
 ```
 
 ## Testing

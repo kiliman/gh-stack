@@ -1,4 +1,4 @@
-// git-stack show — Display current stack tree (default command)
+// gh-stack show — Display current stack tree (default command)
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -16,7 +16,7 @@ export default async function show(_args: string[]): Promise<void> {
     p.log.warn("No stack metadata found");
     console.log();
     console.log(`  Create your first stack with:`);
-    console.log(`    ${pc.green("git-stack init")}`);
+    console.log(`    ${pc.green("gh-stack init")}`);
     process.exit(1);
   }
 
@@ -42,10 +42,10 @@ export default async function show(_args: string[]): Promise<void> {
     );
     console.log();
     console.log(`  Add it to a stack with:`);
-    console.log(`    ${pc.green("git-stack add")}`);
+    console.log(`    ${pc.green("gh-stack add")}`);
     console.log();
     console.log(`  Or create a new stack:`);
-    console.log(`    ${pc.green("git-stack init")}`);
+    console.log(`    ${pc.green("gh-stack init")}`);
     process.exit(1);
   }
 
@@ -73,7 +73,7 @@ export default async function show(_args: string[]): Promise<void> {
 
   // Tip
   console.log(
-    pc.dim(`Tip: Switch stacks with 'git-stack switch --stack'`)
+    pc.dim(`Tip: Switch stacks with 'gh-stack switch --stack'`)
   );
   console.log();
 }

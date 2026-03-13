@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// git-stack — Unified stacked PR manager for squash-merge workflows
+// gh-stack — Unified stacked PR manager for squash-merge workflows
 import { ensureGitRepo } from "./lib/safety.ts";
 import { setAutoYes } from "./lib/ui.ts";
 
@@ -10,7 +10,7 @@ const command = args[0] || "show";
 
 // Handle global flags
 if (args.includes("--version") || args.includes("-V")) {
-  console.log(`git-stack v${VERSION}`);
+  console.log(`gh-stack v${VERSION}`);
   process.exit(0);
 }
 
@@ -98,10 +98,10 @@ switch (command) {
 
 function printHelp() {
   console.log(`
-git-stack v${VERSION} — Stacked PR manager for squash-merge workflows
+gh-stack v${VERSION} — Stacked PR manager for squash-merge workflows
 
 ${bold("USAGE")}
-  git-stack <command> [options]
+  gh-stack <command> [options]
 
 ${bold("COMMANDS")}
   ${green("show")}           Display current stack tree ${dim("(default)")}

@@ -12,11 +12,11 @@ GRAY='\033[0;90m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-METADATA_FILE=".git/git-stack-metadata.json"
+METADATA_FILE=".git/gh-stack-metadata.json"
 
 # Check if metadata file exists
 if [ ! -f "$METADATA_FILE" ]; then
-  echo -e "${RED}❌ No metadata file found. Run tmp/git-stack-init first.${NC}"
+  echo -e "${RED}❌ No metadata file found. Run tmp/gh-stack-init first.${NC}"
   exit 1
 fi
 

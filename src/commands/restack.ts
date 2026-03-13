@@ -1,5 +1,5 @@
-// git-stack restack — Rebase children onto updated parents
-// Port of reference/git-stack-sync.sh — the most critical command
+// gh-stack restack — Rebase children onto updated parents
+// Port of reference/gh-stack-sync.sh — the most critical command
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -29,10 +29,10 @@ export default async function restack(args: string[]): Promise<void> {
 
   if (args.includes("--help")) {
     console.log(`
-git-stack restack — Rebase children onto updated parents
+gh-stack restack — Rebase children onto updated parents
 
 USAGE
-  git-stack restack [options]
+  gh-stack restack [options]
 
 OPTIONS
   --yes, -y   Skip confirmations (auto-accept all rebases and pushes)
@@ -41,12 +41,12 @@ OPTIONS
   --verbose   Show diagnostic info (tag vs merge-base)
 
 EXAMPLES
-  git-stack restack              Interactive (prompts before each rebase)
-  git-stack restack --yes        Non-interactive (for agents/CI)
-  git-stack restack --resume     Continue after resolving conflicts
+  gh-stack restack              Interactive (prompts before each rebase)
+  gh-stack restack --yes        Non-interactive (for agents/CI)
+  gh-stack restack --resume     Continue after resolving conflicts
 
 ALIASES
-  git-stack rebase
+  gh-stack rebase
 `);
     return;
   }
@@ -122,7 +122,7 @@ async function handleResume(
     console.log(
       `  State cleared. To sync the stack, run from the desired branch:`
     );
-    console.log(`    ${pc.green("git-stack restack")}`);
+    console.log(`    ${pc.green("gh-stack restack")}`);
     return;
   }
 
@@ -188,7 +188,7 @@ async function handleFreshRestack(
 
   if (!stackName) {
     p.cancel(
-      `Branch ${pc.blue(currentBranch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("git-stack add")}`
+      `Branch ${pc.blue(currentBranch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}`
     );
     process.exit(1);
   }
@@ -231,7 +231,7 @@ async function handleFreshRestack(
       `  ${pc.dim("This is a restack — propagating changes from parent to children.")}`
     );
     console.log(
-      `  ${pc.dim(`To include rebasing onto main, use: ${pc.green("git-stack sync")}`)}`
+      `  ${pc.dim(`To include rebasing onto main, use: ${pc.green("gh-stack sync")}`)}`
     );
     console.log();
 
@@ -243,7 +243,7 @@ async function handleFreshRestack(
       console.log("  Either:");
       console.log("    1. Run from a child branch (e.g., PR2)");
       console.log(
-        `    2. Use ${pc.green("git-stack sync")} to include rebasing base onto main`
+        `    2. Use ${pc.green("gh-stack sync")} to include rebasing base onto main`
       );
       return;
     }
@@ -414,7 +414,7 @@ async function processChain(
       console.log();
       console.log("  Please resolve the conflicts, then:");
       console.log(`    ${pc.green("git rebase --continue")}`);
-      console.log(`    ${pc.green("git-stack restack --resume")}`);
+      console.log(`    ${pc.green("gh-stack restack --resume")}`);
       console.log();
       console.log("  Or abort the rebase:");
       console.log(`    ${pc.red("git rebase --abort")}`);

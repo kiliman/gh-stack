@@ -1,4 +1,4 @@
-// git-stack undo — Restore from last snapshot
+// gh-stack undo — Restore from last snapshot
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -10,10 +10,10 @@ import { $ } from "bun";
 export default async function undo(args: string[]): Promise<void> {
   if (args.includes("--help")) {
     console.log(`
-git-stack undo — Restore from last snapshot
+gh-stack undo — Restore from last snapshot
 
 USAGE
-  git-stack undo
+  gh-stack undo
 
 Restores branch HEADs from the last snapshot taken before
 a destructive operation (restack, merge, sync, remove).

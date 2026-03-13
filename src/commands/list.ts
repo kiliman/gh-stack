@@ -1,4 +1,4 @@
-// git-stack list — Lightweight branch listing (agent-friendly)
+// gh-stack list — Lightweight branch listing (agent-friendly)
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import {
@@ -11,17 +11,17 @@ import { ensureMetadata } from "../lib/safety.ts";
 export default async function list(args: string[]): Promise<void> {
   if (args.includes("--help")) {
     console.log(`
-git-stack list — List branches with numbers
+gh-stack list — List branches with numbers
 
 USAGE
-  git-stack list
-  git-stack ls
+  gh-stack list
+  gh-stack ls
 
 Lightweight branch listing for quick reference and scripting.
-Use the number with 'git-stack switch <number>' to jump to a branch.
+Use the number with 'gh-stack switch <number>' to jump to a branch.
 
 ALIASES
-  git-stack ls
+  gh-stack ls
 `);
     return;
   }

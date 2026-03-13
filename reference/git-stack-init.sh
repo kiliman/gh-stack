@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Git Stack Init - Metadata manager for stacked PRs
-# Central tool to manage .git/git-stack-metadata.json with named stacks
+# Central tool to manage .git/gh-stack-metadata.json with named stacks
 
 set -e
 
@@ -14,12 +14,12 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Metadata file location (in .git/, persists across branches)
-METADATA_FILE=".git/git-stack-metadata.json"
+METADATA_FILE=".git/gh-stack-metadata.json"
 
 # Usage
 usage() {
   cat << EOF
-Usage: tmp/git-stack-init [COMMAND] [OPTIONS]
+Usage: tmp/gh-stack-init [COMMAND] [OPTIONS]
 
 Manage git stack metadata for stacked PRs with named stacks.
 
@@ -39,31 +39,31 @@ OPTIONS (for init and --add):
 
 EXAMPLES:
   # Initialize new stack (prompts for name and parent)
-  tmp/git-stack-init
+  tmp/gh-stack-init
 
   # Fully non-interactive init
-  tmp/git-stack-init --name podcast-preview --parent main --description "Podcast preview"
+  tmp/gh-stack-init --name podcast-preview --parent main --description "Podcast preview"
 
   # Create or switch to named stack
-  tmp/git-stack-init --stack api-v3-migration
+  tmp/gh-stack-init --stack api-v3-migration
 
   # Add current branch to current stack
-  tmp/git-stack-init --add
+  tmp/gh-stack-init --add
 
   # Add with explicit parent (non-interactive)
-  tmp/git-stack-init --add --parent main --description "My feature"
+  tmp/gh-stack-init --add --parent main --description "My feature"
 
   # Create new branch off top of stack and add it
-  tmp/git-stack-init --add --create kiliman/merge-tag-refactor-WEB-7012
+  tmp/gh-stack-init --add --create kiliman/merge-tag-refactor-WEB-7012
 
   # Remove a branch
-  tmp/git-stack-init --remove kiliman/old-branch-WEB-1234
+  tmp/gh-stack-init --remove kiliman/old-branch-WEB-1234
 
   # Show all stacks
-  tmp/git-stack-init --show
+  tmp/gh-stack-init --show
 
 METADATA LOCATION:
-  .git/git-stack-metadata.json (persists, not committed)
+  .git/gh-stack-metadata.json (persists, not committed)
 
 EOF
   exit 0
@@ -393,7 +393,7 @@ case "$CMD" in
       echo -e "${RED}Error: No current stack set${NC}"
       echo ""
       echo "Create a new stack first:"
-      echo -e "  ${GREEN}tmp/git-stack-init --stack <name>${NC}"
+      echo -e "  ${GREEN}tmp/gh-stack-init --stack <name>${NC}"
       exit 1
     fi
 
@@ -462,7 +462,7 @@ case "$CMD" in
   stack)
     if [[ -z "$OPT_STACK" ]]; then
       echo -e "${RED}Error: Stack name required${NC}"
-      echo "Usage: tmp/git-stack-init --stack <name>"
+      echo "Usage: tmp/gh-stack-init --stack <name>"
       exit 1
     fi
 
@@ -495,14 +495,14 @@ case "$CMD" in
       create_stack "$stack_name" "$description"
       echo ""
       echo "Add current branch to stack with:"
-      echo -e "  ${GREEN}tmp/git-stack-init --add${NC}"
+      echo -e "  ${GREEN}tmp/gh-stack-init --add${NC}"
     fi
     ;;
 
   remove)
     if [[ -z "$OPT_REMOVE" ]]; then
       echo -e "${RED}Error: Branch name required${NC}"
-      echo "Usage: tmp/git-stack-init --remove <branch>"
+      echo "Usage: tmp/gh-stack-init --remove <branch>"
       exit 1
     fi
 
@@ -578,8 +578,8 @@ case "$CMD" in
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "Next steps:"
-    echo -e "  • Add more branches: ${BLUE}tmp/git-stack-init --add${NC}"
-    echo -e "  • View stack: ${BLUE}tmp/git-stack${NC}"
-    echo -e "  • Sync stack: ${BLUE}tmp/git-stack-sync${NC}"
+    echo -e "  • Add more branches: ${BLUE}tmp/gh-stack-init --add${NC}"
+    echo -e "  • View stack: ${BLUE}tmp/gh-stack${NC}"
+    echo -e "  • Sync stack: ${BLUE}tmp/gh-stack-sync${NC}"
     ;;
 esac

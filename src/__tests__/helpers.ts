@@ -10,7 +10,7 @@ import type { StackMetadata, Branch } from "../types.ts";
  */
 export async function createTempRepo(): Promise<string> {
   const dir = await fs.mkdtemp(
-    path.join(await fs.realpath("/tmp"), "git-stack-test-")
+    path.join(await fs.realpath("/tmp"), "gh-stack-test-")
   );
 
   await $`git init ${dir}`.quiet();
@@ -100,7 +100,7 @@ export async function writeMetadata(
   meta: StackMetadata
 ): Promise<void> {
   await Bun.write(
-    `${dir}/.git/git-stack-metadata.json`,
+    `${dir}/.git/gh-stack-metadata.json`,
     JSON.stringify(meta, null, 2) + "\n"
   );
 }
@@ -109,14 +109,14 @@ export async function writeMetadata(
  * Read metadata from a temp repo.
  */
 export async function readMetadata(dir: string): Promise<StackMetadata> {
-  return Bun.file(`${dir}/.git/git-stack-metadata.json`).json();
+  return Bun.file(`${dir}/.git/gh-stack-metadata.json`).json();
 }
 
 /**
  * Check if metadata file exists.
  */
 export async function metadataExists(dir: string): Promise<boolean> {
-  return Bun.file(`${dir}/.git/git-stack-metadata.json`).exists();
+  return Bun.file(`${dir}/.git/gh-stack-metadata.json`).exists();
 }
 
 /**
@@ -250,7 +250,7 @@ export async function addConflictingMainCommit(
  */
 export async function setupRemote(dir: string): Promise<string> {
   const remoteDir = await fs.mkdtemp(
-    path.join(await fs.realpath("/tmp"), "git-stack-remote-")
+    path.join(await fs.realpath("/tmp"), "gh-stack-remote-")
   );
   await $`git init --bare ${remoteDir}`.quiet();
   await $`git -C ${dir} remote add origin ${remoteDir}`.quiet();

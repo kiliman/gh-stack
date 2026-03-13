@@ -6,7 +6,7 @@
 # TYPICAL WORKFLOW (restack after updating a parent PR):
 #   1. Make changes to PR1 based on review feedback
 #   2. Commit and push PR1
-#   3. Checkout PR2 and run: tmp/git-restack (or tmp/git-stack-sync)
+#   3. Checkout PR2 and run: tmp/git-restack (or tmp/gh-stack-sync)
 #   4. This propagates changes from PR1 → PR2 → PR3 → etc.
 #
 # The script uses temporary tags to mark the exact divergence point
@@ -24,12 +24,12 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # State file for resuming after conflicts
-STATE_FILE=".git/.git-stack-sync-state"
+STATE_FILE=".git/.gh-stack-sync-state"
 
 # Usage
 usage() {
   cat << EOF
-Usage: tmp/git-stack-sync [OPTIONS]
+Usage: tmp/gh-stack-sync [OPTIONS]
 
 Interactive tool to rebase stacked branches onto their updated parents.
 
@@ -48,18 +48,18 @@ WORKFLOW (typical - restack after updating parent PR):
   5. By default, skips rebasing PR1 onto main
 
 WORKFLOW (full sync from main):
-  1. Run from base branch: tmp/git-stack-sync --rebase
+  1. Run from base branch: tmp/gh-stack-sync --rebase
   2. This rebases PR1 onto main, then restacks all children
   3. Use this after main has significant updates
 
 EXAMPLE:
   # After rebasing PR1 onto main:
   git checkout kiliman/feature-pr2-WEB-1234
-  tmp/git-stack-sync
+  tmp/gh-stack-sync
 
   # If conflicts occur, resolve them and resume:
   git rebase --continue
-  tmp/git-stack-sync --resume
+  tmp/gh-stack-sync --resume
 
 EOF
   exit 0
@@ -115,12 +115,12 @@ if [[ "$RESUME" == false ]]; then
 fi
 
 # Check if stack metadata exists
-STACK_FILE=".git/git-stack-metadata.json"
+STACK_FILE=".git/gh-stack-metadata.json"
 if [[ ! -f "$STACK_FILE" ]]; then
   echo -e "${YELLOW}No stack metadata found${NC}"
   echo ""
   echo "Create your first stack with:"
-  echo -e "  ${GREEN}tmp/git-stack-init${NC}"
+  echo -e "  ${GREEN}tmp/gh-stack-init${NC}"
   exit 1
 fi
 
@@ -152,10 +152,10 @@ if [[ "$RESUME" == false ]]; then
     echo -e "${YELLOW}Branch ${BLUE}$current_branch${YELLOW} is not in any stack${NC}"
     echo ""
     echo "Add it to a stack with:"
-    echo -e "  ${GREEN}tmp/git-stack-init --add${NC}"
+    echo -e "  ${GREEN}tmp/gh-stack-init --add${NC}"
     echo ""
     echo "Or create a new stack:"
-    echo -e "  ${GREEN}tmp/git-stack-init${NC}"
+    echo -e "  ${GREEN}tmp/gh-stack-init${NC}"
     exit 1
   fi
 fi
@@ -327,7 +327,7 @@ if [[ "$RESUME" == true ]]; then
     rm -f "$STATE_FILE"
     echo ""
     echo "State cleared. To sync the stack, run from the desired branch:"
-    echo -e "  ${GREEN}tmp/git-stack-sync${NC}"
+    echo -e "  ${GREEN}tmp/gh-stack-sync${NC}"
     exit 0
   else
     # We're on the expected branch - check if it was successfully rebased
@@ -338,7 +338,7 @@ if [[ "$RESUME" == true ]]; then
       rm -f "$STATE_FILE"
       echo ""
       echo "State cleared. To retry, run:"
-      echo -e "  ${GREEN}tmp/git-stack-sync${NC}"
+      echo -e "  ${GREEN}tmp/gh-stack-sync${NC}"
       exit 0
     else
       echo -e "${GREEN}✓ Rebase completed successfully${NC}"
@@ -430,7 +430,7 @@ else
     echo -e "${BLUE}the base branch to its children without rebasing onto main.${NC}"
     echo ""
     echo -e "${BLUE}To include rebasing the base branch onto main, use:${NC}"
-    echo -e "  ${GREEN}tmp/git-stack-sync --rebase${NC}"
+    echo -e "  ${GREEN}tmp/gh-stack-sync --rebase${NC}"
     echo ""
 
     # Filter out base branches from the chain
@@ -660,7 +660,7 @@ while [[ $CURRENT_INDEX -lt ${#CHAIN[@]} ]]; do
     echo ""
     echo "Please resolve the conflicts, then:"
     echo -e "  ${GREEN}git rebase --continue${NC}"
-    echo -e "  ${GREEN}tmp/git-stack-sync --resume${NC}"
+    echo -e "  ${GREEN}tmp/gh-stack-sync --resume${NC}"
     echo ""
     echo "Or abort the rebase:"
     echo -e "  ${RED}git rebase --abort${NC}"

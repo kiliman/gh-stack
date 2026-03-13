@@ -8,7 +8,7 @@
 set -euo pipefail
 
 CACHE_FILE=".git/pr-status-cache.json"
-METADATA_FILE=".git/git-stack-metadata.json"
+METADATA_FILE=".git/gh-stack-metadata.json"
 
 # Colors
 GREEN='\033[0;32m'

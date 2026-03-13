@@ -1,4 +1,4 @@
-// Read/write/validate .git/git-stack-metadata.json
+// Read/write/validate .git/gh-stack-metadata.json
 import type {
   StackMetadata,
   StackMetadataV1,
@@ -22,7 +22,7 @@ async function getGitDir(): Promise<string> {
  */
 export async function metadataPath(): Promise<string> {
   const dir = await getGitDir();
-  return `${dir}/git-stack-metadata.json`;
+  return `${dir}/gh-stack-metadata.json`;
 }
 
 /**
@@ -30,7 +30,7 @@ export async function metadataPath(): Promise<string> {
  */
 export async function restackStatePath(): Promise<string> {
   const dir = await getGitDir();
-  return `${dir}/.git-stack-sync-state`;
+  return `${dir}/.gh-stack-sync-state`;
 }
 
 /**

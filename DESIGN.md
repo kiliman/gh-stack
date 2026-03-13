@@ -1,4 +1,4 @@
-# git-stack — Unified Stacked PR Manager
+# gh-stack — Unified Stacked PR Manager
 
 ## Retro
 
@@ -10,14 +10,14 @@ The issue we had was that beehiiv uses squash-merge when merging the PR into mai
 
 | Script | Purpose | Maps to |
 |--------|---------|---------|
-| `tmp/git-stack` | Visualize stack, switch branches | `git-stack show`, `git-stack switch` |
-| `tmp/git-stack-init` | Create stacks, add/remove branches | `git-stack init`, `git-stack add`, `git-stack remove` |
-| `tmp/git-stack-sync` | Rebase/restack children onto parents | `git-stack restack`, `git-stack sync` |
-| `tmp/git-restack` | Symlink → git-stack-sync | `git-stack restack` |
-| `tmp/git-stack-update-pr` | Update PR descriptions with stack viz | `git-stack update-prs` |
-| `tmp/git-stack-migrate` | One-time migration (can retire) | N/A |
-| `tmp/git-stack-merge.md` | Merge-down design doc | `git-stack merge` |
-| `tmp/check-my-prs-fast` | PR status dashboard | `git-stack status` |
+| `tmp/gh-stack` | Visualize stack, switch branches | `gh-stack show`, `gh-stack switch` |
+| `tmp/gh-stack-init` | Create stacks, add/remove branches | `gh-stack init`, `gh-stack add`, `gh-stack remove` |
+| `tmp/gh-stack-sync` | Rebase/restack children onto parents | `gh-stack restack`, `gh-stack sync` |
+| `tmp/git-restack` | Symlink → gh-stack-sync | `gh-stack restack` |
+| `tmp/gh-stack-update-pr` | Update PR descriptions with stack viz | `gh-stack update-prs` |
+| `tmp/gh-stack-migrate` | One-time migration (can retire) | N/A |
+| `tmp/gh-stack-merge.md` | Merge-down design doc | `gh-stack merge` |
+| `tmp/check-my-prs-fast` | PR status dashboard | `gh-stack status` |
 
 ---
 
@@ -66,20 +66,20 @@ Here's what would happen if we decide we need to split work into a separate PR t
 
 | # | Need | Subcommand | Ref |
 |---|------|------------|-----|
-| 1 | Create a new stack from an existing branch/PR | `git-stack init` | B4 |
-| 2 | Add branch to current stack (from top, or with explicit parent) | `git-stack add` | B6 |
-| 3 | Switch to another PR/branch in current stack | `git-stack switch` | B9 |
-| 4 | Restack from current PR to tip, force pushing each step | `git-stack restack` | B12 |
-| 5 | Merge down stack after approval (local squash-merge) | `git-stack merge` | B15 |
-| 6 | Sync base branch with main, then restack entire stack | `git-stack sync` | C1 |
-| 7 | Update PR descriptions with stack visualization | `git-stack update-prs` | B8 |
-| 8 | Split PR and update stack metadata | `git-stack split` | C2 |
-| 9 | Switch between stacks | `git-stack switch --stack` | C3 |
-| 10 | View archived stacks | `git-stack archive` | C4 |
-| 11 | PR status dashboard (CI, reviews, merge state) | `git-stack status` | — |
-| 12 | Remove branch from stack (re-link parent chain) | `git-stack remove` | C5 |
-| 13 | Insert branch into stack at specific position | `git-stack insert` | C6 |
-| 14 | Undo last destructive operation | `git-stack undo` | — |
+| 1 | Create a new stack from an existing branch/PR | `gh-stack init` | B4 |
+| 2 | Add branch to current stack (from top, or with explicit parent) | `gh-stack add` | B6 |
+| 3 | Switch to another PR/branch in current stack | `gh-stack switch` | B9 |
+| 4 | Restack from current PR to tip, force pushing each step | `gh-stack restack` | B12 |
+| 5 | Merge down stack after approval (local squash-merge) | `gh-stack merge` | B15 |
+| 6 | Sync base branch with main, then restack entire stack | `gh-stack sync` | C1 |
+| 7 | Update PR descriptions with stack visualization | `gh-stack update-prs` | B8 |
+| 8 | Split PR and update stack metadata | `gh-stack split` | C2 |
+| 9 | Switch between stacks | `gh-stack switch --stack` | C3 |
+| 10 | View archived stacks | `gh-stack archive` | C4 |
+| 11 | PR status dashboard (CI, reviews, merge state) | `gh-stack status` | — |
+| 12 | Remove branch from stack (re-link parent chain) | `gh-stack remove` | C5 |
+| 13 | Insert branch into stack at specific position | `gh-stack insert` | C6 |
+| 14 | Undo last destructive operation | `gh-stack undo` | — |
 
 ## Design Decisions
 
@@ -95,14 +95,14 @@ Switching from bash to **Bun** for:
 ### Safety
 
 - **Dirty working tree** — Reject any command that requires rebasing if the working tree is dirty. Force the user to stash or commit first.
-- **Snapshot before destructive ops** — Before restack, merge, sync, or remove, save current branch HEADs to metadata as a snapshot. `git-stack undo` restores from the last snapshot.
-- **Conflict handling** — When a rebase hits conflicts, exit with a notice. User resolves (e.g., in GitKraken GUI), then runs `git-stack restack --resume`.
+- **Snapshot before destructive ops** — Before restack, merge, sync, or remove, save current branch HEADs to metadata as a snapshot. `gh-stack undo` restores from the last snapshot.
+- **Conflict handling** — When a rebase hits conflicts, exit with a notice. User resolves (e.g., in GitKraken GUI), then runs `gh-stack restack --resume`.
 - **Never force-push main** — Hard block, no exceptions.
-- **Merge-down safety** — Always do squash-merge locally (not on GitHub) so local branch always has all commits. This prevents the bug where `git rebase origin/main` orphans GitHub-only squash commits (see `git-stack-merge.md`).
+- **Merge-down safety** — Always do squash-merge locally (not on GitHub) so local branch always has all commits. This prevents the bug where `git rebase origin/main` orphans GitHub-only squash commits (see `gh-stack-merge.md`).
 
 ### Metadata
 
-Same location: `.git/git-stack-metadata.json` (persists, not committed).
+Same location: `.git/gh-stack-metadata.json` (persists, not committed).
 
 New additions:
 - `archive` key for closed stacks
@@ -117,14 +117,14 @@ New additions:
 GIT-STACK(1)                     Git Stack Manager                     GIT-STACK(1)
 
 NAME
-    git-stack — Unified stacked PR manager for squash-merge workflows
+    gh-stack — Unified stacked PR manager for squash-merge workflows
 
 SYNOPSIS
-    git-stack <command> [options]
+    gh-stack <command> [options]
 
 DESCRIPTION
     Manages stacked pull requests with metadata stored in
-    .git/git-stack-metadata.json. Designed for repositories that use
+    .git/gh-stack-metadata.json. Designed for repositories that use
     squash-merge (where tools like Graphite break down).
 
     All commands operate on the "current stack" unless --stack is specified.
@@ -143,8 +143,8 @@ COMMANDS
             --description <desc>  Stack description
 
         Examples:
-            git-stack init
-            git-stack init --name podcast-mvp --description "Podcast MVP features"
+            gh-stack init
+            gh-stack init --name podcast-mvp --description "Podcast MVP features"
 
     add [<branch>] [--parent <branch>] [--create] [--description <desc>]
         Add a branch to the current stack. Defaults to the current branch.
@@ -155,9 +155,9 @@ COMMANDS
             --description <desc>  Description for the branch
 
         Examples:
-            git-stack add
-            git-stack add --create kiliman/new-feature-WEB-1234
-            git-stack add --parent kiliman/pr1-branch --description "API layer"
+            gh-stack add
+            gh-stack add --create kiliman/new-feature-WEB-1234
+            gh-stack add --parent kiliman/pr1-branch --description "API layer"
 
     remove <branch>
         Remove a branch from the current stack and re-link the parent chain.
@@ -165,14 +165,14 @@ COMMANDS
         removed branch's parent.
 
         Example:
-            git-stack remove kiliman/abandoned-pr-WEB-5678
+            gh-stack remove kiliman/abandoned-pr-WEB-5678
 
     insert <branch> --after <branch>
         Insert a branch into the stack after the specified branch.
         Re-parents the next branch in the chain to point to the inserted one.
 
         Example:
-            git-stack insert kiliman/prep-work-WEB-9999 --after kiliman/pr1-WEB-1234
+            gh-stack insert kiliman/prep-work-WEB-9999 --after kiliman/pr1-WEB-1234
 
   Navigation
   ──────────
@@ -192,9 +192,9 @@ COMMANDS
             --stack               Switch between stacks instead of branches
 
         Examples:
-            git-stack switch         # interactive branch picker
-            git-stack switch 2       # jump to branch #2 in stack
-            git-stack switch --stack # interactive stack picker
+            gh-stack switch         # interactive branch picker
+            gh-stack switch 2       # jump to branch #2 in stack
+            gh-stack switch --stack # interactive stack picker
 
     status
         Show a dashboard of all open PRs across all stacks with:
@@ -212,7 +212,7 @@ COMMANDS
 
         If a rebase conflict occurs, resolve it and run:
             git rebase --continue
-            git-stack restack --resume
+            gh-stack restack --resume
 
         Options:
             --resume    Continue after resolving rebase conflicts
@@ -291,7 +291,7 @@ GLOBAL OPTIONS
     --version         Show version
 
 METADATA
-    Stored in .git/git-stack-metadata.json (not committed).
+    Stored in .git/gh-stack-metadata.json (not committed).
 
     Schema:
         {
@@ -334,23 +334,23 @@ SEE ALSO
 EXAMPLES
 
     # Full stacked PR workflow
-    git-stack init --name podcast-mvp
-    git-stack add --description "Backend models"
+    gh-stack init --name podcast-mvp
+    gh-stack add --description "Backend models"
     # ... hack, push, create PR ...
-    git-stack add --create kiliman/frontend-WEB-1234 --description "Frontend UI"
+    gh-stack add --create kiliman/frontend-WEB-1234 --description "Frontend UI"
     # ... hack, push, create PR ...
-    git-stack update-prs
-    git-stack restack
-    git-stack merge
+    gh-stack update-prs
+    gh-stack restack
+    gh-stack merge
 
     # Daily workflow
-    git-stack                   # show current stack
-    git-stack switch 2          # jump to PR #2
-    git-stack sync              # sync with latest main
-    git-stack status            # check CI and reviews
-    git-stack switch --stack    # switch to different stack
+    gh-stack                   # show current stack
+    gh-stack switch 2          # jump to PR #2
+    gh-stack sync              # sync with latest main
+    gh-stack status            # check CI and reviews
+    gh-stack switch --stack    # switch to different stack
 
-                                                                   git-stack v2.0.0
+                                                                   gh-stack v2.0.0
 ```
 
 ---
@@ -361,23 +361,23 @@ EXAMPLES
 
 Port the existing working scripts into a single Bun CLI. No new features — just consolidation.
 
-1. **Project setup** — `tools/git-stack/` with `package.json`, `tsconfig.json`, Bun build config
-2. **Metadata module** — Read/write `.git/git-stack-metadata.json` with TypeScript types
-3. **`show`** (default) — Port `tmp/git-stack` visualization
-4. **`init`** — Port `tmp/git-stack-init` (create stack + add first branch)
-5. **`add`** — Port `tmp/git-stack-init --add` (add branch, `--create` flag)
-6. **`remove`** — Port `tmp/git-stack-init --remove` (with re-parenting)
-7. **`switch`** — Port interactive branch/stack switching from `tmp/git-stack`
-8. **`restack`** — Port `tmp/git-stack-sync` (tag-based rebase, `--resume`, `--dry-run`)
-9. **`update-prs`** — Port `tmp/git-stack-update-pr`
+1. **Project setup** — `tools/gh-stack/` with `package.json`, `tsconfig.json`, Bun build config
+2. **Metadata module** — Read/write `.git/gh-stack-metadata.json` with TypeScript types
+3. **`show`** (default) — Port `tmp/gh-stack` visualization
+4. **`init`** — Port `tmp/gh-stack-init` (create stack + add first branch)
+5. **`add`** — Port `tmp/gh-stack-init --add` (add branch, `--create` flag)
+6. **`remove`** — Port `tmp/gh-stack-init --remove` (with re-parenting)
+7. **`switch`** — Port interactive branch/stack switching from `tmp/gh-stack`
+8. **`restack`** — Port `tmp/gh-stack-sync` (tag-based rebase, `--resume`, `--dry-run`)
+9. **`update-prs`** — Port `tmp/gh-stack-update-pr`
 10. **`status`** — Port `tmp/check-my-prs-fast`
 
-Build standalone executable: `bun build --compile src/index.ts --outfile git-stack`
+Build standalone executable: `bun build --compile src/index.ts --outfile gh-stack`
 
 ### Phase 2: New Features
 
 11. **`sync`** — Rebase base onto main + restack (currently `--rebase` flag on sync script)
-12. **`merge`** — Local squash-merge top-down (from `git-stack-merge.md` design)
+12. **`merge`** — Local squash-merge top-down (from `gh-stack-merge.md` design)
 13. **`undo`** — Snapshot/restore system for destructive operations
 14. **`archive`** — Archive closed stacks, list/restore
 

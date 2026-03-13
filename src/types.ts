@@ -1,4 +1,4 @@
-// git-stack metadata schema (v2)
+// gh-stack metadata schema (v2)
 
 export interface StackMetadata {
   version: 2;

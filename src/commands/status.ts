@@ -1,4 +1,4 @@
-// git-stack status — PR dashboard (CI, reviews)
+// gh-stack status — PR dashboard (CI, reviews)
 // Port of reference/check-my-prs-fast.sh
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -19,10 +19,10 @@ import type { PrStatus, StackMetadata } from "../types.ts";
 export default async function status(args: string[]): Promise<void> {
   if (args.includes("--help")) {
     console.log(`
-git-stack status — PR dashboard
+gh-stack status — PR dashboard
 
 USAGE
-  git-stack status [options]
+  gh-stack status [options]
 
 OPTIONS
   --current        Show only the current stack (or current PR if standalone)

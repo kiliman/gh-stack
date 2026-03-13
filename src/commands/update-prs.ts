@@ -1,5 +1,5 @@
-// git-stack update-prs — Update PR descriptions with stack visualization
-// Port of reference/git-stack-update-pr.sh
+// gh-stack update-prs — Update PR descriptions with stack visualization
+// Port of reference/gh-stack-update-pr.sh
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -18,10 +18,10 @@ import {
 export default async function updatePrs(args: string[]): Promise<void> {
   if (args.includes("--help")) {
     console.log(`
-git-stack update-prs — Update PR descriptions with stack visualization
+gh-stack update-prs — Update PR descriptions with stack visualization
 
 USAGE
-  git-stack update-prs
+  gh-stack update-prs
 
 Updates all PRs in the current stack with a standardized stack section
 showing the tree structure, PR links, and review status.

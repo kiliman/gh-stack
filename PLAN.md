@@ -1,4 +1,4 @@
-# git-stack — Implementation Plan
+# gh-stack — Implementation Plan
 
 ## What This Is
 
@@ -8,7 +8,7 @@ A unified CLI tool for managing stacked PRs in Git repositories that use **squas
 
 ## Why It Exists
 
-beehiiv uses squash-merge when merging PRs into main. This causes Graphite and similar stacked-PR tools to lose track of branch relationships after merges, making rebasing nearly impossible. We built shell scripts that work around this by storing stack metadata in `.git/git-stack-metadata.json` and using temporary tags for stable rebase references.
+beehiiv uses squash-merge when merging PRs into main. This causes Graphite and similar stacked-PR tools to lose track of branch relationships after merges, making rebasing nearly impossible. We built shell scripts that work around this by storing stack metadata in `.git/gh-stack-metadata.json` and using temporary tags for stable rebase references.
 
 The scripts work great but are hard to maintain (800+ lines of bash with `jq` piping), don't have proper TUI (no arrow keys), and lack safety features (no undo). Time to graduate to a proper tool.
 
@@ -24,7 +24,7 @@ The scripts work great but are hard to maintain (800+ lines of bash with `jq` pi
 ## Project Structure
 
 ```
-git-stack/
+gh-stack/
 ├── PLAN.md                     # This file
 ├── DESIGN.md                   # Full spec, man page, design decisions
 ├── package.json
@@ -55,15 +55,15 @@ git-stack/
 │   │   └── safety.ts           # Pre-flight checks (dirty tree, etc.)
 │   └── types.ts                # Metadata schema types
 ├── reference/                  # Original shell scripts (read-only reference)
-│   ├── git-stack-show.sh
-│   ├── git-stack-init.sh
-│   ├── git-stack-sync.sh
-│   ├── git-stack-update-pr.sh
+│   ├── gh-stack-show.sh
+│   ├── gh-stack-init.sh
+│   ├── gh-stack-sync.sh
+│   ├── gh-stack-update-pr.sh
 │   ├── check-my-prs-fast.sh
-│   ├── git-stack-merge-design.md
+│   ├── gh-stack-merge-design.md
 │   └── example-metadata.json
 └── dist/
-    └── git-stack               # Compiled standalone binary
+    └── gh-stack               # Compiled standalone binary
 ```
 
 ## Metadata Schema (v2)
@@ -104,7 +104,7 @@ interface Snapshot {
 
 1. **Project setup** — `package.json`, `tsconfig.json`, Bun build config
 2. **`src/types.ts`** — Metadata schema types
-3. **`src/lib/metadata.ts`** — Read/write/validate `.git/git-stack-metadata.json`
+3. **`src/lib/metadata.ts`** — Read/write/validate `.git/gh-stack-metadata.json`
    - Auto-migrate v1 → v2 schema (add `version` field)
    - Handle missing file gracefully
 4. **`src/lib/git.ts`** — Helpers: `currentBranch()`, `isCleanWorkingTree()`, `checkout()`, `rebase()`, `push()`, `mergeBase()`, etc.
@@ -112,20 +112,20 @@ interface Snapshot {
 6. **`src/lib/ui.ts`** — Tree rendering, branch/stack selectors via `@clack/prompts`
 7. **`src/lib/safety.ts`** — Pre-flight: dirty tree check, detached HEAD check, metadata exists check
 8. **`src/index.ts`** — Subcommand router (parse args, dispatch)
-9. **`show` command** — Port `reference/git-stack-show.sh`
-10. **`init` command** — Port `reference/git-stack-init.sh` (create stack flow)
-11. **`add` command** — Port `reference/git-stack-init.sh --add` (add branch, `--create` flag)
-12. **`remove` command** — Port `reference/git-stack-init.sh --remove` (with child re-parenting)
+9. **`show` command** — Port `reference/gh-stack-show.sh`
+10. **`init` command** — Port `reference/gh-stack-init.sh` (create stack flow)
+11. **`add` command** — Port `reference/gh-stack-init.sh --add` (add branch, `--create` flag)
+12. **`remove` command** — Port `reference/gh-stack-init.sh --remove` (with child re-parenting)
 13. **`switch` command** — Port branch switching from show.sh + `--switch` from show.sh
-14. **`restack` command** — Port `reference/git-stack-sync.sh` (tag-based rebase, `--resume`, `--dry-run`)
-15. **`update-prs` command** — Port `reference/git-stack-update-pr.sh`
+14. **`restack` command** — Port `reference/gh-stack-sync.sh` (tag-based rebase, `--resume`, `--dry-run`)
+15. **`update-prs` command** — Port `reference/gh-stack-update-pr.sh`
 16. **`status` command** — Port `reference/check-my-prs-fast.sh`
 17. **Build & test** — `bun build --compile`, test with real stacks in beehiiv/swarm
 
 ### Phase 2: New Features
 
 18. **`sync` command** — Rebase base onto main + restack all (currently `--rebase` flag)
-19. **`merge` command** — Local squash-merge top-down (from `reference/git-stack-merge-design.md`)
+19. **`merge` command** — Local squash-merge top-down (from `reference/gh-stack-merge-design.md`)
 20. **`undo` command** — Snapshot before destructive ops, restore on undo
 21. **`archive` command** — Archive closed stacks, list/restore
 
@@ -141,34 +141,34 @@ interface Snapshot {
 
 These are critical behaviors from the existing scripts that MUST be carried over:
 
-### Tag-based rebase (from git-stack-sync.sh)
+### Tag-based rebase (from gh-stack-sync.sh)
 The restack command creates temporary tags (`stack-sync-*`) marking each branch's divergence point BEFORE rebasing starts. This is essential because after rebasing a parent, `git merge-base` returns wrong results for children. Tags give us stable references. Tags are cleaned up on exit (trap).
 
-### Resume after conflicts (from git-stack-sync.sh)
-State is saved to `.git/.git-stack-sync-state` before each rebase. On conflict: user resolves, runs `git rebase --continue`, then `git-stack restack --resume`. The resume flow checks: is rebase still in progress? Did it succeed? Did the user abort? Branch mismatch = likely aborted.
+### Resume after conflicts (from gh-stack-sync.sh)
+State is saved to `.git/.gh-stack-sync-state` before each rebase. On conflict: user resolves, runs `git rebase --continue`, then `gh-stack restack --resume`. The resume flow checks: is rebase still in progress? Did it succeed? Did the user abort? Branch mismatch = likely aborted.
 
-### Stack visualization with 👈 marker (from git-stack-update-pr.sh)
+### Stack visualization with 👈 marker (from gh-stack-update-pr.sh)
 Each PR description gets a stack section with tree chars (┣━, ┗━), review emoji (✅/❌/👀/⏳), PR links, and a 👈 pointing to "this PR". The section is idempotent — existing `### 📚 Stacked on` sections are replaced.
 
-### Force-push prompts (from git-stack-sync.sh)
+### Force-push prompts (from gh-stack-sync.sh)
 After each successful rebase, immediately prompt to force-push that branch (don't batch them — user wants to see each one succeed before moving on).
 
-### PR auto-detection (from git-stack-init.sh)
+### PR auto-detection (from gh-stack-init.sh)
 When adding a branch, auto-detect its PR number via `gh pr list --head <branch>`. Also auto-detect parent branch by checking if the branch's merge-base is on main's history.
 
-### Dirty tree rejection (from git-stack-sync.sh)
+### Dirty tree rejection (from gh-stack-sync.sh)
 Lines 109-115: If working tree is dirty (unless `--resume`), refuse to proceed and tell user to commit or stash.
 
 ## Installation (planned)
 
 ```bash
 # From source
-cd ~/Projects/oss/git-stack
+cd ~/Projects/oss/gh-stack
 bun install
 bun run build
 
 # Add to PATH
-ln -s ~/Projects/oss/git-stack/dist/git-stack /usr/local/bin/git-stack
+ln -s ~/Projects/oss/gh-stack/dist/gh-stack /usr/local/bin/gh-stack
 ```
 
 ## Testing Strategy

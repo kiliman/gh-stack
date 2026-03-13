@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Show the current PR stack by following base branch links
-# Uses cached metadata (.git/git-stack-metadata.json) for speed
+# Uses cached metadata (.git/gh-stack-metadata.json) for speed
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Metadata file
-METADATA_FILE=".git/git-stack-metadata.json"
+METADATA_FILE=".git/gh-stack-metadata.json"
 
 # Get current branch
 CURRENT_BRANCH=$(git branch --show-current)
@@ -24,7 +24,7 @@ if [[ "${1:-}" == "--switch" ]]; then
     echo -e "${RED}Error: No stack metadata found${NC}"
     echo ""
     echo "Initialize with:"
-    echo -e "  ${GREEN}tmp/git-stack-init${NC}"
+    echo -e "  ${GREEN}tmp/gh-stack-init${NC}"
     exit 1
   fi
 
@@ -97,7 +97,7 @@ if [[ ! -f "$METADATA_FILE" ]]; then
   echo -e "${YELLOW}No stack metadata found${NC}"
   echo ""
   echo "Create your first stack with:"
-  echo -e "  ${GREEN}tmp/git-stack-init${NC}"
+  echo -e "  ${GREEN}tmp/gh-stack-init${NC}"
   exit 1
 fi
 
@@ -118,10 +118,10 @@ if [[ -z "$CURRENT_STACK" ]]; then
   echo -e "${YELLOW}Branch ${BLUE}$CURRENT_BRANCH${YELLOW} is not in any stack${NC}"
   echo ""
   echo "Add it to a stack with:"
-  echo -e "  ${GREEN}tmp/git-stack-init --add${NC}"
+  echo -e "  ${GREEN}tmp/gh-stack-init --add${NC}"
   echo ""
   echo "Or create a new stack:"
-  echo -e "  ${GREEN}tmp/git-stack-init${NC}"
+  echo -e "  ${GREEN}tmp/gh-stack-init${NC}"
   exit 1
 fi
 
@@ -202,7 +202,7 @@ add_branch_and_children "main"
 # If no PRs found
 if [ ${#stack_branches[@]} -eq 0 ]; then
   echo -e "${GRAY}No PRs found in this stack${NC}"
-  echo -e "${GRAY}Tip: Add branches with 'tmp/git-stack-init --add'${NC}"
+  echo -e "${GRAY}Tip: Add branches with 'tmp/gh-stack-init --add'${NC}"
   exit 0
 fi
 
@@ -262,7 +262,7 @@ for ((i=0; i<${#stack_branches[@]}; i++)); do
 done
 
 echo ""
-echo -e "${GRAY}Tip: Switch stacks with 'tmp/git-stack --switch'${NC}"
+echo -e "${GRAY}Tip: Switch stacks with 'tmp/gh-stack --switch'${NC}"
 
 # Interactive branch switcher
 if [ ${#numbered_branches[@]} -gt 0 ]; then

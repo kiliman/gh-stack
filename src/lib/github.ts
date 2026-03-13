@@ -109,7 +109,7 @@ export async function updatePrBody(
 ): Promise<boolean> {
   try {
     // Write to a temp file to avoid shell escaping issues
-    const tmpFile = `${await import("node:os").then((os) => os.tmpdir())}/git-stack-pr-body-${prNumber}.md`;
+    const tmpFile = `${await import("node:os").then((os) => os.tmpdir())}/gh-stack-pr-body-${prNumber}.md`;
     await Bun.write(tmpFile, body);
     await $`gh pr edit ${prNumber} --body-file ${tmpFile}`.quiet();
     const { unlink } = await import("node:fs/promises");

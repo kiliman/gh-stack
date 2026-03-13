@@ -1,4 +1,4 @@
-// git-stack add — Add a branch to the current stack
+// gh-stack add — Add a branch to the current stack
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -33,10 +33,10 @@ export default async function add(args: string[]): Promise<void> {
         break;
       case "--help":
         console.log(`
-git-stack add — Add a branch to the current stack
+gh-stack add — Add a branch to the current stack
 
 USAGE
-  git-stack add [<branch>] [options]
+  gh-stack add [<branch>] [options]
 
 OPTIONS
   --parent <branch>     Parent branch (default: top of stack)

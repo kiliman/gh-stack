@@ -1,4 +1,4 @@
-# git-stack-merge — Local Stack Merge Process
+# gh-stack-merge — Local Stack Merge Process
 
 ## Problem
 
@@ -18,7 +18,7 @@ intermediate squash commits.
 - Squash commits from GitHub live on `origin/<your-branch>`, not on your local branch
 - Force-push after local rebase overwrites the remote, orphaning the squash commits
 
-## Proposed Solution: `tmp/git-stack-merge`
+## Proposed Solution: `tmp/gh-stack-merge`
 
 A local script that merges the stack down without GitHub's squash merge,
 keeping everything under local control.
@@ -62,12 +62,12 @@ Given stack: main → PR1 → PR2 → PR3 (top)
 ### Script Inputs
 
 - Stack name (from metadata) or auto-detect from current branch
-- Reads `.git/git-stack-metadata.json` for branch order and PR numbers
+- Reads `.git/gh-stack-metadata.json` for branch order and PR numbers
 
 ### Script Flow
 
 ```bash
-tmp/git-stack-merge [stack-name]
+tmp/gh-stack-merge [stack-name]
 
 # 1. Read stack metadata, build ordered branch list
 # 2. Verify: all PRs approved? warn if not
@@ -121,7 +121,7 @@ merge behavior and hoping the fetch catches everything.
 ## Status
 
 - [ ] Design script
-- [ ] Implement `tmp/git-stack-merge`
+- [ ] Implement `tmp/gh-stack-merge`
 - [ ] Test with a real stack
-- [ ] Update `using-git-stack-tools` skill
+- [ ] Update `using-gh-stack-tools` skill
 - [ ] Consider adding `--pull` flag to `burs` as a safety net

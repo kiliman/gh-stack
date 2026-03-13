@@ -1,5 +1,5 @@
-// git-stack merge — Local squash-merge top-down
-// From reference/git-stack-merge-design.md
+// gh-stack merge — Local squash-merge top-down
+// From reference/gh-stack-merge-design.md
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -21,10 +21,10 @@ export default async function merge(args: string[]): Promise<void> {
 
   if (args.includes("--help")) {
     console.log(`
-git-stack merge — Local squash-merge top-down
+gh-stack merge — Local squash-merge top-down
 
 USAGE
-  git-stack merge [--dry-run]
+  gh-stack merge [--dry-run]
 
 Squash-merges the stack from top to bottom locally:
   PR3 → PR2 → PR1, then optionally rebases PR1 onto main.

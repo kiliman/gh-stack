@@ -10,7 +10,7 @@ let originalCwd: string;
 
 async function createTempRepo(): Promise<string> {
   const dir = await fs.mkdtemp(
-    path.join(await fs.realpath("/tmp"), "git-stack-test-")
+    path.join(await fs.realpath("/tmp"), "gh-stack-test-")
   );
 
   await $`git init ${dir}`.quiet();

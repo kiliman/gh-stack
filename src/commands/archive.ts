@@ -1,4 +1,4 @@
-// git-stack archive — Manage archived stacks
+// gh-stack archive — Manage archived stacks
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { writeMetadata, getOrderedBranches } from "../lib/metadata.ts";
@@ -11,11 +11,11 @@ export default async function archive(args: string[]): Promise<void> {
 
   if (args.includes("--help")) {
     console.log(`
-git-stack archive — Manage archived stacks
+gh-stack archive — Manage archived stacks
 
 USAGE
-  git-stack archive [--list]            List archived stacks
-  git-stack archive --restore <name>    Restore an archived stack
+  gh-stack archive [--list]            List archived stacks
+  gh-stack archive --restore <name>    Restore an archived stack
 `);
     return;
   }
@@ -61,7 +61,7 @@ USAGE
 
   console.log(
     pc.dim(
-      `  Restore with: git-stack archive --restore <name>`
+      `  Restore with: gh-stack archive --restore <name>`
     )
   );
 }

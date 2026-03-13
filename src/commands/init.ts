@@ -1,4 +1,4 @@
-// git-stack init — Create a new stack with the current branch
+// gh-stack init — Create a new stack with the current branch
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -34,10 +34,10 @@ export default async function init(args: string[]): Promise<void> {
         break;
       case "--help":
         console.log(`
-git-stack init — Create a new stack
+gh-stack init — Create a new stack
 
 USAGE
-  git-stack init [--name <name>] [--description <desc>] [--parent <branch>]
+  gh-stack init [--name <name>] [--description <desc>] [--parent <branch>]
 
 OPTIONS
   --name <name>         Stack name (skip prompt)
@@ -153,12 +153,12 @@ OPTIONS
   console.log();
   console.log("  Next steps:");
   console.log(
-    `    ${pc.blue("git-stack add")}          — Add more branches`
+    `    ${pc.blue("gh-stack add")}          — Add more branches`
   );
   console.log(
-    `    ${pc.blue("git-stack")}              — View stack`
+    `    ${pc.blue("gh-stack")}              — View stack`
   );
   console.log(
-    `    ${pc.blue("git-stack restack")}      — Sync stack`
+    `    ${pc.blue("gh-stack restack")}      — Sync stack`
   );
 }

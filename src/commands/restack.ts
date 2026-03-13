@@ -137,21 +137,30 @@ async function handleResume(
   const currentIndex = state.current_index + 1;
 
   if (currentIndex < chain.length) {
-    // Create temporary tags for remaining branches (they may not exist
-    // if we're resuming from a sync that only saved state for the base)
-    p.log.info("Creating temporary base tags for remaining branches...");
+    // Ensure temporary tags exist for remaining branches.
+    // If sync created them upfront (correct!), they'll already be here.
+    // If not (e.g., old state file), we create them as a fallback —
+    // but NOTE: tags created after parent was rebased may be inaccurate.
+    p.log.info("Checking base tags for remaining branches...");
     for (let i = currentIndex; i < chain.length; i++) {
       const branch = chain[i]!;
       const parent = stack.branches[branch]?.parent;
       if (!parent) continue;
 
       const tagName = `stack-sync-base-${git.sanitizeBranchForTag(branch)}`;
-      if (!(await git.tagExists(tagName))) {
+      if (await git.tagExists(tagName)) {
+        const tagSha = await git.revParse(tagName);
+        console.log(
+          `  ${pc.green("✓")} Pre-existing tag for ${branch}: ${pc.cyan(tagName)} (${tagSha.slice(0, 8)})`
+        );
+      } else {
+        // Fallback: create tag now (may be inaccurate if parent already rebased)
+        p.log.warn(`No pre-existing tag for ${branch} — creating from current merge-base`);
         const mb = await git.mergeBase(branch, parent);
         if (mb) {
           await git.createTag(tagName, mb);
           console.log(
-            `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`
+            `  ${pc.yellow("⚠")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`
           );
         }
       }

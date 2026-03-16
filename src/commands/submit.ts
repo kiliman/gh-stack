@@ -200,7 +200,7 @@ export default async function submit(args: string[]): Promise<void> {
           // Extract PR number from URL output
           const prUrl = output.trim();
           const prNumMatch = prUrl.match(/\/pull\/(\d+)/);
-          const newPrNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
+          const newPrNumber = prNumMatch ? parseInt(prNumMatch[1]!, 10) : null;
 
           if (newPrNumber) {
             branchMeta.pr = newPrNumber;

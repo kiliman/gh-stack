@@ -60,6 +60,9 @@ async function detectBranchChain(currentBranch: string, trunk: string): Promise<
 
     // Is this branch's tip an ancestor of current?
     if (await git.isAncestor(branch, currentBranch)) {
+      // Skip branches already merged into trunk (stale/old branches)
+      if (await git.isAncestor(branch, trunk)) continue;
+
       // How many commits between this branch and current?
       const distance = await git.commitCount(branch, currentBranch);
       if (distance > 0) {

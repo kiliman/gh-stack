@@ -175,6 +175,36 @@ describe("init (smart defaults)", () => {
     expect(stack.branches["unrelated"]).toBeUndefined();
   });
 
+  test("chain detection ignores branches already merged into trunk", async () => {
+    // Simulate: old branch merged into main long ago, then new chain on top
+    // main ← old-branch (already merged)
+    // main → feat-1 → feat-2
+
+    // Create old branch off main, then merge it back
+    await createBranch(tmpDir, "old-merged", "main");
+    await makeCommit(tmpDir, "old.txt", "old\n", "old commit");
+    await checkout(tmpDir, "main");
+    // Merge old-merged into main (simulating squash-merge)
+    await makeCommit(tmpDir, "old.txt", "old\n", "merge old-merged");
+
+    // Now create a chain off updated main
+    await createBranch(tmpDir, "feat-1", "main");
+    await makeCommit(tmpDir, "f1.txt", "feature 1\n", "feat-1 commit");
+    await createBranch(tmpDir, "feat-2", "feat-1");
+    await makeCommit(tmpDir, "f2.txt", "feature 2\n", "feat-2 commit");
+
+    await init([]);
+
+    const meta = await readMetadata(tmpDir);
+    const stack = meta.stacks["feat-2"]!;
+
+    // Should NOT include old-merged (it's already in main)
+    expect(stack.branches["old-merged"]).toBeUndefined();
+    expect(Object.keys(stack.branches)).toHaveLength(2);
+    expect(stack.branches["feat-1"]!.parent).toBe("main");
+    expect(stack.branches["feat-2"]!.parent).toBe("feat-1");
+  });
+
   test("chain detection with --parent flag uses correct trunk", async () => {
     // Create: main → develop → feat-1
     await createBranch(tmpDir, "develop", "main");

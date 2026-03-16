@@ -5,6 +5,7 @@ import { $ } from "bun";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
+import { isAutoYes } from "../lib/ui.ts";
 import { getPrNumber, getPrInfo, getPrBody, updatePrBody, reviewEmoji } from "../lib/github.ts";
 import { buildStackViz } from "./update-prs.ts";
 
@@ -64,7 +65,7 @@ export default async function submit(args: string[]): Promise<void> {
 
   const draftFlag = args.includes("--draft") || args.includes("-d");
   const dryRun = args.includes("--dry-run");
-  const noEdit = args.includes("--no-edit") || args.includes("-n");
+  const noEdit = args.includes("--no-edit") || args.includes("-n") || isAutoYes();
 
   const meta = await ensureMetadata();
   const branch = await git.currentBranch();

@@ -40,9 +40,12 @@ export async function gitDir(): Promise<string> {
 
 /**
  * Check if working tree is clean (no uncommitted changes).
+ * Refreshes the index first to avoid false positives from stale stat info.
  */
 export async function isCleanWorkingTree(): Promise<boolean> {
   try {
+    // Refresh index to avoid false positives from stat changes (timestamps, etc.)
+    await $`git update-index -q --refresh`.quiet().nothrow();
     await $`git diff-index --quiet HEAD --`.quiet();
     return true;
   } catch {

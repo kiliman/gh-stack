@@ -1,1 +1,5 @@
-bun run check
+output=$(bun run check 2>&1)
+if [ $? -ne 0 ]; then
+  echo "$output"
+  exit 1
+fi

@@ -20,15 +20,19 @@ for branches that don't have them and updating stack visualization
 in all PR descriptions. Idempotent — safe to run repeatedly.
 
 OPTIONS
-  -d, --draft      Create new PRs as drafts
-  -n, --no-edit    Don't prompt for PR titles (auto-generate from branch name)
-      --dry-run    Show what would happen without doing anything
+  -d, --draft          Create new PRs as drafts
+  -n, --no-edit        Don't prompt for PR titles (auto-generate from branch name)
+  -t, --title <title>  PR title for new PRs (skips prompt)
+  -b, --body <body>    PR body/description for new PRs
+      --body-file <f>  Read PR body from a file
+      --dry-run        Show what would happen without doing anything
 
 EXAMPLES
-  gh-stack submit                # Push + create PRs interactively
-  gh-stack submit -n             # Push + create PRs with auto-titles
-  gh-stack submit --draft        # Create new PRs as drafts
-  gh-stack submit --dry-run      # Preview what would happen
+  gh-stack submit                              # Push + create PRs interactively
+  gh-stack submit -n                           # Push + create PRs with auto-titles
+  gh-stack submit -t "My PR" -b "Description"  # Explicit title and body
+  gh-stack submit --draft                      # Create new PRs as drafts
+  gh-stack submit --dry-run                    # Preview what would happen
 `;
 
 /**
@@ -79,7 +83,32 @@ export default async function submit(args: string[]): Promise<void> {
 
   const draftFlag = args.includes("--draft") || args.includes("-d");
   const dryRun = args.includes("--dry-run");
-  const noEdit = args.includes("--no-edit") || args.includes("-n") || isAutoYes();
+
+  // Parse value flags
+  let titleFlag: string | undefined;
+  let bodyFlag: string | undefined;
+  let bodyFileFlag: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === "--title" || args[i] === "-t") && args[i + 1]) {
+      titleFlag = args[++i];
+    } else if ((args[i] === "--body" || args[i] === "-b") && args[i + 1]) {
+      bodyFlag = args[++i];
+    } else if (args[i] === "--body-file" && args[i + 1]) {
+      bodyFileFlag = args[++i];
+    }
+  }
+
+  // Resolve body from file if provided
+  if (bodyFileFlag && !bodyFlag) {
+    try {
+      bodyFlag = await Bun.file(bodyFileFlag).text();
+    } catch {
+      p.cancel(`Could not read body file: ${bodyFileFlag}`);
+      process.exit(1);
+    }
+  }
+
+  const noEdit = args.includes("--no-edit") || args.includes("-n") || isAutoYes() || !!titleFlag;
 
   const meta = await ensureMetadata();
   const branch = await git.currentBranch();
@@ -166,7 +195,7 @@ export default async function submit(args: string[]): Promise<void> {
       }
     } else {
       // ── Create new PR ──
-      const defaultTitle = branchToTitle(branchName);
+      const defaultTitle = titleFlag || branchToTitle(branchName);
       let title = defaultTitle;
 
       if (!noEdit && !dryRun) {
@@ -181,6 +210,8 @@ export default async function submit(args: string[]): Promise<void> {
         }
         title = (input as string).trim() || defaultTitle;
       }
+
+      const body = bodyFlag ?? "";
 
       if (dryRun) {
         p.log.step(
@@ -201,7 +232,7 @@ export default async function submit(args: string[]): Promise<void> {
           "--title",
           title,
           "--body",
-          "",
+          body,
         ];
         if (draftFlag) ghArgs.push("--draft");
 

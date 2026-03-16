@@ -2,7 +2,7 @@
 
 Stacked PR manager for squash-merge workflows.
 
-Manages stacked pull requests with metadata stored in `.git/gh-stack-metadata.json`. Designed for repositories that use squash-merge (where tools like Graphite break down).
+Manages stacked pull requests with metadata stored in `.git/gh-stack-metadata.json`. Designed for repositories that use squash-merge (where tools like Graphite break down). Inspired by [Graphite](https://graphite.dev/) (`gt`) but works directly against GitHub — no backend required.
 
 ## Install
 
@@ -22,68 +22,98 @@ bun install -g gh-stack
 - [GitHub CLI](https://cli.github.com/) (`gh`) — authenticated
 - Git 2.30+
 
+## Terms
+
+| Term | Definition |
+|------|-----------|
+| **trunk** | Base branch of the repository (usually `main`) |
+| **stack** | A chain of dependent branches |
+| **upstack** | Branches that depend on the current branch (children) |
+| **downstack** | Branches the current branch depends on (ancestors) |
+
 ## Quick Start
 
 ```bash
-# Create a stack from your current branch
-gh-stack init --name my-feature
+# You have branches: main → feat-1 → feat-2
+# Go to the top of the chain and init:
+git checkout feat-2
+gh-stack init                    # Auto-detects the chain!
 
-# Add more branches to the stack
-gh-stack add --create kiliman/pr2-WEB-1234
+# Or start fresh:
+git checkout kiliman/first-pr
+gh-stack init                    # Creates stack with this branch
+gh-stack create kiliman/second-pr  # Branch off current, add to stack
+
+# Push everything to GitHub and create PRs
+gh-stack submit
 
 # View the stack
-gh-stack                    # tree view (default)
-gh-stack list               # numbered list
+gh-stack log                     # tree view (default)
+gh-stack ls                      # numbered list
 
-# Sync with main and restack all branches
+# Navigate
+gh-stack up                      # move to child branch
+gh-stack down                    # move to parent branch
+gh-stack top                     # jump to tip of stack
+gh-stack bottom                  # jump to base of stack
+
+# Sync with main and restack
 gh-stack sync
 
-# Check PR status across all stacks
+# Check PR status
 gh-stack status
 ```
 
 ## Commands
 
-### Stack Management
+### Core Workflow
 
 ```
 init [--name <name>] [--description <desc>] [--parent <branch>]
-    Create a new stack and add the current branch as the first entry.
+    Create a new stack from the current branch. Auto-detects branch
+    chains — if you're at the top of main → feat-1 → feat-2, all
+    branches are added to the stack automatically.
 
-add [<branch>] [--parent <branch>] [--create <branch>] [--description <desc>]
-    Add a branch to the current stack. Defaults to the current branch.
-    --create <branch> makes a new branch off the top of stack first.
+create <branch-name> [--description <desc>]
+    Create a new git branch off the current branch and add it to
+    the stack. The current branch must already be tracked.
 
-remove [<branch>]
-    Remove a branch from the stack and re-parent its children.
-    If omitted, an interactive selector is shown.
+submit [-d|--draft] [-n|--no-edit] [--dry-run]
+    Push all downstack branches to GitHub, create PRs for branches
+    that don't have them, and update all PR descriptions with stack
+    visualization. Idempotent — safe to run repeatedly.
+
+    In --yes mode, auto-generates PR titles from branch names.
 ```
 
-### Navigation
+### Stack Navigation
 
 ```
-show
-    Display the current stack as a tree with branch numbers,
-    PR numbers, and descriptions. This is the default command.
-
-list
-    List branches with position numbers. Lightweight output for
-    scripting and agents. (alias: ls)
-
-switch [<number>]
-    Switch to a branch by position number, or interactive picker.
+checkout [<branch>]
+    Switch to a branch by name, or interactive picker.
     --stack    Switch between stacks instead of branches
+    (alias: co)
 
-status [--current] [--json]
-    PR dashboard showing review state, CI status, and merge readiness.
-    --current  Show only the current stack or standalone PR
-    --json     Structured JSON output (progress goes to stderr)
+up [steps]
+    Move to child branch (upstack). Prompts if multiple children.
+
+down [steps]
+    Move to parent branch (downstack).
+
+top
+    Jump to the tip (leaf) of the current stack.
+
+bottom
+    Jump to the base (first branch above trunk).
+
+ls
+    List branches with position numbers.
 ```
 
-### Rebase & Sync
+### Stack Management
 
 ```
-restack [--resume] [--dry-run] [--verbose] [--yes]
+restack [--resume] [--dry-run] [--verbose]
     Rebase the current branch and all descendants onto their parents.
     Uses tag-based references for stable rebasing across the chain.
 
@@ -93,51 +123,37 @@ restack [--resume] [--dry-run] [--verbose] [--yes]
 
     (alias: rebase)
 
-sync [--dry-run] [--yes]
+sync [--dry-run]
     Fetch main, rebase the base branch onto main, then restack all
     children. Creates tags for ALL branches before any rebasing starts.
-```
 
-### Merge & Ship
-
-```
 merge [--dry-run]
-    Squash-merge the stack top-down locally (PR3 -> PR2 -> PR1),
-    then optionally rebase onto main. Keeps all commits local to
-    avoid orphaned squash commits from GitHub-only merges.
-    Can also close intermediate PRs and archives the stack on completion.
+    Squash-merge the stack top-down locally (PR3 → PR2 → PR1),
+    then optionally rebase onto main. Closes intermediate PRs and
+    archives the stack on completion.
 
-update-prs
-    Update all PR descriptions with a stack visualization:
-
-        ### 📚 Stacked on
-        ⚫ main
-        ┃
-        ┣━ ✅ #123 Backend models 👈
-        ┃
-        ┗━ ⏳ #124 Frontend UI
+delete [<branch>]
+    Remove a branch from the stack and re-parent its children.
+    Interactive selector if no branch specified.
 ```
 
-### Maintenance
+### Info & Maintenance
 
 ```
-archive [--restore <name>]
-    List archived stacks by default, or restore one by name.
+log
+    Display the current stack as a tree with branch numbers,
+    PR info, and descriptions. This is the default command.
+
+status [--current] [--json]
+    PR dashboard showing review state, CI status, and merge readiness.
+    --current  Show only the current stack or standalone PR
+    --json     Structured JSON output (progress goes to stderr)
 
 undo
     Restore the last snapshot taken before a destructive operation.
-```
 
-## Not Implemented Yet
-
-These are still intended, but not shipped in `v0.1.2`:
-
-```text
-split
-    Guided helper for splitting a branch/PR into two and updating stack metadata.
-
-insert
-    Insert a branch into the middle of an existing stack and re-parent the chain.
+archive [--restore <name>]
+    List archived stacks by default, or restore one by name.
 ```
 
 ## Global Options
@@ -157,9 +173,26 @@ GH_STACK_NO_COLOR=1    Disable colored output
 
 ## How It Works
 
+### Smart Init
+
+`gh-stack init` auto-detects branch chains by walking git ancestry. From the top branch, it finds all local branches whose tips are strict ancestors (but not already merged into trunk) and reconstructs the chain with correct parent relationships.
+
 ### Tag-Based Rebasing
 
 The critical insight: after rebasing a parent branch, `git merge-base` returns wrong results for its children. gh-stack solves this by creating temporary `stack-sync-*` tags marking each branch's divergence point **before** any rebasing starts, then using those stable references for `git rebase --onto`.
+
+### Stack Visualization
+
+`submit` automatically adds a stack section to all PR descriptions:
+
+```
+### 📚 Stacked on
+⚫ main
+┃
+┣━ ✅ #123 Backend models
+┃
+┗━ ⏳ #124 Frontend UI 👈
+```
 
 ### Metadata
 
@@ -168,21 +201,19 @@ Stack metadata lives at `.git/gh-stack-metadata.json` (never committed):
 ```json
 {
   "version": 2,
-  "current_stack": "podcast-mvp",
+  "current_stack": "kiliman/feature-2",
   "stacks": {
-    "podcast-mvp": {
-      "description": "Podcast MVP features",
-      "last_branch": "kiliman/pr2-WEB-1234",
+    "kiliman/feature-2": {
+      "description": "",
+      "last_branch": "kiliman/feature-2",
       "branches": {
-        "kiliman/pr1-WEB-1234": {
+        "kiliman/feature-1": {
           "parent": "main",
-          "pr": 21306,
-          "description": "Backend models"
+          "pr": 21729
         },
-        "kiliman/pr2-WEB-1234": {
-          "parent": "kiliman/pr1-WEB-1234",
-          "pr": 21452,
-          "description": "Frontend UI"
+        "kiliman/feature-2": {
+          "parent": "kiliman/feature-1",
+          "pr": 21730
         }
       }
     }
@@ -192,28 +223,32 @@ Stack metadata lives at `.git/gh-stack-metadata.json` (never committed):
 
 ### Snapshots
 
-Before any destructive operation (restack, sync, merge, remove), gh-stack saves a snapshot of all branch HEADs. Run `gh-stack undo` to restore.
+Before any destructive operation (restack, sync, merge, delete), gh-stack saves a snapshot of all branch HEADs. Run `gh-stack undo` to restore.
 
 ## Example Workflow
 
 ```bash
-# Start a new stack
-git checkout -b kiliman/api-layer-WEB-1234
-# ... code, commit, push, create PR ...
-gh-stack init --name api-feature
+# Start from an existing branch with a PR
+git checkout kiliman/api-layer-WEB-1234
+gh-stack init
 
-# Add second PR on top
-gh-stack add --create kiliman/frontend-WEB-1234
-# ... code, commit, push, create PR ...
+# Create second PR on top
+gh-stack create kiliman/frontend-WEB-1234
+# ... code, commit ...
 
-# Update PR descriptions with stack visualization
-gh-stack update-prs
+# Push everything and create PRs
+gh-stack submit
 
 # Later: sync everything with main
-gh-stack sync --yes
+gh-stack sync
+
+# Navigate the stack
+gh-stack up          # go to child
+gh-stack down        # go to parent
+gh-stack top         # jump to tip
 
 # Check status
-gh-stack status --current --json
+gh-stack status
 
 # When PRs are approved, merge the stack
 gh-stack merge
@@ -224,18 +259,18 @@ gh-stack merge
 gh-stack is designed to be used by AI agents and CI pipelines:
 
 ```bash
-# Non-interactive mode
+# Non-interactive mode — all prompts auto-resolved
 export GH_STACK_YES=1
+
+gh-stack init                    # No confirmations
+gh-stack submit                  # Auto-generates PR titles
 gh-stack sync
 gh-stack restack
 
 # Structured output
 gh-stack status --json
 gh-stack status --current --json
-gh-stack list
-
-# Quick branch switching
-gh-stack switch 2
+gh-stack ls
 ```
 
 ## License

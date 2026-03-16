@@ -6,6 +6,7 @@ import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
+import { $ } from "bun";
 import { closePr } from "../lib/github.ts";
 import { confirmAction } from "../lib/ui.ts";
 
@@ -167,10 +168,40 @@ This keeps all commits local (avoiding orphaned squash commits).
   }
   await writeMetadata(meta);
 
-  p.outro(pc.green("Stack merge complete! Stack archived."));
-
+  // Push base branch and enable auto-merge
   console.log();
-  console.log("  Next steps:");
-  console.log(`    1. Push ${pc.yellow(baseBranch)} and let CI run`);
-  console.log(`    2. Squash-merge ${pc.yellow(baseBranch)} into main via GitHub`);
+  const pushAndMerge = await confirmAction(
+    `Push ${pc.yellow(baseBranch)} and enable auto-merge (squash)?`,
+  );
+
+  if (pushAndMerge) {
+    const pushSpinner = p.spinner();
+    pushSpinner.start(`Pushing ${pc.blue(baseBranch)}...`);
+    const pushOk = await git.forcePushWithLease(baseBranch);
+    if (pushOk) {
+      pushSpinner.stop(`Pushed ${pc.blue(baseBranch)}`);
+    } else {
+      pushSpinner.stop(pc.red(`Failed to push ${baseBranch}`));
+      p.outro(
+        pc.yellow("Stack merged locally but push failed. Push manually and merge via GitHub."),
+      );
+      return;
+    }
+
+    // Enable auto-merge via gh CLI
+    const basePrNum = stack.branches[baseBranch]?.pr;
+    if (basePrNum) {
+      const mergeSpinner = p.spinner();
+      mergeSpinner.start("Enabling auto-merge...");
+      try {
+        await $`gh pr merge ${basePrNum} --squash --auto`.quiet();
+        mergeSpinner.stop(`Auto-merge enabled for PR #${basePrNum} — will merge when CI passes`);
+      } catch {
+        mergeSpinner.stop(pc.yellow(`Could not enable auto-merge for PR #${basePrNum}`));
+        p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${basePrNum} --squash --auto`)}`);
+      }
+    }
+  }
+
+  p.outro(pc.green("Stack merge complete! Stack archived."));
 }

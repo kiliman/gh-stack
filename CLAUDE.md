@@ -29,7 +29,7 @@ bun test                 # Run tests
 ## Architecture
 
 - `src/index.ts` — CLI entry point, subcommand router
-- `src/commands/` — One file per subcommand (show, init, add, restack, etc.)
+- `src/commands/` — One file per subcommand (init, create, submit, log, restack, etc.)
 - `src/lib/` — Shared modules (metadata, git, github, ui, safety, snapshot)
 - `src/types.ts` — Metadata schema types
 - `reference/` — Original bash scripts for behavior reference
@@ -59,3 +59,19 @@ ln -s ~/Projects/oss/gh-stack/dist/gh-stack /usr/local/bin/gh-stack
 
 Test against real stacks in `~/Projects/beehiiv/swarm` during development.
 For automated tests, create temp git repos with fabricated branch structures.
+
+## Release Process
+
+When making changes, follow these steps:
+
+1. **Update docs** — Keep `README.md` in sync with any command/flag changes
+2. **Run tests** — `bun test` (must pass before committing)
+3. **Commit** — Use conventional commits
+4. **Bump version** — Update `package.json` version + add entry to `CHANGELOG.md`
+5. **Tag** — `git tag -a v0.x.y -m "Release v0.x.y — summary"`
+6. **Build** — `bun run build`
+7. **Push** — `git push && git push origin v0.x.y`
+8. **Publish** — `OTP=$(op item get npm --otp) && npm publish --otp="$OTP"`
+
+The pre-push hook runs lint + typecheck + tests (output suppressed on success).
+The prepublishOnly hook is a no-op since checks already ran on push.

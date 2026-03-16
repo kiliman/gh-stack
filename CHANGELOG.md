@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3
+
+### ✨ Features
+- **`merge` now pushes and enables GitHub auto-merge** — after squash-merging the stack locally, merge pushes the base branch and runs `gh pr merge --squash --auto` so the PR auto-merges once CI passes. No more manual steps.
+
 ## 0.2.2
 
 ### ✨ Features

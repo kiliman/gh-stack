@@ -78,12 +78,14 @@ create <branch-name> [--description <desc>]
     Create a new git branch off the current branch and add it to
     the stack. The current branch must already be tracked.
 
-submit [-d|--draft] [-n|--no-edit] [--dry-run]
+submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--dry-run]
     Push all downstack branches to GitHub, create PRs for branches
     that don't have them, and update all PR descriptions with stack
     visualization. Idempotent — safe to run repeatedly.
 
-    In --yes mode, auto-generates PR titles from branch names.
+    --title/-t and --body/-b provide PR details directly (skips prompts).
+    --body-file reads body from a file. In --yes mode without --title,
+    auto-generates PR titles from branch names.
 ```
 
 ### Stack Navigation
@@ -129,8 +131,9 @@ sync [--dry-run]
 
 merge [--dry-run]
     Squash-merge the stack top-down locally (PR3 → PR2 → PR1),
-    then optionally rebase onto main. Closes intermediate PRs and
-    archives the stack on completion.
+    then rebases onto main, closes intermediate PRs, pushes the
+    base branch, and enables GitHub auto-merge (squash). Archives
+    the stack on completion.
 
 delete [<branch>]
     Remove a branch from the stack and re-parent its children.
@@ -251,7 +254,7 @@ gh-stack top         # jump to tip
 gh-stack status
 
 # When PRs are approved, merge the stack
-gh-stack merge
+gh-stack merge       # squash-merges down, pushes, enables auto-merge
 ```
 
 ## Agent/CI Usage
@@ -263,7 +266,8 @@ gh-stack is designed to be used by AI agents and CI pipelines:
 export GH_STACK_YES=1
 
 gh-stack init                    # No confirmations
-gh-stack submit                  # Auto-generates PR titles
+gh-stack submit -t "Title [WEB-1234]" -b "Description"  # Explicit PR details
+gh-stack submit -n               # Or auto-generate titles
 gh-stack sync
 gh-stack restack
 

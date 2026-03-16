@@ -97,6 +97,100 @@ describe("init (smart defaults)", () => {
     const existsAfter = await Bun.file(`${tmpDir}/.git/gh-stack-metadata.json`).exists();
     expect(existsAfter).toBe(true);
   });
+
+  test("auto-detects branch chain: main → feat-1 → feat-2", async () => {
+    // Create chain: main → feat-1 → feat-2
+    await createBranch(tmpDir, "feat-1", "main");
+    await makeCommit(tmpDir, "f1.txt", "feature 1\n", "feat-1 commit");
+    await createBranch(tmpDir, "feat-2", "feat-1");
+    await makeCommit(tmpDir, "f2.txt", "feature 2\n", "feat-2 commit");
+
+    // Init from the TOP of the chain
+    await init([]);
+
+    const meta = await readMetadata(tmpDir);
+    const stack = meta.stacks["feat-2"]!;
+
+    // Both branches should be in the stack
+    expect(stack.branches["feat-1"]).toBeDefined();
+    expect(stack.branches["feat-2"]).toBeDefined();
+
+    // Parents should be correct
+    expect(stack.branches["feat-1"]!.parent).toBe("main");
+    expect(stack.branches["feat-2"]!.parent).toBe("feat-1");
+  });
+
+  test("auto-detects 3-branch chain: main → a → b → c", async () => {
+    await createBranch(tmpDir, "a", "main");
+    await makeCommit(tmpDir, "a.txt", "a\n", "a commit");
+    await createBranch(tmpDir, "b", "a");
+    await makeCommit(tmpDir, "b.txt", "b\n", "b commit");
+    await createBranch(tmpDir, "c", "b");
+    await makeCommit(tmpDir, "c.txt", "c\n", "c commit");
+
+    await init([]);
+
+    const meta = await readMetadata(tmpDir);
+    const stack = meta.stacks["c"]!;
+
+    expect(Object.keys(stack.branches)).toHaveLength(3);
+    expect(stack.branches["a"]!.parent).toBe("main");
+    expect(stack.branches["b"]!.parent).toBe("a");
+    expect(stack.branches["c"]!.parent).toBe("b");
+  });
+
+  test("single branch (no chain) still works", async () => {
+    await createBranch(tmpDir, "solo", "main");
+    await makeCommit(tmpDir, "solo.txt", "solo\n", "solo commit");
+
+    await init([]);
+
+    const meta = await readMetadata(tmpDir);
+    const stack = meta.stacks["solo"]!;
+
+    expect(Object.keys(stack.branches)).toHaveLength(1);
+    expect(stack.branches["solo"]!.parent).toBe("main");
+  });
+
+  test("chain detection ignores unrelated branches", async () => {
+    // Create chain: main → feat-1 → feat-2
+    await createBranch(tmpDir, "feat-1", "main");
+    await makeCommit(tmpDir, "f1.txt", "feature 1\n", "feat-1 commit");
+    await createBranch(tmpDir, "feat-2", "feat-1");
+    await makeCommit(tmpDir, "f2.txt", "feature 2\n", "feat-2 commit");
+
+    // Create an unrelated branch off main
+    await createBranch(tmpDir, "unrelated", "main");
+    await makeCommit(tmpDir, "unrelated.txt", "unrelated\n", "unrelated commit");
+
+    // Go to feat-2 and init
+    await checkout(tmpDir, "feat-2");
+    await init([]);
+
+    const meta = await readMetadata(tmpDir);
+    const stack = meta.stacks["feat-2"]!;
+
+    // Only chain branches, not the unrelated one
+    expect(Object.keys(stack.branches)).toHaveLength(2);
+    expect(stack.branches["unrelated"]).toBeUndefined();
+  });
+
+  test("chain detection with --parent flag uses correct trunk", async () => {
+    // Create: main → develop → feat-1
+    await createBranch(tmpDir, "develop", "main");
+    await makeCommit(tmpDir, "dev.txt", "dev\n", "dev commit");
+    await createBranch(tmpDir, "feat-1", "develop");
+    await makeCommit(tmpDir, "f1.txt", "feature 1\n", "feat-1 commit");
+
+    await init(["--parent", "develop"]);
+
+    const meta = await readMetadata(tmpDir);
+    const stack = meta.stacks["feat-1"]!;
+
+    // Should only have feat-1 (develop is the trunk, not included in chain)
+    expect(Object.keys(stack.branches)).toHaveLength(1);
+    expect(stack.branches["feat-1"]!.parent).toBe("develop");
+  });
 });
 
 // ── create ──

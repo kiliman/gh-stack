@@ -244,6 +244,14 @@ export async function commitCount(from: string, to: string): Promise<number> {
 }
 
 /**
+ * Get all local branch names.
+ */
+export async function allLocalBranches(): Promise<string[]> {
+  const result = await $`git branch --format=${"%(refname:short)"}`.text();
+  return result.trim().split("\n").filter(Boolean);
+}
+
+/**
  * Build a deterministic temp tag name for a branch.
  * Includes a readable slug plus a stable hash to avoid collisions.
  */

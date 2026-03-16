@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+### ⚡ Performance
+- **`submit` skips pushing branches already up-to-date with origin** — compares local vs remote SHA before pushing, avoiding unnecessary pre-push hook runs
+
+### 🐛 Fixes
+- `--yes` flag now implies `--no-edit` in submit (auto-generates PR titles)
+- Refresh git index before clean-tree check (fixes false "dirty tree" errors)
+- Filter already-merged branches from init chain detection
+
 ## 0.2.0 — Graphite Parity Phase 1
 
 > **Minor version bump:** New commands, renamed commands (breaking), reworked `init` behavior.

@@ -46,6 +46,20 @@ function branchToTitle(branch: string): string {
 }
 
 /**
+ * Check if a local branch is up-to-date with its remote counterpart.
+ */
+async function isBranchUpToDate(branch: string): Promise<boolean> {
+  try {
+    const localSha = (await $`git rev-parse ${branch}`.text()).trim();
+    const remoteSha = (await $`git rev-parse origin/${branch}`.text()).trim();
+    return localSha === remoteSha;
+  } catch {
+    // Remote branch doesn't exist yet
+    return false;
+  }
+}
+
+/**
  * Push a branch to origin with upstream tracking and force-with-lease.
  */
 async function pushBranch(branch: string): Promise<boolean> {
@@ -105,9 +119,11 @@ export default async function submit(args: string[]): Promise<void> {
     const branchMeta = stack.branches[branchName]!;
     const parentBranch = branchMeta.parent;
 
-    // ── Push ──
+    // ── Push (skip if already up-to-date) ──
     if (dryRun) {
       p.log.step(`${pc.dim("push")} ${branchName} → origin/${branchName}`);
+    } else if (await isBranchUpToDate(branchName)) {
+      p.log.info(`${pc.dim("✓")} ${pc.blue(branchName)} already up to date`);
     } else {
       const s = p.spinner();
       s.start(`Pushing ${pc.blue(branchName)}...`);

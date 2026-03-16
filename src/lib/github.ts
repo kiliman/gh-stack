@@ -125,6 +125,21 @@ export async function getPrBody(prNumber: number): Promise<string | null> {
 }
 
 /**
+ * Get the merge state of a PR.
+ * Returns { state, mergeable, mergeStateStatus }.
+ */
+export async function getPrMergeState(
+  prNumber: number,
+): Promise<{ state: string; mergeable: string; mergeStateStatus: string } | null> {
+  try {
+    const result = await $`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus`.text();
+    return JSON.parse(result.trim());
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Close a PR with a comment.
  */
 export async function closePr(prNumber: number, comment?: string): Promise<boolean> {

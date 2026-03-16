@@ -133,7 +133,8 @@ merge [--dry-run] [-d|--delete-branch]
     Squash-merge the stack top-down via GitHub (PR3 → PR2 → PR1),
     then enables auto-merge for the base PR into main. All merges
     happen on GitHub so PRs show as "Merged", Linear tickets close
-    automatically, and GitHub Actions fire normally.
+    automatically, and GitHub Actions fire normally. Skips already-
+    merged PRs (safe to re-run). Waits for GitHub between merges.
 
 delete [<branch>]
     Remove a branch from the stack and re-parent its children.

@@ -6,7 +6,37 @@ import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
 import { ensureMetadata, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
+import { getPrMergeState } from "../lib/github.ts";
 import { confirmAction } from "../lib/ui.ts";
+
+const MAX_RETRIES = 12;
+const RETRY_DELAY_MS = 5000;
+
+/**
+ * Wait for a PR to become mergeable after a previous merge lands.
+ * GitHub needs time to process the new commit on the target branch.
+ */
+async function waitForMergeable(
+  prNumber: number,
+  spinner: ReturnType<typeof p.spinner>,
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const state = await getPrMergeState(prNumber);
+    if (!state) return false;
+
+    if (state.state === "MERGED") return true; // Already merged
+    if (state.state === "CLOSED") return false;
+
+    // "CLEAN", "HAS_HOOKS", "UNSTABLE" are all mergeable states
+    if (state.mergeable === "MERGEABLE" && state.mergeStateStatus !== "BLOCKED") {
+      return true;
+    }
+
+    spinner.message(`Waiting for PR #${prNumber} to be ready... (${attempt}/${MAX_RETRIES})`);
+    await Bun.sleep(RETRY_DELAY_MS);
+  }
+  return false;
+}
 
 export default async function merge(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
@@ -24,6 +54,9 @@ Squash-merges the stack from top to bottom via GitHub:
 
 All merges happen on GitHub, so PRs show as "Merged", Linear tickets
 close automatically, and all GitHub Actions/webhooks fire normally.
+
+Skips PRs that are already merged (safe to re-run after partial failure).
+Waits for GitHub to process between merges if needed.
 
 OPTIONS
   -d, --delete-branch  Delete remote branches after merging
@@ -65,23 +98,29 @@ OPTIONS
   }
 
   p.intro(pc.cyan("Stack Merge (via GitHub)"));
-
   p.log.info(`Stack: ${pc.yellow(stackName)}`);
   console.log();
 
-  // Show the merge plan: from top to bottom
+  // Check PR states and build the merge plan
   const reversed = ordered.toReversed();
+  const baseBranch = ordered[0]!;
+  const basePr = stack.branches[baseBranch]?.pr;
+
   console.log(`  ${pc.bold("Merge plan:")}`);
   for (let i = 0; i < reversed.length - 1; i++) {
     const child = reversed[i]!;
     const parent = stack.branches[child]?.parent || "???";
     const childPr = stack.branches[child]?.pr;
+
+    // Check if already merged
+    const prState = childPr ? await getPrMergeState(childPr) : null;
+    const isMerged = prState?.state === "MERGED";
+    const mergedLabel = isMerged ? pc.dim(" (already merged)") : "";
+
     console.log(
-      `    ${pc.yellow(child)}${childPr ? ` (#${childPr})` : ""} → squash into ${pc.blue(parent)}`,
+      `    ${pc.yellow(child)}${childPr ? ` (#${childPr})` : ""} → squash into ${pc.blue(parent)}${mergedLabel}`,
     );
   }
-  const baseBranch = ordered[0]!;
-  const basePr = stack.branches[baseBranch]?.pr;
   console.log(
     `    ${pc.blue(baseBranch)}${basePr ? ` (#${basePr})` : ""} → ${pc.green("main")} (auto-merge)`,
   );
@@ -118,6 +157,13 @@ OPTIONS
 
     if (parentBranch === "main" || parentBranch === "master") continue;
 
+    // Check if already merged (skip)
+    const prState = await getPrMergeState(childPrNum);
+    if (prState?.state === "MERGED") {
+      p.log.info(`${pc.dim("✓")} PR #${childPrNum} already merged — skipping`);
+      continue;
+    }
+
     console.log();
     console.log(pc.cyan("━".repeat(40)));
     console.log(
@@ -125,8 +171,19 @@ OPTIONS
     );
     console.log(pc.cyan("━".repeat(40)));
 
+    // Wait for PR to be mergeable (GitHub may need time after previous merge)
     const s = p.spinner();
-    s.start(`Squash-merging PR #${childPrNum} via GitHub...`);
+    s.start(`Checking PR #${childPrNum} is ready to merge...`);
+    const ready = await waitForMergeable(childPrNum, s);
+
+    if (!ready) {
+      s.stop(pc.red(`PR #${childPrNum} is not mergeable`));
+      p.log.info("Check the PR on GitHub for merge conflicts or required checks.");
+      p.log.info("Re-run merge to continue from where you left off.");
+      process.exit(2);
+    }
+
+    s.message(`Squash-merging PR #${childPrNum} via GitHub...`);
 
     const ghArgs = ["pr", "merge", String(childPrNum), "--squash"];
     if (deleteFlag) ghArgs.push("--delete-branch");
@@ -143,7 +200,7 @@ OPTIONS
     } else {
       s.stop(pc.red(`Failed to merge PR #${childPrNum}`));
       p.log.error(stderr.trim());
-      p.log.info("Resolve the issue on GitHub, then re-run merge to continue.");
+      p.log.info("Re-run merge to continue from where you left off.");
       process.exit(2);
     }
   }
@@ -157,12 +214,23 @@ OPTIONS
   console.log(pc.cyan("━".repeat(40)));
 
   const autoSpinner = p.spinner();
-  autoSpinner.start(`Enabling auto-merge for PR #${basePr}...`);
+
+  // Wait for base PR to be ready (may need time after last intermediate merge)
+  autoSpinner.start(`Waiting for PR #${basePr} to be ready...`);
+  await waitForMergeable(basePr!, autoSpinner);
+
+  autoSpinner.message(`Enabling auto-merge for PR #${basePr}...`);
 
   try {
     const ghArgs = ["pr", "merge", String(basePr), "--squash", "--auto"];
     if (deleteFlag) ghArgs.push("--delete-branch");
-    await $`gh pr merge ${basePr} --squash --auto ${deleteFlag ? "--delete-branch" : ""}`.quiet();
+
+    const proc = Bun.spawn(["gh", ...ghArgs], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await proc.exited;
+
     autoSpinner.stop(`Auto-merge enabled for PR #${basePr} — will merge into main when CI passes`);
   } catch {
     autoSpinner.stop(pc.yellow(`Could not enable auto-merge for PR #${basePr}`));
@@ -175,7 +243,6 @@ OPTIONS
   pullSpinner.start("Syncing local branches...");
   try {
     await $`git fetch origin`.quiet();
-    // Checkout main and pull so local is up to date
     await git.checkout("main");
     await $`git pull origin main`.quiet();
     pullSpinner.stop("Local branches synced");

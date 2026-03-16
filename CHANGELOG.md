@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+### 🐛 Fixes
+- **`merge` skips already-merged PRs** — safe to re-run after partial failure. Plan shows "(already merged)" for completed PRs.
+- **`merge` waits for GitHub to process** between merges — after squash-merging PR3 into PR2, waits for PR2 to become mergeable before attempting the next merge (retries up to 60s).
+
+### ✨ Features
+- Added `getPrMergeState()` helper to check PR state/mergeable status
+
 ## 0.3.0
 
 > **Minor version bump:** `merge` command completely rewritten (breaking behavior change).

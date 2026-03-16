@@ -14,7 +14,7 @@ USAGE
   gh-stack ls
 
 Lightweight branch listing for quick reference and scripting.
-Use the number with 'gh-stack switch <number>' to jump to a branch.
+Use the number with 'gh-stack checkout <number>' to jump to a branch.
 
 ALIASES
   gh-stack ls

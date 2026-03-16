@@ -39,27 +39,27 @@ await ensureGitRepo();
 const commandArgs = parsed.commandArgs;
 
 switch (command) {
-  case "show":
-    await (await import("./commands/show.ts")).default(commandArgs);
+  case "log":
+    await (await import("./commands/log.ts")).default(commandArgs);
     break;
 
   case "init":
     await (await import("./commands/init.ts")).default(commandArgs);
     break;
 
-  case "add":
-    await (await import("./commands/add.ts")).default(commandArgs);
+  case "create":
+    await (await import("./commands/create.ts")).default(commandArgs);
     break;
 
-  case "remove":
-    await (await import("./commands/remove.ts")).default(commandArgs);
+  case "delete":
+    await (await import("./commands/delete.ts")).default(commandArgs);
     break;
 
-  case "switch":
-    await (await import("./commands/switch.ts")).default(commandArgs);
+  case "checkout":
+  case "co":
+    await (await import("./commands/checkout.ts")).default(commandArgs);
     break;
 
-  case "list":
   case "ls":
     await (await import("./commands/list.ts")).default(commandArgs);
     break;
@@ -73,8 +73,8 @@ switch (command) {
     await (await import("./commands/sync.ts")).default(commandArgs);
     break;
 
-  case "update-prs":
-    await (await import("./commands/update-prs.ts")).default(commandArgs);
+  case "submit":
+    await (await import("./commands/submit.ts")).default(commandArgs);
     break;
 
   case "status":
@@ -91,6 +91,22 @@ switch (command) {
 
   case "archive":
     await (await import("./commands/archive.ts")).default(commandArgs);
+    break;
+
+  case "up":
+    await (await import("./commands/up.ts")).default(commandArgs);
+    break;
+
+  case "down":
+    await (await import("./commands/down.ts")).default(commandArgs);
+    break;
+
+  case "top":
+    await (await import("./commands/top.ts")).default(commandArgs);
+    break;
+
+  case "bottom":
+    await (await import("./commands/bottom.ts")).default(commandArgs);
     break;
 
   case "--help":
@@ -111,18 +127,34 @@ gh-stack v${VERSION} — Stacked PR manager for squash-merge workflows
 ${bold("USAGE")}
   gh-stack <command> [options]
 
-${bold("COMMANDS")}
-  ${green("show")}           Display current stack tree ${dim("(default)")}
-  ${green("list")}           List branches with numbers ${dim("(alias: ls)")}
-  ${green("init")}           Create a new stack
-  ${green("add")}            Add a branch to the current stack
-  ${green("remove")}         Remove a branch from the stack
-  ${green("switch")}         Switch branch or stack
+${bold("TERMS")}
+  trunk       Base branch of the repository (usually main)
+  stack       A chain of dependent branches
+  upstack     Branches that depend on the current branch (children)
+  downstack   Branches the current branch depends on (ancestors)
+
+${bold("CORE WORKFLOW")}
+  ${green("init")}           Create a new stack from the current branch
+  ${green("create")}         Create a new branch and add to the stack
+  ${green("submit")}         Push branches and create/update PRs
+  ${green("log")}            Display current stack tree ${dim("(default)")}
+
+${bold("STACK NAVIGATION")}
+  ${green("checkout")}       Switch to a branch or stack ${dim("(alias: co)")}
+  ${green("up")}             Move to child branch (upstack)
+  ${green("down")}           Move to parent branch (downstack)
+  ${green("top")}            Jump to the tip of the stack
+  ${green("bottom")}         Jump to the base of the stack
+  ${green("ls")}             List branches with numbers
+
+${bold("STACK MANAGEMENT")}
   ${green("restack")}        Rebase children onto updated parents
   ${green("sync")}           Sync base with main + restack all
-  ${green("update-prs")}     Update PR descriptions with stack viz
-  ${green("status")}         PR dashboard (CI, reviews)
   ${green("merge")}          Local squash-merge top-down
+  ${green("delete")}         Remove a branch from the stack
+
+${bold("INFO & MAINTENANCE")}
+  ${green("status")}         PR dashboard (CI, reviews)
   ${green("undo")}           Restore from last snapshot
   ${green("archive")}        Manage archived stacks
 

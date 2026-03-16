@@ -1,4 +1,4 @@
-// gh-stack show — Display current stack tree (default command)
+// gh-stack log — Display current stack tree (default command)
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -10,7 +10,7 @@ import {
 } from "../lib/metadata.ts";
 import { renderStackTree } from "../lib/ui.ts";
 
-export default async function show(_args: string[]): Promise<void> {
+export default async function log(_args: string[]): Promise<void> {
   // Check if metadata exists
   if (!(await metadataExists())) {
     p.log.warn("No stack metadata found");
@@ -71,6 +71,6 @@ export default async function show(_args: string[]): Promise<void> {
   console.log();
 
   // Tip
-  console.log(pc.dim(`Tip: Switch stacks with 'gh-stack switch --stack'`));
+  console.log(pc.dim(`Tip: Switch stacks with 'gh-stack checkout --stack'`));
   console.log();
 }

@@ -1,0 +1,309 @@
+// gh-stack submit — Push branches and create/update PRs
+import * as p from "@clack/prompts";
+import pc from "picocolors";
+import { $ } from "bun";
+import * as git from "../lib/git.ts";
+import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
+import { ensureMetadata } from "../lib/safety.ts";
+import { getPrNumber, getPrInfo, getPrBody, updatePrBody, reviewEmoji } from "../lib/github.ts";
+import { buildStackViz } from "./update-prs.ts";
+
+const HELP = `
+gh-stack submit — Push branches and create/update PRs
+
+USAGE
+  gh-stack submit [options]
+
+Pushes all branches from trunk to the current branch, creating PRs
+for branches that don't have them and updating stack visualization
+in all PR descriptions. Idempotent — safe to run repeatedly.
+
+OPTIONS
+  -d, --draft      Create new PRs as drafts
+  -n, --no-edit    Don't prompt for PR titles (auto-generate from branch name)
+      --dry-run    Show what would happen without doing anything
+
+EXAMPLES
+  gh-stack submit                # Push + create PRs interactively
+  gh-stack submit -n             # Push + create PRs with auto-titles
+  gh-stack submit --draft        # Create new PRs as drafts
+  gh-stack submit --dry-run      # Preview what would happen
+`;
+
+/**
+ * Generate a PR title from a branch name.
+ * Strips common prefixes like "kiliman/", replaces hyphens with spaces,
+ * and capitalizes the first letter.
+ */
+function branchToTitle(branch: string): string {
+  // Strip common prefixes like "kiliman/", "user/"
+  let name = branch.includes("/") ? branch.split("/").slice(1).join("/") : branch;
+  // Replace hyphens with spaces
+  name = name.replace(/-/g, " ");
+  // Capitalize first letter
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/**
+ * Push a branch to origin with upstream tracking and force-with-lease.
+ */
+async function pushBranch(branch: string): Promise<boolean> {
+  try {
+    await $`git push -u --force-with-lease origin ${branch}`.quiet();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export default async function submit(args: string[]): Promise<void> {
+  if (args.includes("--help")) {
+    console.log(HELP);
+    return;
+  }
+
+  const draftFlag = args.includes("--draft") || args.includes("-d");
+  const dryRun = args.includes("--dry-run");
+  const noEdit = args.includes("--no-edit") || args.includes("-n");
+
+  const meta = await ensureMetadata();
+  const branch = await git.currentBranch();
+  const stackName = findStackForBranch(meta, branch);
+
+  if (!stackName) {
+    p.cancel(`Branch ${pc.blue(branch)} not found in any stack`);
+    process.exit(1);
+  }
+
+  const stack = meta.stacks[stackName]!;
+  const ordered = getOrderedBranches(stack);
+
+  // Determine downstack scope: branches from trunk up to and including current
+  const currentIndex = ordered.indexOf(branch);
+  const scope = currentIndex >= 0 ? ordered.slice(0, currentIndex + 1) : ordered;
+
+  p.intro(pc.cyan("Submit Stack"));
+  p.log.info(`Stack: ${pc.yellow(stackName)}`);
+  p.log.info(
+    `Scope: ${scope.length} of ${ordered.length} branch(es) (downstack from ${pc.blue(branch)})`,
+  );
+  console.log();
+
+  if (dryRun) {
+    p.log.info(pc.dim("Dry run — no changes will be made"));
+    console.log();
+  }
+
+  // ── Phase 1: Push branches and create/update PRs ──
+  let pushed = 0;
+  let created = 0;
+  let existing = 0;
+  let metadataChanged = false;
+
+  for (const branchName of scope) {
+    const branchMeta = stack.branches[branchName]!;
+    const parentBranch = branchMeta.parent;
+
+    // ── Push ──
+    if (dryRun) {
+      p.log.step(`${pc.dim("push")} ${branchName} → origin/${branchName}`);
+    } else {
+      const s = p.spinner();
+      s.start(`Pushing ${pc.blue(branchName)}...`);
+      const ok = await pushBranch(branchName);
+      if (ok) {
+        s.stop(`Pushed ${pc.blue(branchName)}`);
+        pushed++;
+      } else {
+        s.stop(pc.red(`Failed to push ${branchName}`));
+        p.cancel(`Push failed for ${pc.blue(branchName)}. Aborting.`);
+        process.exit(1);
+      }
+    }
+
+    // ── Check for existing PR ──
+    let prNumber = branchMeta.pr ?? null;
+
+    if (!prNumber && !dryRun) {
+      prNumber = await getPrNumber(branchName);
+      if (prNumber) {
+        // Found an existing PR not tracked in metadata — save it
+        branchMeta.pr = prNumber;
+        metadataChanged = true;
+      }
+    }
+
+    if (prNumber) {
+      // ── Existing PR: update base if needed ──
+      existing++;
+      if (dryRun) {
+        p.log.step(`${pc.dim("exists")} PR #${prNumber} for ${branchName}`);
+      } else {
+        // Ensure the PR base is correct
+        try {
+          await $`gh pr edit ${prNumber} --base ${parentBranch}`.quiet();
+        } catch {
+          // Best effort — base might already be correct
+        }
+        p.log.info(`${pc.dim("✓")} PR #${prNumber} for ${pc.blue(branchName)}`);
+      }
+    } else {
+      // ── Create new PR ──
+      const defaultTitle = branchToTitle(branchName);
+      let title = defaultTitle;
+
+      if (!noEdit && !dryRun) {
+        const input = await p.text({
+          message: `PR title for ${pc.blue(branchName)}`,
+          initialValue: defaultTitle,
+          placeholder: defaultTitle,
+        });
+        if (p.isCancel(input)) {
+          p.cancel("Cancelled");
+          process.exit(0);
+        }
+        title = (input as string).trim() || defaultTitle;
+      }
+
+      if (dryRun) {
+        p.log.step(
+          `${pc.dim("create")} PR for ${branchName} → ${parentBranch} "${title}"${draftFlag ? " (draft)" : ""}`,
+        );
+        created++;
+      } else {
+        const s = p.spinner();
+        s.start(`Creating PR for ${pc.blue(branchName)}...`);
+
+        const ghArgs = [
+          "pr",
+          "create",
+          "--base",
+          parentBranch,
+          "--head",
+          branchName,
+          "--title",
+          title,
+          "--body",
+          "",
+        ];
+        if (draftFlag) ghArgs.push("--draft");
+
+        const proc = Bun.spawn(["gh", ...ghArgs], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const output = await new Response(proc.stdout).text();
+        const exitCode = await proc.exited;
+
+        if (exitCode === 0) {
+          // Extract PR number from URL output
+          const prUrl = output.trim();
+          const prNumMatch = prUrl.match(/\/pull\/(\d+)/);
+          const newPrNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
+
+          if (newPrNumber) {
+            branchMeta.pr = newPrNumber;
+            metadataChanged = true;
+            s.stop(`Created PR #${newPrNumber} for ${pc.blue(branchName)}`);
+          } else {
+            s.stop(`Created PR for ${pc.blue(branchName)} (could not parse PR number)`);
+          }
+          created++;
+        } else {
+          const stderr = await new Response(proc.stderr).text();
+          s.stop(pc.red(`Failed to create PR for ${branchName}`));
+          p.log.error(stderr.trim());
+        }
+      }
+    }
+  }
+
+  // Save metadata if we discovered or created PRs
+  if (metadataChanged && !dryRun) {
+    await writeMetadata(meta);
+  }
+
+  console.log();
+
+  if (dryRun) {
+    p.outro(
+      pc.dim(
+        `Dry run complete: would push ${scope.length}, create ${created}, update ${existing} PR(s)`,
+      ),
+    );
+    return;
+  }
+
+  // ── Phase 2: Update stack visualization in all PR descriptions ──
+  p.log.info(pc.cyan("Updating stack visualization..."));
+
+  // Collect PR info for ALL branches in the stack (not just scope)
+  interface BranchPrInfo {
+    branch: string;
+    prNumber: number | null;
+    prTitle: string;
+    prUrl: string | null;
+    reviewEmojiStr: string;
+  }
+
+  const branchInfos: BranchPrInfo[] = [];
+
+  for (const branchName of ordered) {
+    const branchMeta = stack.branches[branchName]!;
+    const prNum = branchMeta.pr ?? null;
+    let prTitle = branchMeta.description || branchName;
+    let prUrl: string | null = null;
+    let review = "PENDING";
+
+    if (prNum) {
+      const info = await getPrInfo(prNum);
+      if (info) {
+        prTitle = info.title || prTitle;
+        prUrl = info.url;
+        review = info.reviewDecision || "PENDING";
+      }
+    }
+
+    branchInfos.push({
+      branch: branchName,
+      prNumber: prNum,
+      prTitle,
+      prUrl,
+      reviewEmojiStr: reviewEmoji(review),
+    });
+  }
+
+  // Update each PR that has a number
+  let vizUpdated = 0;
+
+  for (let i = 0; i < branchInfos.length; i++) {
+    const info = branchInfos[i]!;
+    if (!info.prNumber) continue;
+
+    const stackViz = buildStackViz(branchInfos, i);
+
+    const currentBody = await getPrBody(info.prNumber);
+    if (currentBody === null) continue;
+
+    // Remove existing stack section
+    let updatedBody = currentBody;
+    const stackSectionIdx = updatedBody.indexOf("### 📚 Stacked on");
+    if (stackSectionIdx !== -1) {
+      updatedBody = updatedBody.slice(0, stackSectionIdx).trimEnd();
+    }
+
+    // Append new stack section
+    const newBody = updatedBody ? `${updatedBody}\n\n${stackViz}` : stackViz;
+
+    const ok = await updatePrBody(info.prNumber, newBody);
+    if (ok) vizUpdated++;
+  }
+
+  // ── Summary ──
+  console.log();
+  p.outro(
+    pc.green(
+      `Done! Pushed ${pushed} branch(es), created ${created} PR(s), updated ${vizUpdated} description(s)`,
+    ),
+  );
+}

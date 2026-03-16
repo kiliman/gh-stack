@@ -1,4 +1,4 @@
-// gh-stack switch — Switch between branches or stacks
+// gh-stack checkout — Switch between branches or stacks
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -6,22 +6,25 @@ import { writeMetadata, getOrderedBranches, findStackForBranch } from "../lib/me
 import { ensureMetadata } from "../lib/safety.ts";
 import { selectBranch, selectStack } from "../lib/ui.ts";
 
-export default async function switchCmd(args: string[]): Promise<void> {
+export default async function checkout(args: string[]): Promise<void> {
   const isStackMode = args.includes("--stack");
   const numberArg = args.find((a) => /^\d+$/.test(a));
 
   if (args.includes("--help")) {
     console.log(`
-gh-stack switch — Switch branch or stack
+gh-stack checkout — Switch branch or stack
 
 USAGE
-  gh-stack switch <number>      Switch to branch by position (non-interactive)
-  gh-stack switch               Interactive branch picker (arrow keys)
-  gh-stack switch --stack       Switch between stacks (interactive)
+  gh-stack checkout <number>      Switch to branch by position (non-interactive)
+  gh-stack checkout               Interactive branch picker (arrow keys)
+  gh-stack checkout --stack       Switch between stacks (interactive)
+
+ALIASES
+  gh-stack co
 
 EXAMPLES
-  gh-stack switch 1             Jump to first branch in stack (base)
-  gh-stack switch 2             Jump to second branch in stack
+  gh-stack checkout 1             Jump to first branch in stack (base)
+  gh-stack checkout 2             Jump to second branch in stack
 
 TIP
   Use 'gh-stack list' to see branch numbers.

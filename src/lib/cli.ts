@@ -17,7 +17,7 @@ export function parseCliArgs(rawArgs: string[], env: NodeJS.ProcessEnv): ParsedC
     commandIndex++;
   }
 
-  const command = rawArgs[commandIndex] || "show";
+  const command = rawArgs[commandIndex] || "log";
   const commandArgs = rawArgs
     .slice(commandIndex + 1)
     .filter((arg) => arg !== "--yes" && arg !== "-y");

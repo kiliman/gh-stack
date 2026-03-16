@@ -1,4 +1,4 @@
-// gh-stack remove — Remove a branch from the stack (re-link parent chain)
+// gh-stack delete — Delete a branch from the stack (re-link parent chain)
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { removeBranchFromStack, getChildren } from "../lib/metadata.ts";
@@ -7,13 +7,13 @@ import { takeSnapshot } from "../lib/snapshot.ts";
 import { selectBranch } from "../lib/ui.ts";
 import * as git from "../lib/git.ts";
 
-export default async function remove(args: string[]): Promise<void> {
+export default async function deleteCmd(args: string[]): Promise<void> {
   if (args.includes("--help")) {
     console.log(`
-gh-stack remove — Remove a branch from the stack
+gh-stack delete — Delete a branch from the stack
 
 USAGE
-  gh-stack remove [<branch>]
+  gh-stack delete [<branch>]
 
 Removes the branch and re-parents its children to its parent.
 If no branch is specified, shows interactive selector.
@@ -27,12 +27,12 @@ If no branch is specified, shows interactive selector.
   const stack = meta.stacks[stackName]!;
   const currentBranch = await git.currentBranch();
 
-  p.intro(pc.cyan("Remove Branch from Stack"));
+  p.intro(pc.cyan("Delete Branch from Stack"));
 
-  // Get branch to remove
+  // Get branch to delete
   let branchName = args[0];
   if (!branchName) {
-    branchName = (await selectBranch(stack, "Select branch to remove", currentBranch)) ?? undefined;
+    branchName = (await selectBranch(stack, "Select branch to delete", currentBranch)) ?? undefined;
     if (!branchName) {
       p.cancel("Cancelled");
       process.exit(0);
@@ -62,7 +62,7 @@ If no branch is specified, shows interactive selector.
 
   // Confirm
   const confirmed = await p.confirm({
-    message: `Remove ${pc.yellow(branchName)} from stack?`,
+    message: `Delete ${pc.yellow(branchName)} from stack?`,
   });
   if (p.isCancel(confirmed) || !confirmed) {
     p.cancel("Cancelled");
@@ -70,7 +70,7 @@ If no branch is specified, shows interactive selector.
   }
 
   // Take snapshot before destructive operation
-  await takeSnapshot(meta, stackName, "remove");
+  await takeSnapshot(meta, stackName, "delete");
 
   // Remove branch
   await removeBranchFromStack(meta, stackName, branchName);

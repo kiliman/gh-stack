@@ -11,7 +11,7 @@ import {
 import restack from "../commands/restack.ts";
 import sync from "../commands/sync.ts";
 import merge from "../commands/merge.ts";
-import show from "../commands/show.ts";
+import log from "../commands/log.ts";
 import list from "../commands/list.ts";
 import { buildStackViz } from "../commands/update-prs.ts";
 import { STACK_SYNC_TAG_GLOB } from "../lib/git.ts";
@@ -75,12 +75,12 @@ describe("command dry-run safety", () => {
 });
 
 describe("metadata tracking for display commands", () => {
-  test("show does not overwrite last_branch when current branch is outside the stack", async () => {
+  test("log does not overwrite last_branch when current branch is outside the stack", async () => {
     await createLinearStack(tmpDir);
     await createBranch(tmpDir, "scratch", "main");
     await checkout(tmpDir, "scratch");
 
-    await show([]);
+    await log([]);
 
     const meta = await readMetadata(tmpDir);
     expect(meta.current_stack).toBe("test-stack");

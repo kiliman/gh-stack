@@ -63,7 +63,7 @@ describe("CLI entrypoint", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("USAGE");
-    expect(result.stdout).toContain("COMMANDS");
+    expect(result.stdout).toContain("CORE WORKFLOW");
   });
 
   test("returns an error for unknown commands", async () => {

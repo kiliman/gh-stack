@@ -1,4 +1,4 @@
-// gh-stack init — Create a new stack with the current branch
+// gh-stack init — Create a new stack from the current branch
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -10,12 +10,9 @@ import {
   metadataExists,
 } from "../lib/metadata.ts";
 import { getPrNumber } from "../lib/github.ts";
-import { selectParent } from "../lib/ui.ts";
 import type { StackMetadata, Branch } from "../types.ts";
 
 export default async function init(args: string[]): Promise<void> {
-  const branch = await git.currentBranch();
-
   // Parse flags
   let nameFlag: string | undefined;
   let descFlag: string | undefined;
@@ -34,24 +31,33 @@ export default async function init(args: string[]): Promise<void> {
         break;
       case "--help":
         console.log(`
-gh-stack init — Create a new stack
+gh-stack init — Create a new stack from the current branch
 
 USAGE
-  gh-stack init [--name <name>] [--description <desc>] [--parent <branch>]
+  gh-stack init [options]
+
+Creates a new stack and adds the current branch as the first entry.
+Auto-detects PR number from GitHub.
 
 OPTIONS
-  --name <name>         Stack name (skip prompt)
+  --name <name>         Stack name (default: current branch name)
   --description <desc>  Stack description
-  --parent <branch>     Parent branch for current branch (default: main)
+  --parent <branch>     Parent for current branch (default: main)
+
+EXAMPLES
+  gh-stack init                              # Uses branch name as stack name
+  gh-stack init --name my-feature            # Custom stack name
+  gh-stack init --parent develop             # Different base branch
 `);
         return;
     }
   }
 
-  p.intro(pc.cyan("Create New Stack"));
+  const branch = await git.currentBranch();
+  const stackName = nameFlag || branch;
+  const parent = parentFlag || "main";
 
-  console.log(`  Initializing stack with: ${pc.yellow(branch)}`);
-  console.log();
+  p.intro(pc.cyan("Create New Stack"));
 
   // Get or create metadata
   let meta: StackMetadata;
@@ -59,25 +65,6 @@ OPTIONS
     meta = (await readMetadata())!;
   } else {
     meta = await initMetadata();
-    p.log.success("Initialized empty stack metadata");
-  }
-
-  // Get stack name
-  let stackName = nameFlag;
-  if (!stackName) {
-    const result = await p.text({
-      message: "Stack name",
-      placeholder: "e.g., podcast-mvp",
-      validate: (val = "") => {
-        if (!val.trim()) return "Stack name is required";
-        if (meta.stacks[val.trim()]) return `Stack "${val}" already exists`;
-      },
-    });
-    if (p.isCancel(result)) {
-      p.cancel("Cancelled");
-      process.exit(0);
-    }
-    stackName = result as string;
   }
 
   // Check if stack already exists
@@ -86,35 +73,10 @@ OPTIONS
     process.exit(1);
   }
 
-  // Get stack description
-  let description = descFlag;
-  if (description === undefined) {
-    const result = await p.text({
-      message: "Stack description (optional)",
-      placeholder: "e.g., Podcast MVP features",
-    });
-    if (p.isCancel(result)) {
-      p.cancel("Cancelled");
-      process.exit(0);
-    }
-    description = (result as string) || "";
-  }
-
-  // Create the stack
-  meta = await createStack(meta, stackName, description);
-  p.log.success(`Created stack: ${pc.blue(stackName)}`);
-
-  // Get parent branch
-  let parent: string | undefined = parentFlag;
-  if (!parent) {
-    parent = (await selectParent(null, branch)) ?? undefined;
-    if (!parent) {
-      p.cancel("Cancelled");
-      process.exit(0);
-    }
-  }
-
-  p.log.info(`Parent: ${pc.yellow(parent)}`);
+  // Show what we're doing
+  p.log.info(`Stack: ${pc.yellow(stackName)}`);
+  p.log.info(`Branch: ${pc.yellow(branch)}`);
+  p.log.info(`Parent: ${pc.dim(parent)}`);
 
   // Auto-detect PR number
   const s = p.spinner();
@@ -122,35 +84,23 @@ OPTIONS
   const prNumber = await getPrNumber(branch);
   s.stop(prNumber ? `Found PR #${prNumber}` : "No PR found");
 
-  // Get branch description
-  let branchDesc: string | undefined;
-  if (!nameFlag) {
-    // Only prompt for branch description in interactive mode
-    const result = await p.text({
-      message: "Branch description (optional)",
-      placeholder: "e.g., Backend models",
-    });
-    if (!p.isCancel(result)) {
-      branchDesc = (result as string) || undefined;
-    }
-  }
+  // Create the stack
+  meta = await createStack(meta, stackName, descFlag || "");
 
   // Add branch to stack
   const branchData: Branch = {
     parent,
     ...(prNumber && { pr: prNumber }),
-    ...(branchDesc && { description: branchDesc }),
   };
 
   meta = await addBranchToStack(meta, stackName, branch, branchData);
 
-  p.log.success(`Added ${pc.yellow(branch)} to stack`);
+  p.outro(pc.green("Stack created!"));
 
-  p.outro(pc.green("Stack initialized!"));
-
+  // Show next steps
   console.log();
   console.log("  Next steps:");
-  console.log(`    ${pc.blue("gh-stack add")}          — Add more branches`);
-  console.log(`    ${pc.blue("gh-stack")}              — View stack`);
-  console.log(`    ${pc.blue("gh-stack restack")}      — Sync stack`);
+  console.log(`    ${pc.blue("gh-stack create <branch>")}  — Add a branch to the stack`);
+  console.log(`    ${pc.blue("gh-stack log")}              — View stack`);
+  console.log();
 }

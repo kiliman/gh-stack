@@ -58,7 +58,7 @@ export async function ensureBranchInStack(meta: StackMetadata): Promise<string> 
 
   if (!stackName) {
     p.cancel(
-      `Branch ${pc.blue(branch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}\n\n  Or create a new stack:\n    ${pc.green("gh-stack init")}`,
+      `Branch ${pc.blue(branch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack create")}\n\n  Or create a new stack:\n    ${pc.green("gh-stack init")}`,
     );
     process.exit(1);
   }

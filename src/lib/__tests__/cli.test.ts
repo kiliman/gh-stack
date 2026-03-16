@@ -11,13 +11,13 @@ describe("parseCliArgs", () => {
 
   test("shows global help only when no command is provided", () => {
     expect(parseCliArgs(["--help"], {}).showGlobalHelp).toBe(true);
-    expect(parseCliArgs(["show", "--help"], {}).showGlobalHelp).toBe(false);
+    expect(parseCliArgs(["log", "--help"], {}).showGlobalHelp).toBe(false);
   });
 
   test("supports leading version flag", () => {
     const parsed = parseCliArgs(["--version"], {});
     expect(parsed.showVersion).toBe(true);
-    expect(parsed.command).toBe("show");
+    expect(parsed.command).toBe("log");
   });
 
   test("respects GH_STACK_YES from the environment", () => {

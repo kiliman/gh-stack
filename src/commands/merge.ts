@@ -1,34 +1,36 @@
-// gh-stack merge — Local squash-merge top-down
-// From reference/gh-stack-merge-design.md
+// gh-stack merge — Squash-merge stack top-down via GitHub
 import * as p from "@clack/prompts";
 import pc from "picocolors";
+import { $ } from "bun";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
+import { ensureMetadata, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
-import { $ } from "bun";
-import { closePr } from "../lib/github.ts";
 import { confirmAction } from "../lib/ui.ts";
 
 export default async function merge(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
+  const deleteFlag = args.includes("--delete-branch") || args.includes("-d");
 
   if (args.includes("--help")) {
     console.log(`
-gh-stack merge — Local squash-merge top-down
+gh-stack merge — Squash-merge stack via GitHub
 
 USAGE
-  gh-stack merge [--dry-run]
+  gh-stack merge [--dry-run] [-d|--delete-branch]
 
-Squash-merges the stack from top to bottom locally:
-  PR3 → PR2 → PR1, then optionally rebases PR1 onto main.
+Squash-merges the stack from top to bottom via GitHub:
+  PR3 → squash into PR2, PR2 → squash into PR1, PR1 → auto-merge into main.
 
-This keeps all commits local (avoiding orphaned squash commits).
+All merges happen on GitHub, so PRs show as "Merged", Linear tickets
+close automatically, and all GitHub Actions/webhooks fire normally.
+
+OPTIONS
+  -d, --delete-branch  Delete remote branches after merging
+      --dry-run        Show what would happen without doing anything
 `);
     return;
   }
-
-  await ensureCleanWorkingTree();
 
   const meta = await ensureMetadata();
   const currentBranch = await git.currentBranch();
@@ -44,12 +46,25 @@ This keeps all commits local (avoiding orphaned squash commits).
   const ordered = getOrderedBranches(stack);
 
   if (ordered.length <= 1) {
-    p.log.info("Single branch stack — nothing to merge down.");
-    p.log.info("Just merge via GitHub as normal.");
+    // Single branch — just enable auto-merge
+    const basePr = stack.branches[ordered[0]!]?.pr;
+    if (basePr) {
+      p.log.info("Single branch stack — enabling auto-merge on GitHub.");
+      if (!dryRun) {
+        try {
+          await $`gh pr merge ${basePr} --squash --auto`.quiet();
+          p.log.success(`Auto-merge enabled for PR #${basePr}`);
+        } catch {
+          p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${basePr} --squash --auto`)}`);
+        }
+      }
+    } else {
+      p.log.info("Single branch stack — merge via GitHub as normal.");
+    }
     return;
   }
 
-  p.intro(pc.cyan("Git Stack Merge (Top-Down)"));
+  p.intro(pc.cyan("Stack Merge (via GitHub)"));
 
   p.log.info(`Stack: ${pc.yellow(stackName)}`);
   console.log();
@@ -61,9 +76,15 @@ This keeps all commits local (avoiding orphaned squash commits).
     const child = reversed[i]!;
     const parent = stack.branches[child]?.parent || "???";
     const childPr = stack.branches[child]?.pr;
-    console.log(`    ${pc.yellow(child)}${childPr ? ` (#${childPr})` : ""} → ${pc.blue(parent)}`);
+    console.log(
+      `    ${pc.yellow(child)}${childPr ? ` (#${childPr})` : ""} → squash into ${pc.blue(parent)}`,
+    );
   }
-  console.log(`    ${pc.blue(ordered[0]!)} → ${pc.green("main")} (via GitHub)`);
+  const baseBranch = ordered[0]!;
+  const basePr = stack.branches[baseBranch]?.pr;
+  console.log(
+    `    ${pc.blue(baseBranch)}${basePr ? ` (#${basePr})` : ""} → ${pc.green("main")} (auto-merge)`,
+  );
   console.log();
 
   if (dryRun) {
@@ -71,7 +92,16 @@ This keeps all commits local (avoiding orphaned squash commits).
     return;
   }
 
-  const confirmed = await confirmAction("Merge stack top-down?");
+  // Check all PRs in stack have PR numbers
+  const missingPrs = ordered.filter((b) => !stack.branches[b]?.pr);
+  if (missingPrs.length > 0) {
+    p.cancel(
+      `Missing PR numbers for: ${missingPrs.join(", ")}\n\n  Run ${pc.green("gh-stack submit")} first to create PRs.`,
+    );
+    process.exit(1);
+  }
+
+  const confirmed = await confirmAction("Squash-merge stack top-down via GitHub?");
   if (!confirmed) {
     p.cancel("Cancelled");
     process.exit(0);
@@ -80,82 +110,77 @@ This keeps all commits local (avoiding orphaned squash commits).
   // Take snapshot
   await takeSnapshot(meta, stackName, "merge");
 
-  // Merge top-down: for each branch from top to bottom (skip the base)
+  // Merge top-down via GitHub: for each PR from top, squash-merge into parent
   for (let i = 0; i < reversed.length - 1; i++) {
     const childBranch = reversed[i]!;
-    const parentBranch = stack.branches[childBranch]?.parent;
-    if (!parentBranch || parentBranch === "main") continue;
+    const childPrNum = stack.branches[childBranch]!.pr!;
+    const parentBranch = stack.branches[childBranch]!.parent;
 
-    const childPr = stack.branches[childBranch]?.pr;
-    const childTitle = stack.branches[childBranch]?.description || childBranch;
+    if (parentBranch === "main" || parentBranch === "master") continue;
 
     console.log();
     console.log(pc.cyan("━".repeat(40)));
-    console.log(`${pc.blue("Merge:")} ${pc.yellow(childBranch)} → ${pc.blue(parentBranch)}`);
+    console.log(
+      `${pc.blue("Merge:")} PR #${childPrNum} ${pc.yellow(childBranch)} → ${pc.blue(parentBranch)}`,
+    );
     console.log(pc.cyan("━".repeat(40)));
-    console.log();
 
-    // Checkout parent
-    p.log.info(`Checking out ${pc.yellow(parentBranch)}...`);
-    await git.checkout(parentBranch);
+    const s = p.spinner();
+    s.start(`Squash-merging PR #${childPrNum} via GitHub...`);
 
-    // Squash merge child
-    p.log.info(`Squash-merging ${pc.yellow(childBranch)}...`);
-    const success = await git.mergeSquash(childBranch);
+    const ghArgs = ["pr", "merge", String(childPrNum), "--squash"];
+    if (deleteFlag) ghArgs.push("--delete-branch");
 
-    if (!success) {
-      p.log.error("Merge conflict — resolve and try again");
-      process.exit(2);
-    }
+    const proc = Bun.spawn(["gh", ...ghArgs], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
 
-    // Commit
-    const commitMsg = childPr ? `squash: ${childTitle} (#${childPr})` : `squash: ${childTitle}`;
-
-    await git.commit(commitMsg);
-    p.log.success(`Merged ${childBranch} into ${parentBranch}`);
-  }
-
-  // Optionally rebase base onto main
-  console.log();
-  const baseBranch = ordered[0]!;
-  const rebaseConfirmed = await confirmAction(`Rebase ${pc.yellow(baseBranch)} onto latest main?`);
-
-  if (rebaseConfirmed) {
-    p.log.info("Fetching latest main...");
-    await git.fetchMain();
-
-    p.log.info(`Checking out ${pc.yellow(baseBranch)}...`);
-    await git.checkout(baseBranch);
-
-    const success = await git.rebase("origin/main");
-    if (success) {
-      p.log.success("Rebased onto main");
+    if (exitCode === 0) {
+      s.stop(`Merged PR #${childPrNum} into ${pc.blue(parentBranch)}`);
     } else {
-      p.log.error("Rebase conflict — resolve manually");
+      s.stop(pc.red(`Failed to merge PR #${childPrNum}`));
+      p.log.error(stderr.trim());
+      p.log.info("Resolve the issue on GitHub, then re-run merge to continue.");
       process.exit(2);
     }
   }
 
-  // Close intermediate PRs
+  // Base PR → enable auto-merge into main
   console.log();
-  const closePrs = await confirmAction("Close intermediate PRs on GitHub?");
+  console.log(pc.cyan("━".repeat(40)));
+  console.log(
+    `${pc.blue("Auto-merge:")} PR #${basePr} ${pc.yellow(baseBranch)} → ${pc.green("main")}`,
+  );
+  console.log(pc.cyan("━".repeat(40)));
 
-  if (closePrs) {
-    const basePr = stack.branches[ordered[0]!]?.pr;
-    for (let i = 1; i < ordered.length; i++) {
-      const prNum = stack.branches[ordered[i]!]?.pr;
-      if (prNum) {
-        const comment = basePr
-          ? `Merged locally into base PR #${basePr}. See the base PR for the full stack.`
-          : "Merged locally into base PR.";
-        const ok = await closePr(prNum, comment);
-        if (ok) {
-          p.log.success(`Closed PR #${prNum}`);
-        } else {
-          p.log.warn(`Could not close PR #${prNum}`);
-        }
-      }
-    }
+  const autoSpinner = p.spinner();
+  autoSpinner.start(`Enabling auto-merge for PR #${basePr}...`);
+
+  try {
+    const ghArgs = ["pr", "merge", String(basePr), "--squash", "--auto"];
+    if (deleteFlag) ghArgs.push("--delete-branch");
+    await $`gh pr merge ${basePr} --squash --auto ${deleteFlag ? "--delete-branch" : ""}`.quiet();
+    autoSpinner.stop(`Auto-merge enabled for PR #${basePr} — will merge into main when CI passes`);
+  } catch {
+    autoSpinner.stop(pc.yellow(`Could not enable auto-merge for PR #${basePr}`));
+    p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${basePr} --squash --auto`)}`);
+  }
+
+  // Update local main and clean up
+  console.log();
+  const pullSpinner = p.spinner();
+  pullSpinner.start("Syncing local branches...");
+  try {
+    await $`git fetch origin`.quiet();
+    // Checkout main and pull so local is up to date
+    await git.checkout("main");
+    await $`git pull origin main`.quiet();
+    pullSpinner.stop("Local branches synced");
+  } catch {
+    pullSpinner.stop(pc.dim("Could not sync local branches — run git pull manually"));
   }
 
   // Archive the stack
@@ -167,41 +192,6 @@ This keeps all commits local (avoiding orphaned squash commits).
     meta.current_stack = remaining.length > 0 ? remaining[0]! : null;
   }
   await writeMetadata(meta);
-
-  // Push base branch and enable auto-merge
-  console.log();
-  const pushAndMerge = await confirmAction(
-    `Push ${pc.yellow(baseBranch)} and enable auto-merge (squash)?`,
-  );
-
-  if (pushAndMerge) {
-    const pushSpinner = p.spinner();
-    pushSpinner.start(`Pushing ${pc.blue(baseBranch)}...`);
-    const pushOk = await git.forcePushWithLease(baseBranch);
-    if (pushOk) {
-      pushSpinner.stop(`Pushed ${pc.blue(baseBranch)}`);
-    } else {
-      pushSpinner.stop(pc.red(`Failed to push ${baseBranch}`));
-      p.outro(
-        pc.yellow("Stack merged locally but push failed. Push manually and merge via GitHub."),
-      );
-      return;
-    }
-
-    // Enable auto-merge via gh CLI
-    const basePrNum = stack.branches[baseBranch]?.pr;
-    if (basePrNum) {
-      const mergeSpinner = p.spinner();
-      mergeSpinner.start("Enabling auto-merge...");
-      try {
-        await $`gh pr merge ${basePrNum} --squash --auto`.quiet();
-        mergeSpinner.stop(`Auto-merge enabled for PR #${basePrNum} — will merge when CI passes`);
-      } catch {
-        mergeSpinner.stop(pc.yellow(`Could not enable auto-merge for PR #${basePrNum}`));
-        p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${basePrNum} --squash --auto`)}`);
-      }
-    }
-  }
 
   p.outro(pc.green("Stack merge complete! Stack archived."));
 }

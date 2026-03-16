@@ -129,11 +129,11 @@ sync [--dry-run]
     Fetch main, rebase the base branch onto main, then restack all
     children. Creates tags for ALL branches before any rebasing starts.
 
-merge [--dry-run]
-    Squash-merge the stack top-down locally (PR3 → PR2 → PR1),
-    then rebases onto main, closes intermediate PRs, pushes the
-    base branch, and enables GitHub auto-merge (squash). Archives
-    the stack on completion.
+merge [--dry-run] [-d|--delete-branch]
+    Squash-merge the stack top-down via GitHub (PR3 → PR2 → PR1),
+    then enables auto-merge for the base PR into main. All merges
+    happen on GitHub so PRs show as "Merged", Linear tickets close
+    automatically, and GitHub Actions fire normally.
 
 delete [<branch>]
     Remove a branch from the stack and re-parent its children.

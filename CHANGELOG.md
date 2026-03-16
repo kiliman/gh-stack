@@ -1,9 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+> **Minor version bump:** `merge` command completely rewritten (breaking behavior change).
+
+### ♻️ Rewritten `merge` — all merges via GitHub
+- **`merge` now does everything through GitHub** instead of locally — PRs show as "Merged" (not "Closed"), Linear tickets auto-close, GitHub Actions fire, review history is preserved
+- Flow: squash-merge top-down via `gh pr merge --squash`, then enable auto-merge for base PR into main
+- No more local squash-merge, rebase, or manual push steps
+- Added `--delete-branch` / `-d` flag to delete remote branches after merging
+- Removed `ensureCleanWorkingTree` requirement (no local git operations needed)
+
 ## 0.2.3
 
 ### ✨ Features
-- **`merge` now pushes and enables GitHub auto-merge** — after squash-merging the stack locally, merge pushes the base branch and runs `gh pr merge --squash --auto` so the PR auto-merges once CI passes. No more manual steps.
+- **`merge` now pushes and enables GitHub auto-merge** (v0.2.3 did this locally; v0.3.0 does it entirely via GitHub)
 
 ## 0.2.2
 

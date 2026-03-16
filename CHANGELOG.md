@@ -2,6 +2,9 @@
 
 ## 0.2.1
 
+### ✨ Features
+- **`submit --title` / `--body` / `--body-file`** — provide PR details directly instead of auto-generating from branch names. Useful for agents/CI.
+
 ### ⚡ Performance
 - **`submit` skips pushing branches already up-to-date with origin** — compares local vs remote SHA before pushing, avoiding unnecessary pre-push hook runs
 

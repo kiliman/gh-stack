@@ -117,7 +117,8 @@ ls
 ```
 restack [--resume] [--dry-run] [--verbose]
     Rebase the current branch and all descendants onto their parents.
-    Uses tag-based references for stable rebasing across the chain.
+    Uses metadata snapshots to recover the correct rebase base even
+    after a parent's history has been rewritten.
 
     On conflict:
         git rebase --continue
@@ -127,7 +128,8 @@ restack [--resume] [--dry-run] [--verbose]
 
 sync [--dry-run]
     Fetch main, rebase the base branch onto main, then restack all
-    children. Creates tags for ALL branches before any rebasing starts.
+    children. Snapshots every branch's pre-sync tip so children can be
+    correctly rebased even though their parent's history was rewritten.
 
 merge [--dry-run] [-d|--delete-branch]
     Squash-merge the stack top-down via GitHub (PR3 → PR2 → PR1),
@@ -181,9 +183,13 @@ GH_STACK_NO_COLOR=1    Disable colored output
 
 `gh-stack init` auto-detects branch chains by walking git ancestry. From the top branch, it finds all local branches whose tips are strict ancestors (but not already merged into trunk) and reconstructs the chain with correct parent relationships.
 
-### Tag-Based Rebasing
+### Snapshot-Based Rebasing
 
-The critical insight: after rebasing a parent branch, `git merge-base` returns wrong results for its children. gh-stack solves this by creating temporary `stack-sync-*` tags marking each branch's divergence point **before** any rebasing starts, then using those stable references for `git rebase --onto`.
+The critical insight: after a parent branch's history is rewritten (e.g., rebased onto a new main), `git merge-base(child, parent)` falls all the way back to the original main — and using that as a rebase base would replay the parent's old commits onto the child, producing ghost-conflicts on the parent's own work.
+
+gh-stack solves this by snapshotting every branch's tip **before** any destructive operation. When restacking a child whose parent has been rewritten, gh-stack walks the snapshots newest-first and finds the most recent recorded tip that's no longer an ancestor of the parent's current tip. That orphaned SHA is the correct rebase base — `git rebase --onto <new-parent-tip> <orphaned-old-tip> <child>` replays only the child's unique commits.
+
+Snapshots also power `gh-stack undo`, so the same data structure does double duty.
 
 ### Stack Visualization
 

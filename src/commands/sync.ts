@@ -24,6 +24,16 @@ with the base branch included.
     return;
   }
 
+  // Reject if a git rebase is already in progress. Letting sync run on top
+  // of a half-finished rebase produces deeply confusing state — make the
+  // user finish or abort it first.
+  if (await git.isRebaseInProgress()) {
+    p.cancel(
+      `Git rebase already in progress.\n\n  Finish or abort it first:\n    ${pc.green("git rebase --continue")}\n    ${pc.red("git rebase --abort")}\n\n  Then re-run ${pc.green("gh-stack sync")}.`,
+    );
+    process.exit(1);
+  }
+
   await ensureCleanWorkingTree();
 
   const meta = await ensureMetadata();
@@ -83,30 +93,10 @@ with the base branch included.
   await git.fetchMain();
   fetchSpinner.stop("Fetched latest main");
 
-  // Take snapshot
+  // Take snapshot BEFORE rebasing. This records every branch's pre-rebase
+  // tip — including the orphaned base-branch tip that restack will later
+  // need to find when restacking children. (See findPreRewriteSha.)
   await takeSnapshot(meta, stackName, "sync");
-
-  // Create temporary tags for ALL branches BEFORE any rebasing starts.
-  // This is critical: after rebasing PR1, `git merge-base PR2 PR1` returns
-  // wrong results. Tags capture the true divergence points while history
-  // is still intact.
-  p.log.info("Creating temporary base tags for all branches...");
-  for (const branch of ordered) {
-    const parent = stack.branches[branch]?.parent;
-    if (!parent) continue;
-
-    // For the base branch, the "parent" is main — tag its merge-base with main
-    const parentRef = parent === "main" ? "origin/main" : parent;
-    const mb = await git.mergeBase(branch, parentRef);
-    if (mb) {
-      const tagName = git.tempBaseTagName(branch);
-      await git.createTag(tagName, mb);
-      console.log(
-        `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,
-      );
-    }
-  }
-  console.log();
 
   // Step 1: Rebase base branch onto main
   console.log();

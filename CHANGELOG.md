@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0
+
+> **Minor version bump:** restack base-detection mechanism replaced — temp tags are out, metadata snapshots are in.
+
+### 🐛 Fixes
+- **`restack` no longer replays parent's old commits onto children after `sync`** ([#2](https://github.com/kiliman/gh-stack/issues/2)) — the previous merge-base lookup fell back to original-`main` once the parent had been rebased, causing ghost-conflicts on the parent's own work. Restack now reads the orphaned pre-rewrite tip from a metadata snapshot, replaying only the child's unique commits.
+- **`sync` and `restack` reject if a `git rebase` is already in progress** — clearer error than the previous half-broken behavior. Tells you to `git rebase --continue` or `--abort` before retrying.
+- **Removed misleading "stale tags" prompt** — when sync called restack internally, the prompt fired on freshly-created tags and any choice produced wrong results.
+
+### ♻️ Internals
+- `findPreRewriteSha(meta, branch)` walks snapshots newest→oldest and returns the most recent recorded SHA that's no longer an ancestor of the branch's current tip.
+- Tag-based base lookup (`stack-sync-base-*`) is gone. Restack still silently cleans up any leftover tags from older versions on entry.
+- Snapshot is now the source of truth for cross-process rebase-base recovery.
+
+### 🧪 Tests
+- Added 5 integration tests covering `findPreRewriteSha` + the issue #2 repro end-to-end (143 tests total, up from 137).
+
 ## 0.3.1
 
 ### 🐛 Fixes

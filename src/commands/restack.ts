@@ -9,6 +9,7 @@ import {
   saveRestackState,
   loadRestackState,
   clearRestackState,
+  readMetadata,
 } from "../lib/metadata.ts";
 import {
   ensureMetadata,
@@ -16,7 +17,7 @@ import {
   ensureNotMain,
   ensureValidStack,
 } from "../lib/safety.ts";
-import { takeSnapshot } from "../lib/snapshot.ts";
+import { takeSnapshot, findPreRewriteSha } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
 
@@ -36,7 +37,7 @@ OPTIONS
   --yes, -y   Skip confirmations (auto-accept all rebases and pushes)
   --resume    Resume after resolving rebase conflicts
   --dry-run   Show what would happen without executing
-  --verbose   Show diagnostic info (tag vs merge-base)
+  --verbose   Show diagnostic info (snapshot vs merge-base)
 
 EXAMPLES
   gh-stack restack              Interactive (prompts before each rebase)
@@ -49,6 +50,16 @@ ALIASES
     return;
   }
 
+  // Reject if a git rebase is already in progress (unless we're resuming).
+  // Letting commands run on top of a half-finished rebase produces deeply
+  // confusing state — better to make the user finish or abort first.
+  if (!resume && (await git.isRebaseInProgress())) {
+    p.cancel(
+      `Git rebase already in progress.\n\n  Finish or abort it first:\n    ${pc.green("git rebase --continue")}\n    ${pc.red("git rebase --abort")}\n\n  Then re-run ${pc.green("gh-stack restack")} (or ${pc.green("gh-stack restack --resume")} to continue).`,
+    );
+    process.exit(1);
+  }
+
   // Ensure clean working tree (unless resuming)
   if (!resume) {
     await ensureCleanWorkingTree();
@@ -58,6 +69,10 @@ ALIASES
   const rebasedBranches: string[] = [];
 
   p.intro(pc.cyan("Git Stack Restack"));
+
+  // Silently drop any leftover temp tags from older versions of gh-stack
+  // (pre-snapshot). Keeps users upgrading from <0.4 from seeing stale tags.
+  await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
   if (resume) {
     await handleResume(meta, rebasedBranches, verbose);
@@ -75,9 +90,6 @@ ALIASES
       console.log(`  ${pc.green("✓")} ${branch}`);
     }
   }
-
-  // Cleanup tags
-  await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
   p.outro(pc.green("Stack Restack Complete!"));
 }
@@ -137,38 +149,8 @@ async function handleResume(
   const currentIndex = state.current_index + 1;
 
   if (currentIndex < chain.length) {
-    // Ensure temporary tags exist for remaining branches.
-    // If sync created them upfront (correct!), they'll already be here.
-    // If not (e.g., old state file), we create them as a fallback —
-    // but NOTE: tags created after parent was rebased may be inaccurate.
-    p.log.info("Checking base tags for remaining branches...");
-    for (let i = currentIndex; i < chain.length; i++) {
-      const branch = chain[i]!;
-      const parent = stack.branches[branch]?.parent;
-      if (!parent) continue;
-
-      const tagName = git.tempBaseTagName(branch);
-      if (await git.tagExists(tagName)) {
-        const tagSha = await git.revParse(tagName);
-        console.log(
-          `  ${pc.green("✓")} Pre-existing tag for ${branch}: ${pc.cyan(tagName)} (${tagSha.slice(0, 8)})`,
-        );
-      } else {
-        // Fallback: create tag now (may be inaccurate if parent already rebased)
-        p.log.warn(`No pre-existing tag for ${branch} — creating from current merge-base`);
-        const mb = await git.mergeBase(branch, parent);
-        if (mb) {
-          await git.createTag(tagName, mb);
-          console.log(
-            `  ${pc.yellow("⚠")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,
-          );
-        }
-      }
-    }
-    console.log();
+    await processChain(meta, stackName, chain, currentIndex, rebasedBranches, false, verbose);
   }
-
-  await processChain(meta, stackName, chain, currentIndex, rebasedBranches, false, verbose);
 }
 
 async function handleFreshRestack(
@@ -189,9 +171,6 @@ async function handleFreshRestack(
 
   const stack = meta.stacks[stackName]!;
   await ensureValidStack(meta, stackName);
-
-  // Check for stale tags from previous runs
-  await handleStaleTags();
 
   // Build the rebase chain from current branch
   p.log.info("Building rebase chain...");
@@ -242,25 +221,10 @@ async function handleFreshRestack(
   }
 
   if (!dryRun) {
-    // Take snapshot before destructive operation
+    // Take snapshot before destructive operation. This preserves the current
+    // tip of every branch so subsequent restacks (after a parent is rewritten)
+    // can find the correct rebase base.
     await takeSnapshot(meta, stackName, "restack");
-
-    // Create temporary tags for stable base references
-    p.log.info("Creating temporary base tags...");
-    for (const branch of chain) {
-      const parent = stack.branches[branch]?.parent;
-      if (!parent) continue;
-
-      const mb = await git.mergeBase(branch, parent);
-      if (mb) {
-        const tagName = git.tempBaseTagName(branch);
-        await git.createTag(tagName, mb);
-        console.log(
-          `  ${pc.green("✓")} Tagged base for ${branch}: ${pc.cyan(tagName)} (${mb.slice(0, 8)})`,
-        );
-      }
-    }
-    console.log();
   }
 
   // Process the chain
@@ -313,6 +277,44 @@ async function processChain(
       continue;
     }
 
+    // Resolve the rebase base.
+    //
+    //   Strategy:
+    //     1. Look for a recent snapshot where the parent's recorded tip is no
+    //        longer an ancestor of the parent's current tip. That recorded SHA
+    //        is the orphaned old-parent tip — exactly the rebase base we need.
+    //     2. Fall back to `merge-base(branch, parent)` if no snapshot tells us
+    //        the parent was rewritten (typical case: parent only had commits
+    //        appended, not rebased).
+    //
+    //   Re-read metadata fresh because previous iterations of this loop may
+    //   have updated snapshots.
+    const freshMeta = (await readMetadata()) ?? meta;
+    const oldBaseFromSnapshot = await findPreRewriteSha(freshMeta, parent);
+    const oldBaseFromMergeBase = await git.mergeBase(branch, parent);
+    const oldBase = oldBaseFromSnapshot ?? oldBaseFromMergeBase;
+
+    if (verbose) {
+      console.log();
+      console.log(pc.yellow("  Diagnostic: base resolution"));
+      console.log(
+        `  ${pc.cyan("Snapshot pre-rewrite tip:")} ${oldBaseFromSnapshot?.slice(0, 8) ?? "(none)"}`,
+      );
+      console.log(
+        `  ${pc.cyan("Current merge-base:")}      ${oldBaseFromMergeBase?.slice(0, 8) ?? "(none)"}`,
+      );
+      if (
+        oldBaseFromSnapshot &&
+        oldBaseFromMergeBase &&
+        oldBaseFromSnapshot !== oldBaseFromMergeBase
+      ) {
+        console.log(
+          `  ${pc.yellow("⚠ Parent was rewritten")} — using snapshot base (would have replayed parent commits otherwise)`,
+        );
+      }
+      console.log();
+    }
+
     // Checkout the branch
     p.log.info(`Checking out ${pc.yellow(branch)}...`);
     await git.checkout(branch);
@@ -324,49 +326,22 @@ async function processChain(
       chain,
     });
 
-    // Use temporary tag as stable base reference
-    const tagName = git.tempBaseTagName(branch);
     let success: boolean;
-
-    if (await git.tagExists(tagName)) {
-      const taggedBase = await git.revParse(tagName);
-      p.log.info(`Using tagged base: ${pc.cyan(tagName)} (${taggedBase.slice(0, 8)})`);
+    if (oldBase) {
+      const sourceLabel = oldBaseFromSnapshot ? "snapshot" : "merge-base";
+      p.log.info(
+        `Rebasing onto ${pc.yellow(parent)} (base: ${oldBase.slice(0, 8)} from ${sourceLabel})`,
+      );
 
       if (verbose) {
-        const currentMb = await git.mergeBase(branch, parent);
-        console.log();
-        console.log(pc.yellow("  Diagnostic: Tag vs Merge-Base"));
-        console.log(`  ${pc.cyan("Tagged base:")}      ${taggedBase.slice(0, 8)}`);
-        if (currentMb) {
-          console.log(`  ${pc.cyan("Current merge-base:")} ${currentMb.slice(0, 8)}`);
-          if (taggedBase === currentMb) {
-            console.log(`  ${pc.green("✓ Same")} — Parent hasn't been updated`);
-          } else {
-            console.log(`  ${pc.yellow("⚠ Different")} — Parent was rebased (tag protects us!)`);
-          }
-        }
-        console.log();
-      }
-
-      p.log.info(`Rebasing onto ${pc.yellow(parent)}...`);
-      const count = await git.commitCount(taggedBase, branch);
-      if (verbose) {
+        const count = await git.commitCount(oldBase, branch);
         console.log(`  Moving ${count} commit(s)`);
       }
 
-      success = await git.rebaseOnto(parent, tagName, branch);
+      success = await git.rebaseOnto(parent, oldBase, branch);
     } else {
-      // Fallback to merge-base
-      p.log.warn("Tag not found, calculating merge-base...");
-      const oldBase = await git.mergeBase(branch, parent);
-
-      if (!oldBase) {
-        p.log.warn("Could not find merge-base, using simple rebase");
-        success = await git.rebase(parent);
-      } else {
-        p.log.info(`Found merge-base: ${oldBase.slice(0, 8)}`);
-        success = await git.rebaseOnto(parent, oldBase, branch);
-      }
+      p.log.warn("Could not determine rebase base — using simple rebase");
+      success = await git.rebase(parent);
     }
 
     if (success) {
@@ -433,52 +408,5 @@ async function promptPush(branch: string): Promise<void> {
     }
   } else {
     p.log.warn("Skipping push (you'll need to push manually)");
-  }
-}
-
-async function handleStaleTags(): Promise<void> {
-  try {
-    const { $ } = await import("bun");
-    const result = await $`git tag -l ${git.STACK_SYNC_TAG_GLOB}`.text();
-    const tags = result.trim();
-    if (!tags) return;
-
-    p.log.warn(`Found stale ${git.STACK_SYNC_TAG_GLOB} tags from a previous run`);
-    console.log();
-
-    const action = await p.select({
-      message: "What would you like to do?",
-      options: [
-        {
-          value: "clean",
-          label: "Clean up tags and start fresh",
-        },
-        {
-          value: "resume",
-          label: "Resume from previous sync (--resume)",
-        },
-        { value: "abort", label: "Abort (keep tags, exit)" },
-      ],
-    });
-
-    if (p.isCancel(action) || action === "abort") {
-      p.cancel("Aborted");
-      process.exit(0);
-    }
-
-    if (action === "clean") {
-      p.log.info("Cleaning up stale tags...");
-      await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
-      p.log.success("Tags cleaned");
-    }
-
-    if (action === "resume") {
-      // Re-run with --resume flag
-      const { default: restack } = await import("./restack.ts");
-      await restack(["--resume"]);
-      process.exit(0);
-    }
-  } catch {
-    // No stale tags — carry on
   }
 }

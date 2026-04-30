@@ -16,7 +16,7 @@ import {
 } from "./helpers.ts";
 import * as git from "../lib/git.ts";
 import { saveRestackState, loadRestackState, clearRestackState } from "../lib/metadata.ts";
-import { takeSnapshot, getLastSnapshot } from "../lib/snapshot.ts";
+import { takeSnapshot, getLastSnapshot, findPreRewriteSha } from "../lib/snapshot.ts";
 import undo from "../commands/undo.ts";
 import { setAutoYes } from "../lib/ui.ts";
 
@@ -613,5 +613,219 @@ describe("tag cleanup", () => {
   test("deleteTagsMatching is safe when no tags exist", async () => {
     // Should not throw
     await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
+  });
+});
+
+// ────────────────────────────────────────────────────────
+// Snapshot-based pre-rewrite SHA recovery (issue #2)
+//
+// Reproduces the bug where, after a parent's history is rewritten,
+// `merge-base(child, parent)` falls all the way back to original-main —
+// causing restack to replay the parent's old commits onto the child.
+//
+// findPreRewriteSha() should recover the orphaned old-parent tip from
+// a pre-rewrite snapshot, giving restack the correct rebase base.
+// ────────────────────────────────────────────────────────
+
+describe("findPreRewriteSha", () => {
+  test("returns null when no snapshots exist", async () => {
+    const { meta } = await createLinearStack(tmpDir);
+
+    const result = await findPreRewriteSha(meta, "pr1");
+    expect(result).toBeNull();
+  });
+
+  test("returns null when branch was only appended to (history not rewritten)", async () => {
+    const { meta } = await createLinearStack(tmpDir);
+
+    // Snapshot the current state
+    const updated = await takeSnapshot(meta, "test-stack", "restack");
+
+    // Append a commit to pr1 (does NOT rewrite history)
+    await checkout(tmpDir, "pr1");
+    await makeCommit(tmpDir, "pr1-extra.txt", "extra\n", "pr1: extra");
+
+    // Snapshot's recorded SHA is still an ancestor of pr1's current tip
+    // → not "rewritten" → falls back to merge-base (caller's responsibility)
+    const result = await findPreRewriteSha(updated, "pr1");
+    expect(result).toBeNull();
+  });
+
+  test("returns the orphaned tip after a rebase rewrites the branch", async () => {
+    const { meta, shas } = await createLinearStack(tmpDir);
+    await pushAllBranches(tmpDir);
+
+    // Advance origin/main
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "main-new.txt", "new\n", "main: advance");
+    await $`git -C ${tmpDir} push origin main`.quiet();
+    await $`git -C ${tmpDir} fetch origin`.quiet();
+
+    // Take pre-sync snapshot — captures pr1's pre-rebase tip
+    const preSync = await takeSnapshot(meta, "test-stack", "sync");
+    expect(preSync.snapshots![0]!.branches["pr1"]).toBe(shas.pr1);
+
+    // Rebase pr1 onto origin/main (rewrites history)
+    await checkout(tmpDir, "pr1");
+    await git.rebase("origin/main");
+
+    const newPr1 = await getSha(tmpDir, "pr1");
+    expect(newPr1).not.toBe(shas.pr1);
+
+    // The snapshot's recorded SHA (old pr1 tip) is no longer an ancestor
+    // of the new pr1 tip — they're siblings on a fork. findPreRewriteSha
+    // detects this and returns the orphaned tip.
+    const result = await findPreRewriteSha(preSync, "pr1");
+    expect(result).toBe(shas.pr1!);
+  });
+
+  test("walks newest→oldest, prefers most recent rewrite", async () => {
+    const { meta, shas } = await createLinearStack(tmpDir);
+    await pushAllBranches(tmpDir);
+
+    // First sync cycle — snapshot, then rewrite pr1
+    let m = await takeSnapshot(meta, "test-stack", "sync");
+    const firstPr1 = shas.pr1;
+
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "main-1.txt", "1\n", "main: 1");
+    await $`git -C ${tmpDir} push origin main`.quiet();
+    await $`git -C ${tmpDir} fetch origin`.quiet();
+
+    await checkout(tmpDir, "pr1");
+    await git.rebase("origin/main");
+    const secondPr1 = await getSha(tmpDir, "pr1");
+
+    // Second sync cycle — snapshot the new pr1 tip, then rewrite again
+    m = await takeSnapshot(m, "test-stack", "sync");
+
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "main-2.txt", "2\n", "main: 2");
+    await $`git -C ${tmpDir} push origin main`.quiet();
+    await $`git -C ${tmpDir} fetch origin`.quiet();
+
+    await checkout(tmpDir, "pr1");
+    await git.rebase("origin/main");
+
+    // Two snapshots exist:
+    //   [0] pre-first-sync: pr1 = firstPr1
+    //   [1] pre-second-sync: pr1 = secondPr1  ← most recent orphaned tip
+    // findPreRewriteSha should return secondPr1, not firstPr1.
+    const result = await findPreRewriteSha(m, "pr1");
+    expect(result).toBe(secondPr1);
+    expect(result).not.toBe(firstPr1);
+  });
+});
+
+// ────────────────────────────────────────────────────────
+// Issue #2 repro: ghost-conflict prevention end-to-end
+//
+// Without the snapshot-based base lookup, this scenario would replay
+// pr1's old commits on top of pr2 (since merge-base falls back to
+// original-main). The fix is verified by counting pr2's unique commits
+// after restack — it should still be exactly 1.
+// ────────────────────────────────────────────────────────
+
+describe("issue #2 repro: sync → restack with rebased base", () => {
+  test("restack after sync replays only child's unique commits, not parent's old history", async () => {
+    const { meta, shas } = await createLinearStack(tmpDir);
+    await pushAllBranches(tmpDir);
+
+    // Advance main with a commit that pr1 didn't have
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "main-new.txt", "new\n", "main: advance");
+    await $`git -C ${tmpDir} push origin main`.quiet();
+    await $`git -C ${tmpDir} fetch origin`.quiet();
+
+    // Sync's job: snapshot BEFORE rebasing — captures pr1, pr2, pr3 old tips
+    const preSync = await takeSnapshot(meta, "test-stack", "sync");
+
+    // Sync rebases pr1 onto origin/main (rewrites pr1's history)
+    await checkout(tmpDir, "pr1");
+    const ok1 = await git.rebase("origin/main");
+    expect(ok1).toBe(true);
+    const newPr1 = await getSha(tmpDir, "pr1");
+    expect(newPr1).not.toBe(shas.pr1);
+
+    // Now simulate restack of pr2 onto rebased pr1.
+    //
+    // The buggy path (merge-base): would return original-main (or close)
+    // because new-pr1 doesn't share commits with unrebased pr2 anymore.
+    // The fix (findPreRewriteSha): returns the old pr1 tip from snapshot.
+
+    const buggyBase = await git.mergeBase("pr2", "pr1");
+    const correctBase = await findPreRewriteSha(preSync, "pr1");
+
+    // Sanity: the two strategies disagree — that's the whole point of the fix
+    expect(correctBase).toBe(shas.pr1!);
+    expect(buggyBase).not.toBe(correctBase);
+
+    // Use the correct base to restack pr2
+    const ok2 = await git.rebaseOnto("pr1", correctBase!, "pr2");
+    expect(ok2).toBe(true);
+
+    // pr2 should have EXACTLY 1 unique commit above pr1 — its own.
+    // If the bug were present, this would be > 1 (pr1's old commits replayed).
+    const pr2Unique = parseInt(
+      (await $`git -C ${tmpDir} rev-list --count pr1..pr2`.text()).trim(),
+      10,
+    );
+    expect(pr2Unique).toBe(1);
+
+    // And the chain is correct end-to-end
+    expect(await isAncestor(tmpDir, "origin/main", "pr2")).toBe(true);
+    expect(await isAncestor(tmpDir, "pr1", "pr2")).toBe(true);
+
+    // pr2 has main's new commit AND pr1's content AND its own
+    await checkout(tmpDir, "pr2");
+    expect(await Bun.file(`${tmpDir}/main-new.txt`).exists()).toBe(true);
+    expect(await Bun.file(`${tmpDir}/pr1.txt`).exists()).toBe(true);
+    expect(await Bun.file(`${tmpDir}/pr2.txt`).exists()).toBe(true);
+  });
+
+  test("3-PR stack: pre-sync snapshot drives correct base for every child", async () => {
+    const { meta, shas } = await createLinearStack(tmpDir);
+    await pushAllBranches(tmpDir);
+
+    // Advance main
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "main-new.txt", "new\n", "main: advance");
+    await $`git -C ${tmpDir} push origin main`.quiet();
+    await $`git -C ${tmpDir} fetch origin`.quiet();
+
+    // Pre-sync snapshot — single source of truth for all old tips
+    const preSync = await takeSnapshot(meta, "test-stack", "sync");
+
+    // Rebase pr1 onto origin/main
+    await checkout(tmpDir, "pr1");
+    expect(await git.rebase("origin/main")).toBe(true);
+
+    // Restack pr2: use snapshot's pre-rewrite tip of pr1
+    const pr2Base = await findPreRewriteSha(preSync, "pr1");
+    expect(pr2Base).toBe(shas.pr1!);
+    expect(await git.rebaseOnto("pr1", pr2Base!, "pr2")).toBe(true);
+
+    // Restack pr3: pr2's tip is now rewritten, but the snapshot still has
+    // pr2's pre-restack tip recorded — that's the rebase base for pr3.
+    const pr3Base = await findPreRewriteSha(preSync, "pr2");
+    expect(pr3Base).toBe(shas.pr2!);
+    expect(await git.rebaseOnto("pr2", pr3Base!, "pr3")).toBe(true);
+
+    // Each child has exactly 1 unique commit — none of the parent's old history replayed
+    const pr2Unique = parseInt(
+      (await $`git -C ${tmpDir} rev-list --count pr1..pr2`.text()).trim(),
+      10,
+    );
+    const pr3Unique = parseInt(
+      (await $`git -C ${tmpDir} rev-list --count pr2..pr3`.text()).trim(),
+      10,
+    );
+    expect(pr2Unique).toBe(1);
+    expect(pr3Unique).toBe(1);
+
+    // Full chain
+    expect(await isAncestor(tmpDir, "origin/main", "pr3")).toBe(true);
+    expect(await isAncestor(tmpDir, "pr1", "pr3")).toBe(true);
+    expect(await isAncestor(tmpDir, "pr2", "pr3")).toBe(true);
   });
 });

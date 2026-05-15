@@ -829,3 +829,114 @@ describe("issue #2 repro: sync → restack with rebased base", () => {
     expect(await isAncestor(tmpDir, "pr2", "pr3")).toBe(true);
   });
 });
+
+// ────────────────────────────────────────────────────────
+// Issue #5 repro: stale snapshot from earlier session
+//
+// After a successful sync + restack cycle, the snapshots list still contains
+// the pre-rewrite entry. When the user later edits the parent and re-runs
+// restack, walking newest→oldest can return a recorded SHA that the child
+// has already been rebased past — silently producing a giant wrong replay
+// range. The fix: validate the candidate is still an ancestor of the child.
+// ────────────────────────────────────────────────────────
+
+describe("issue #5: stale snapshot child-ancestry validation", () => {
+  test("does not return a recorded SHA that the child has been rebased past", async () => {
+    const { meta, shas } = await createLinearStack(tmpDir);
+    await pushAllBranches(tmpDir);
+
+    // ─── Session 1: sync + restack pr2 onto rebased pr1 ───
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "main-1.txt", "1\n", "main: 1");
+    await $`git -C ${tmpDir} push origin main`.quiet();
+    await $`git -C ${tmpDir} fetch origin`.quiet();
+
+    // Take pre-sync snapshot — records pr1 at its original tip
+    let m = await takeSnapshot(meta, "test-stack", "sync");
+    const oldPr1 = shas.pr1!;
+    expect(m.snapshots![0]!.branches["pr1"]).toBe(oldPr1);
+
+    // Sync rebases pr1 onto new main
+    await checkout(tmpDir, "pr1");
+    expect(await git.rebase("origin/main")).toBe(true);
+
+    // Restack pr2 onto rebased pr1 — using the snapshot-driven correct base
+    const session1Base = await findPreRewriteSha(m, "pr1", "pr2");
+    expect(session1Base).toBe(oldPr1);
+    expect(await git.rebaseOnto("pr1", session1Base!, "pr2")).toBe(true);
+
+    // After this, pr2 has been rebased — old pr1 tip is NOT in pr2's history
+    const pr2AfterRestack = await getSha(tmpDir, "pr2");
+    expect(await isAncestor(tmpDir, oldPr1, pr2AfterRestack)).toBe(false);
+
+    // ─── Session 2: user makes an unrelated commit on pr1, runs restack ───
+    await checkout(tmpDir, "pr1");
+    await makeCommit(tmpDir, "pr1-fix.txt", "fix\n", "pr1: fix");
+
+    // Take a fresh snapshot (as restack would). The old session-1 snapshot
+    // is still in the list — that's the trap.
+    m = await takeSnapshot(m, "test-stack", "restack");
+    expect(m.snapshots!.length).toBe(2);
+
+    // The buggy old behavior: walking newest→oldest would consider snapshot[0]
+    // (oldPr1) — it's no longer an ancestor of pr1's current tip — and return
+    // it. That SHA is NOT in pr2's history anymore → rebase --onto with it
+    // would replay a huge wrong range.
+    //
+    // The fix: passing pr2 as childBranch skips snapshot[0] because oldPr1
+    // is not an ancestor of pr2. We end up with null → caller falls back to
+    // merge-base, which now correctly points to the previous pr1 tip pr2
+    // is actually based on.
+    const baseWithChildCheck = await findPreRewriteSha(m, "pr1", "pr2");
+    expect(baseWithChildCheck).toBeNull();
+
+    // Sanity: without the child check, we'd get the stale tip back.
+    const baseWithoutChildCheck = await findPreRewriteSha(m, "pr1");
+    expect(baseWithoutChildCheck).toBe(oldPr1);
+
+    // And merge-base (the fallback) gives the right answer for pr2 in this case
+    const mb = await git.mergeBase("pr2", "pr1");
+    expect(await isAncestor(tmpDir, mb!, pr2AfterRestack)).toBe(true);
+  });
+
+  test("still returns valid snapshot SHA when child has not been rebased past it", async () => {
+    // This is the original issue #2 case — make sure the child-ancestry
+    // check doesn't regress the happy path.
+    const { meta, shas } = await createLinearStack(tmpDir);
+    await pushAllBranches(tmpDir);
+
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "main-new.txt", "new\n", "main: advance");
+    await $`git -C ${tmpDir} push origin main`.quiet();
+    await $`git -C ${tmpDir} fetch origin`.quiet();
+
+    const preSync = await takeSnapshot(meta, "test-stack", "sync");
+
+    // Rebase pr1 — pr2 hasn't been restacked yet, so it still has the old
+    // pr1 tip in its ancestry.
+    await checkout(tmpDir, "pr1");
+    expect(await git.rebase("origin/main")).toBe(true);
+
+    const result = await findPreRewriteSha(preSync, "pr1", "pr2");
+    expect(result).toBe(shas.pr1!);
+  });
+
+  test("handles missing child gracefully (falls back to parent-only check)", async () => {
+    const { meta, shas } = await createLinearStack(tmpDir);
+    await pushAllBranches(tmpDir);
+
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "main-new.txt", "new\n", "main: advance");
+    await $`git -C ${tmpDir} push origin main`.quiet();
+    await $`git -C ${tmpDir} fetch origin`.quiet();
+
+    const preSync = await takeSnapshot(meta, "test-stack", "sync");
+
+    await checkout(tmpDir, "pr1");
+    expect(await git.rebase("origin/main")).toBe(true);
+
+    // Pass a child that doesn't exist — should fall back to parent-only check
+    const result = await findPreRewriteSha(preSync, "pr1", "nonexistent-branch");
+    expect(result).toBe(shas.pr1!);
+  });
+});

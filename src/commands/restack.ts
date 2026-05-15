@@ -281,16 +281,21 @@ async function processChain(
     //
     //   Strategy:
     //     1. Look for a recent snapshot where the parent's recorded tip is no
-    //        longer an ancestor of the parent's current tip. That recorded SHA
-    //        is the orphaned old-parent tip — exactly the rebase base we need.
+    //        longer an ancestor of the parent's current tip AND is still an
+    //        ancestor of the child. That recorded SHA is the orphaned
+    //        old-parent tip — exactly the rebase base we need.
     //     2. Fall back to `merge-base(branch, parent)` if no snapshot tells us
     //        the parent was rewritten (typical case: parent only had commits
     //        appended, not rebased).
     //
+    //   The child-ancestry check (issue #5) prevents stale snapshots from
+    //   older sessions — where the child has already been rebased past the
+    //   recorded point — from being used as a rebase base.
+    //
     //   Re-read metadata fresh because previous iterations of this loop may
     //   have updated snapshots.
     const freshMeta = (await readMetadata()) ?? meta;
-    const oldBaseFromSnapshot = await findPreRewriteSha(freshMeta, parent);
+    const oldBaseFromSnapshot = await findPreRewriteSha(freshMeta, parent, branch);
     const oldBaseFromMergeBase = await git.mergeBase(branch, parent);
     const oldBase = oldBaseFromSnapshot ?? oldBaseFromMergeBase;
 

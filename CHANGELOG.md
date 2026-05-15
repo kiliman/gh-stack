@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1
+
+### 🐛 Fixes
+- **`restack` no longer picks a stale snapshot base from an earlier session** ([#5](https://github.com/kiliman/gh-stack/issues/5)) — when the snapshots list contained pre-rewrite entries from a previous restack cycle the child had already moved past, `findPreRewriteSha` would return one of those stale SHAs and `rebase --onto` would replay 10–20+ unrelated commits, conflicting on files outside the user's actual changes.
+
+### ♻️ Internals
+- `findPreRewriteSha(meta, parent, child?)` now accepts an optional child branch and validates that any candidate SHA is still an ancestor of the child. Stale snapshots whose recorded parent tip is no longer reachable from the child are skipped. Restack passes the child branch on every lookup.
+
+### 🧪 Tests
+- Added 3 integration tests covering the issue #5 repro and the missing-child fallback (146 tests total, up from 143).
+
 ## 0.4.0
 
 > **Minor version bump:** restack base-detection mechanism replaced — temp tags are out, metadata snapshots are in.

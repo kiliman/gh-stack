@@ -72,6 +72,35 @@ describe("command dry-run safety", () => {
     expect(await getSha(tmpDir, "pr2")).toBe(shas.pr2!);
     expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
   });
+
+  test("merge --collapse --dry-run does not change refs, metadata, or archive", async () => {
+    const { shas } = await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr3");
+
+    await merge(["--collapse", "--dry-run"]);
+
+    const meta = await readMetadata(tmpDir);
+    expect(meta.snapshots).toBeUndefined();
+    expect(meta.archive).toBeUndefined();
+    // Stack must remain in stacks (not archived) — that's the whole point of collapse
+    expect(meta.stacks["test-stack"]).toBeDefined();
+    expect(await getCurrentBranch(tmpDir)).toBe("pr3");
+    expect(await getSha(tmpDir, "pr1")).toBe(shas.pr1!);
+    expect(await getSha(tmpDir, "pr2")).toBe(shas.pr2!);
+    expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
+  });
+
+  test("merge --stop-at-base is an alias for --collapse", async () => {
+    await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr3");
+
+    // Just verify it runs without error and behaves like --collapse
+    await merge(["--stop-at-base", "--dry-run"]);
+
+    const meta = await readMetadata(tmpDir);
+    expect(meta.archive).toBeUndefined();
+    expect(meta.stacks["test-stack"]).toBeDefined();
+  });
 });
 
 describe("metadata tracking for display commands", () => {

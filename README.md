@@ -131,12 +131,16 @@ sync [--dry-run]
     children. Snapshots every branch's pre-sync tip so children can be
     correctly rebased even though their parent's history was rewritten.
 
-merge [--dry-run] [-d|--delete-branch]
+merge [--dry-run] [-d|--delete-branch] [--collapse]
     Squash-merge the stack top-down via GitHub (PR3 → PR2 → PR1),
     then enables auto-merge for the base PR into main. All merges
     happen on GitHub so PRs show as "Merged", Linear tickets close
     automatically, and GitHub Actions fire normally. Skips already-
     merged PRs (safe to re-run). Waits for GitHub between merges.
+    --collapse  Stop after collapsing the stack into the base PR;
+                leaves the base PR open against main so you can
+                review the cumulative diff on GitHub. Re-run
+                `gh-stack merge` (without --collapse) to finish.
 
 delete [<branch>]
     Remove a branch from the stack and re-parent its children.
@@ -262,6 +266,11 @@ gh-stack status
 
 # When PRs are approved, merge the stack
 gh-stack merge       # squash-merges down, pushes, enables auto-merge
+
+# Or: collapse first to review the cumulative diff before shipping
+gh-stack merge --collapse   # squash-merges PRn..PR2 into PR1, stops there
+# ...review base PR on GitHub...
+gh-stack merge              # finishes base PR → main + archives the stack
 ```
 
 ## Agent/CI Usage

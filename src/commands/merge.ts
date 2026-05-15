@@ -41,13 +41,14 @@ async function waitForMergeable(
 export default async function merge(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const deleteFlag = args.includes("--delete-branch") || args.includes("-d");
+  const collapse = args.includes("--collapse") || args.includes("--stop-at-base");
 
   if (args.includes("--help")) {
     console.log(`
 gh-stack merge — Squash-merge stack via GitHub
 
 USAGE
-  gh-stack merge [--dry-run] [-d|--delete-branch]
+  gh-stack merge [--dry-run] [-d|--delete-branch] [--collapse]
 
 Squash-merges the stack from top to bottom via GitHub:
   PR3 → squash into PR2, PR2 → squash into PR1, PR1 → auto-merge into main.
@@ -61,6 +62,11 @@ Waits for GitHub to process between merges if needed.
 OPTIONS
   -d, --delete-branch  Delete remote branches after merging
       --dry-run        Show what would happen without doing anything
+      --collapse       Stop after collapsing the stack into the base PR;
+                       do NOT merge base PR into main. Lets you review the
+                       cumulative diff on GitHub first. Re-run ${pc.green("gh-stack merge")}
+                       (without --collapse) to finish the job.
+      --stop-at-base   Alias for --collapse
 `);
     return;
   }
@@ -81,6 +87,12 @@ OPTIONS
   if (ordered.length <= 1) {
     // Single branch — just enable auto-merge
     const basePr = stack.branches[ordered[0]!]?.pr;
+    if (collapse) {
+      p.log.info(
+        `Single-branch stack — nothing to collapse. The base PR${basePr ? ` (#${basePr})` : ""} already targets main.`,
+      );
+      return;
+    }
     if (basePr) {
       p.log.info("Single branch stack — enabling auto-merge on GitHub.");
       if (!dryRun) {
@@ -97,8 +109,13 @@ OPTIONS
     return;
   }
 
-  p.intro(pc.cyan("Stack Merge (via GitHub)"));
+  p.intro(pc.cyan(collapse ? "Stack Collapse (via GitHub)" : "Stack Merge (via GitHub)"));
   p.log.info(`Stack: ${pc.yellow(stackName)}`);
+  if (collapse) {
+    p.log.info(
+      pc.dim("--collapse: will stop after collapsing into base PR; base will NOT merge to main."),
+    );
+  }
   console.log();
 
   // Check PR states and build the merge plan
@@ -121,9 +138,15 @@ OPTIONS
       `    ${pc.yellow(child)}${childPr ? ` (#${childPr})` : ""} → squash into ${pc.blue(parent)}${mergedLabel}`,
     );
   }
-  console.log(
-    `    ${pc.blue(baseBranch)}${basePr ? ` (#${basePr})` : ""} → ${pc.green("main")} (auto-merge)`,
-  );
+  if (collapse) {
+    console.log(
+      `    ${pc.blue(baseBranch)}${basePr ? ` (#${basePr})` : ""} → ${pc.dim("(stop — review on GitHub, then re-run merge to finish)")}`,
+    );
+  } else {
+    console.log(
+      `    ${pc.blue(baseBranch)}${basePr ? ` (#${basePr})` : ""} → ${pc.green("main")} (auto-merge)`,
+    );
+  }
   console.log();
 
   if (dryRun) {
@@ -140,14 +163,18 @@ OPTIONS
     process.exit(1);
   }
 
-  const confirmed = await confirmAction("Squash-merge stack top-down via GitHub?");
+  const confirmed = await confirmAction(
+    collapse
+      ? "Collapse stack top-down via GitHub (stop at base PR)?"
+      : "Squash-merge stack top-down via GitHub?",
+  );
   if (!confirmed) {
     p.cancel("Cancelled");
     process.exit(0);
   }
 
   // Take snapshot
-  await takeSnapshot(meta, stackName, "merge");
+  await takeSnapshot(meta, stackName, collapse ? "collapse" : "merge");
 
   // Merge top-down via GitHub: for each PR from top, squash-merge into parent
   for (let i = 0; i < reversed.length - 1; i++) {
@@ -203,6 +230,41 @@ OPTIONS
       p.log.info("Re-run merge to continue from where you left off.");
       process.exit(2);
     }
+  }
+
+  // ─── --collapse: stop here. Base PR holds the cumulative diff; let the
+  //     user review on GitHub and re-run `gh-stack merge` to finish.
+  if (collapse) {
+    console.log();
+    console.log(pc.cyan("━".repeat(40)));
+    console.log(pc.green("  Stack collapsed into base PR"));
+    console.log(pc.cyan("━".repeat(40)));
+    console.log();
+
+    // Fetch the base PR URL for a clickable summary line
+    let baseUrl: string | null = null;
+    try {
+      const proc = Bun.spawn(["gh", "pr", "view", String(basePr), "--json", "url", "-q", ".url"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const out = (await new Response(proc.stdout).text()).trim();
+      if ((await proc.exited) === 0 && out) baseUrl = out;
+    } catch {}
+
+    console.log(
+      `  ${pc.blue("Base PR:")} #${basePr} ${pc.yellow(baseBranch)} → ${pc.green("main")}`,
+    );
+    if (baseUrl) console.log(`  ${pc.dim(baseUrl)}`);
+    console.log();
+    console.log(`  ${pc.dim("Review the cumulative diff on GitHub. When ready to ship:")}`);
+    console.log(
+      `    ${pc.green("gh-stack merge")}    ${pc.dim("# finishes base PR → main + archives")}`,
+    );
+    console.log();
+
+    p.outro(pc.green("Collapse complete — stack left intact for review."));
+    return;
   }
 
   // Base PR → enable auto-merge into main

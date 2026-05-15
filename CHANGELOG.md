@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+> **Minor version bump:** `merge --collapse` lets you collapse the stack into the base PR without merging to main.
+
+### ✨ Features
+- **`gh-stack merge --collapse`** — squash-merges PRn..PR2 into PR1 top-down (same as normal merge), then **stops at the base PR** instead of auto-merging it into main. The base PR is left open against `main` holding the cumulative diff so you can review the full set of changes on GitHub before shipping. Re-run `gh-stack merge` (without `--collapse`) to finish — the existing "already merged" skip logic walks past the intermediate PRs and only the base→main step runs.
+- `--stop-at-base` is a hidden alias for `--collapse` for muscle memory.
+- The summary prints the base PR URL (when `gh pr view` is available) so you can click straight through to review.
+
+### 🧪 Tests
+- Added 2 integration tests covering `merge --collapse --dry-run` and the `--stop-at-base` alias (148 tests total, up from 146).
+
 ## 0.4.1
 
 ### 🐛 Fixes

@@ -236,6 +236,30 @@ OPTIONS
   //     user review on GitHub and re-run `gh-stack merge` to finish.
   if (collapse) {
     console.log();
+
+    // Park the user on the base branch — mirrors how normal merge lands you
+    // on `main`. Fetch origin so they can see how far behind their local
+    // base branch is (the squashed commits live only on origin/<base> now).
+    const checkoutSpinner = p.spinner();
+    checkoutSpinner.start(`Checking out base branch ${pc.yellow(baseBranch)}...`);
+    let localBehind = false;
+    try {
+      await $`git fetch origin`.quiet();
+      await git.checkout(baseBranch);
+
+      // Compare local vs origin to flag the user if their local base is stale
+      try {
+        const localSha = await git.revParse(baseBranch);
+        const remoteSha = await git.revParse(`origin/${baseBranch}`);
+        localBehind = localSha !== remoteSha;
+      } catch {}
+
+      checkoutSpinner.stop(`On base branch ${pc.yellow(baseBranch)}`);
+    } catch {
+      checkoutSpinner.stop(pc.dim(`Could not checkout ${baseBranch} — switch manually if needed`));
+    }
+
+    console.log();
     console.log(pc.cyan("━".repeat(40)));
     console.log(pc.green("  Stack collapsed into base PR"));
     console.log(pc.cyan("━".repeat(40)));
@@ -256,6 +280,15 @@ OPTIONS
       `  ${pc.blue("Base PR:")} #${basePr} ${pc.yellow(baseBranch)} → ${pc.green("main")}`,
     );
     if (baseUrl) console.log(`  ${pc.dim(baseUrl)}`);
+    if (localBehind) {
+      console.log();
+      console.log(
+        `  ${pc.yellow("⚠")} Local ${pc.yellow(baseBranch)} is behind ${pc.dim(`origin/${baseBranch}`)}`,
+      );
+      console.log(
+        `    ${pc.dim("(squashed commits from upper PRs live on origin only — review the diff on GitHub)")}`,
+      );
+    }
     console.log();
     console.log(`  ${pc.dim("Review the cumulative diff on GitHub. When ready to ship:")}`);
     console.log(

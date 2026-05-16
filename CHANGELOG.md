@@ -8,6 +8,7 @@
 - **`gh-stack merge --collapse`** — squash-merges PRn..PR2 into PR1 top-down (same as normal merge), then **stops at the base PR** instead of auto-merging it into main. The base PR is left open against `main` holding the cumulative diff so you can review the full set of changes on GitHub before shipping. Re-run `gh-stack merge` (without `--collapse`) to finish — the existing "already merged" skip logic walks past the intermediate PRs and only the base→main step runs.
 - `--stop-at-base` is a hidden alias for `--collapse` for muscle memory.
 - The summary prints the base PR URL (when `gh pr view` is available) so you can click straight through to review.
+- After collapse completes, the working tree is checked out to the **base branch** (mirrors how normal `merge` lands you on `main`). If the local base branch is behind `origin/<base>` — which it always will be, since the squashed commits live on origin only — the summary calls that out so you know to review on GitHub rather than locally.
 
 ### 🧪 Tests
 - Added 2 integration tests covering `merge --collapse --dry-run` and the `--stop-at-base` alias (148 tests total, up from 146).

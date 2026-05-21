@@ -255,6 +255,16 @@ export async function allLocalBranches(): Promise<string[]> {
 }
 
 /**
+ * Determine the trunk branch name. Prefers "main", falls back to "master"
+ * if only that exists locally. Defaults to "main" when neither is present.
+ */
+export async function trunkBranch(): Promise<string> {
+  if (await localBranchExists("main")) return "main";
+  if (await localBranchExists("master")) return "master";
+  return "main";
+}
+
+/**
  * Build a deterministic temp tag name for a branch.
  * Includes a readable slug plus a stable hash to avoid collisions.
  */

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.0
+
+> **Minor version bump:** `submit` is now self-healing — it bootstraps a stack from bare local branches instead of failing.
+
+### ✨ Features
+- **`submit` self-heals when the current branch isn't tracked** ([#7](https://github.com/kiliman/gh-stack/issues/7)) — previously `submit` bailed with "Branch X not found in any stack", which was a constant dead end when a multi-step change left a chain of local branches that never got `init`'d. Now `submit`:
+  - Auto-detects the branch chain from trunk → current (same ancestry walk `init` uses).
+  - Creates a new stack (named after the current branch, auto-suffixed on clash) **or** reconciles untracked branches into an existing stack if part of the chain is already tracked.
+  - Registers missing branches with correct parent links, then falls through to the normal push + PR-create flow.
+  - Works with **no metadata file at all** — `submit` no longer requires `gh-stack init` to have been run first.
+  - Aborts cleanly if run from `main`/`master`, or if the chain spans multiple existing stacks (ambiguous).
+  - `--dry-run` previews the detected/created stack and push plan without writing metadata or pushing.
+
+### ♻️ Internals
+- Extracted `detectBranchChain` from `init` into `src/lib/chain.ts` and added `resolveOrCreateStack` (shared self-heal logic). `init` now imports the shared helper.
+- Added `git.trunkBranch()` — resolves `main` / `master` (defaults to `main`).
+- `submit` no longer calls `ensureMetadata` (which hard-failed on a missing file); it reads metadata or starts from an empty in-memory store.
+
+### 🧪 Tests
+- Added `chain.test.ts` (6 tests: full-chain detection, single-branch, mid-chain stop, new-stack creation, partial-stack reconciliation, name auto-suffix, multi-stack ambiguity) plus a `submit --dry-run` self-heal command test (157 tests total, up from 148).
+
 ## 0.5.0
 
 > **Minor version bump:** `merge --collapse` lets you collapse the stack into the base PR without merging to main.

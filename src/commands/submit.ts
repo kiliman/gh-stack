@@ -3,10 +3,16 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { $ } from "bun";
 import * as git from "../lib/git.ts";
-import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
-import { ensureMetadata } from "../lib/safety.ts";
+import {
+  findStackForBranch,
+  getOrderedBranches,
+  readMetadata,
+  writeMetadata,
+} from "../lib/metadata.ts";
 import { isAutoYes } from "../lib/ui.ts";
+import type { StackMetadata } from "../types.ts";
 import { getPrNumber, getPrInfo, getPrBody, updatePrBody, reviewEmoji } from "../lib/github.ts";
+import { resolveOrCreateStack } from "../lib/chain.ts";
 import { buildStackViz } from "./update-prs.ts";
 
 const HELP = `
@@ -18,6 +24,11 @@ USAGE
 Pushes all branches from trunk to the current branch, creating PRs
 for branches that don't have them and updating stack visualization
 in all PR descriptions. Idempotent — safe to run repeatedly.
+
+Self-healing: if the current branch isn't tracked in a stack yet,
+submit auto-detects the branch chain from trunk → current, registers
+(or reconciles into) a stack, then pushes + creates PRs for the whole
+chain. You never need to run \`gh-stack init\` first.
 
 OPTIONS
   -d, --draft          Create new PRs as drafts
@@ -110,13 +121,50 @@ export default async function submit(args: string[]): Promise<void> {
 
   const noEdit = args.includes("--no-edit") || args.includes("-n") || isAutoYes() || !!titleFlag;
 
-  const meta = await ensureMetadata();
+  // Read metadata, or start with an empty in-memory store. submit self-heals,
+  // so a missing metadata file is fine — we'll build the stack from local
+  // branch ancestry and persist it (unless --dry-run).
+  const meta: StackMetadata = (await readMetadata()) ?? {
+    version: 2,
+    current_stack: null,
+    stacks: {},
+  };
   const branch = await git.currentBranch();
-  const stackName = findStackForBranch(meta, branch);
+  let stackName = findStackForBranch(meta, branch);
 
+  // ── Self-heal: branch isn't in any stack ──
+  // Reconstruct the stack from local branch ancestry so the end state is
+  // always stack registered + branches pushed + PRs created — no need to
+  // remember to run `gh-stack init` first.
+  let heal: { trunk: string; chain: string[]; created: boolean; added: string[] } | null = null;
   if (!stackName) {
-    p.cancel(`Branch ${pc.blue(branch)} not found in any stack`);
-    process.exit(1);
+    const trunk = await git.trunkBranch();
+
+    if (branch === trunk || branch === "main" || branch === "master") {
+      p.cancel(
+        `You're on ${pc.blue(branch)} — nothing to submit.\n\n  Checkout a feature branch first.`,
+      );
+      process.exit(1);
+    }
+
+    let resolution;
+    try {
+      resolution = await resolveOrCreateStack(meta, branch, trunk);
+    } catch (err) {
+      p.cancel((err as Error).message);
+      process.exit(1);
+    }
+
+    stackName = resolution.stackName;
+    heal = {
+      trunk,
+      chain: resolution.chain,
+      created: resolution.created,
+      added: resolution.addedBranches,
+    };
+
+    // Persist the reconstructed/updated stack before pushing (skip on dry-run)
+    if (!dryRun) await writeMetadata(meta);
   }
 
   const stack = meta.stacks[stackName]!;
@@ -127,6 +175,34 @@ export default async function submit(args: string[]): Promise<void> {
   const scope = currentIndex >= 0 ? ordered.slice(0, currentIndex + 1) : ordered;
 
   p.intro(pc.cyan("Submit Stack"));
+
+  // Report self-heal results (stack creation / reconciliation + detected chain)
+  if (heal) {
+    if (heal.created) {
+      p.log.success(
+        `No stack found — created ${pc.yellow(stackName)} from ${heal.chain.length} local branch(es)`,
+      );
+    } else if (heal.added.length > 0) {
+      p.log.success(
+        `Reconciled ${heal.added.length} untracked branch(es) into ${pc.yellow(stackName)}`,
+      );
+    }
+
+    console.log();
+    console.log(`  ${pc.dim(heal.trunk)}`);
+    for (let i = 0; i < heal.chain.length; i++) {
+      const b = heal.chain[i]!;
+      const isLast = i === heal.chain.length - 1;
+      const tree = isLast ? "  ┗━" : "  ┣━";
+      const isNew = heal.added.includes(b);
+      const label = b === branch ? pc.yellow(b) + pc.dim(" (current)") : b;
+      const tag = isNew ? pc.green(" +") : "";
+      console.log(`${tree} ${label}${tag}`);
+      if (!isLast) console.log("  ┃");
+    }
+    console.log();
+  }
+
   p.log.info(`Stack: ${pc.yellow(stackName)}`);
   p.log.info(
     `Scope: ${scope.length} of ${ordered.length} branch(es) (downstack from ${pc.blue(branch)})`,

@@ -83,6 +83,13 @@ submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file
     that don't have them, and update all PR descriptions with stack
     visualization. Idempotent — safe to run repeatedly.
 
+    Self-healing: if the current branch isn't tracked in a stack yet,
+    submit auto-detects the chain from trunk → current, registers (or
+    reconciles into) a stack, then pushes + creates PRs for the whole
+    chain. You never need to run `gh-stack init` first — running submit
+    from the top of a bare chain of local branches converges to the
+    expected end state (stack registered, branches pushed, PRs created).
+
     --title/-t and --body/-b provide PR details directly (skips prompts).
     --body-file reads body from a file. In --yes mode without --title,
     auto-generates PR titles from branch names.

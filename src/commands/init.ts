@@ -12,6 +12,7 @@ import {
 } from "../lib/metadata.ts";
 import { getPrNumber } from "../lib/github.ts";
 import { isAutoYes } from "../lib/ui.ts";
+import { detectBranchChain } from "../lib/chain.ts";
 import type { StackMetadata, Branch } from "../types.ts";
 
 const HELP = `
@@ -36,50 +37,6 @@ EXAMPLES
   gh-stack init --name my-feature            # Custom stack name
   gh-stack init --parent develop             # Different trunk branch
 `;
-
-/**
- * Detect a chain of branches from trunk to the current branch.
- *
- * Walks down from the current branch by finding local branches whose
- * tips are strict ancestors of the current branch. Sorts by commit
- * distance (closest = direct parent) to reconstruct the chain.
- *
- * Returns branches in bottom-up order: [closest-to-trunk, ..., current]
- */
-async function detectBranchChain(currentBranch: string, trunk: string): Promise<string[]> {
-  const allBranches = await git.allLocalBranches();
-
-  // Branches to exclude: current, trunk, and always main/master
-  const excluded = new Set([currentBranch, trunk, "main", "master"]);
-
-  // Find branches that are strict ancestors of current (and not trunk)
-  const ancestors: { name: string; distance: number }[] = [];
-
-  for (const branch of allBranches) {
-    if (excluded.has(branch)) continue;
-
-    // Is this branch's tip an ancestor of current?
-    if (await git.isAncestor(branch, currentBranch)) {
-      // Skip branches already merged into trunk (stale/old branches)
-      if (await git.isAncestor(branch, trunk)) continue;
-
-      // How many commits between this branch and current?
-      const distance = await git.commitCount(branch, currentBranch);
-      if (distance > 0) {
-        ancestors.push({ name: branch, distance });
-      }
-    }
-  }
-
-  // Sort by distance descending (furthest from current = closest to trunk)
-  ancestors.sort((a, b) => b.distance - a.distance);
-
-  // Build chain: ancestors (sorted trunk→current) + current branch
-  const chain = ancestors.map((a) => a.name);
-  chain.push(currentBranch);
-
-  return chain;
-}
 
 export default async function init(args: string[]): Promise<void> {
   // Parse flags

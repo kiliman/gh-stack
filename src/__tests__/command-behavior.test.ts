@@ -6,11 +6,14 @@ import {
   createBranch,
   createLinearStack,
   createTempRepo,
+  makeCommit,
+  metadataExists,
   readMetadata,
 } from "./helpers.ts";
 import restack from "../commands/restack.ts";
 import sync from "../commands/sync.ts";
 import merge from "../commands/merge.ts";
+import submit from "../commands/submit.ts";
 import log from "../commands/log.ts";
 import list from "../commands/list.ts";
 import { buildStackViz } from "../commands/update-prs.ts";
@@ -100,6 +103,27 @@ describe("command dry-run safety", () => {
     const meta = await readMetadata(tmpDir);
     expect(meta.archive).toBeUndefined();
     expect(meta.stacks["test-stack"]).toBeDefined();
+  });
+
+  test("submit --dry-run self-heals a bare chain without writing metadata", async () => {
+    // Bare local chain main → a → b → c, no metadata, no remotes
+    await createBranch(tmpDir, "a", "main");
+    await makeCommit(tmpDir, "a.txt", "a\n", "a: commit");
+    await createBranch(tmpDir, "b", "a");
+    await makeCommit(tmpDir, "b.txt", "b\n", "b: commit");
+    await createBranch(tmpDir, "c", "b");
+    await makeCommit(tmpDir, "c.txt", "c\n", "c: commit");
+    await checkout(tmpDir, "c");
+
+    // No metadata exists yet
+    expect(await metadataExists(tmpDir)).toBe(false);
+
+    await submit(["--dry-run"]);
+
+    // Dry-run must not persist anything
+    expect(await metadataExists(tmpDir)).toBe(false);
+    // Still on the same branch, nothing checked out/pushed
+    expect(await getCurrentBranch(tmpDir)).toBe("c");
   });
 });
 

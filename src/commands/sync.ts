@@ -1,5 +1,5 @@
 // gh-stack sync — Fetch main, rebase base branch onto main, then restack all
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches, saveRestackState } from "../lib/metadata.ts";

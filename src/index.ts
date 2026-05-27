@@ -1,14 +1,23 @@
 #!/usr/bin/env bun
 // gh-stack — Unified stacked PR manager for squash-merge workflows
 
-// Map GH_STACK_NO_COLOR → NO_COLOR so picocolors (and other tools) respect it
-if (process.env.GH_STACK_NO_COLOR) {
+// Map GH_STACK_NO_COLOR → NO_COLOR so picocolors (and other tools) respect it.
+// Also pre-detect plain mode (--plain flag, GH_STACK_YES=1, or GH_STACK_PLAIN=1)
+// and set NO_COLOR *before* any import below — picocolors snapshots env at
+// load time, so this must run before the import block.
+const _earlyArgs = process.argv.slice(2);
+const _earlyPlain =
+  _earlyArgs.includes("--plain") ||
+  process.env.GH_STACK_YES === "1" ||
+  process.env.GH_STACK_PLAIN === "1";
+if (process.env.GH_STACK_NO_COLOR || _earlyPlain) {
   process.env.NO_COLOR = "1";
 }
 
 import { ensureGitRepo } from "./lib/safety.ts";
 import { parseCliArgs } from "./lib/cli.ts";
 import { setAutoYes } from "./lib/ui.ts";
+import { setPlain } from "./lib/output.ts";
 
 const { version: VERSION } = await import("../package.json");
 
@@ -30,6 +39,11 @@ if (parsed.showGlobalHelp) {
 // Global --yes flag: skip all interactive confirmations (for agents/CI)
 if (parsed.autoYes) {
   setAutoYes(true);
+}
+
+// Global --plain (or GH_STACK_YES=1): drop intro/outro/spinner/color chrome.
+if (parsed.plain) {
+  setPlain(true);
 }
 
 // Ensure we're in a git repo for all commands
@@ -160,11 +174,13 @@ ${bold("INFO & MAINTENANCE")}
 
 ${bold("GLOBAL OPTIONS")}
   --yes, -y        Skip confirmations ${dim("(for agents/CI)")}
+  --plain          Plain output: no spinners, colors, or box drawing
   --help           Show help
   --version, -V    Show version
 
 ${bold("ENVIRONMENT")}
-  GH_STACK_YES=1       Same as --yes
+  GH_STACK_YES=1       Same as --yes (also enables --plain)
+  GH_STACK_PLAIN=1     Same as --plain
   GH_STACK_NO_COLOR    Disable colored output
 `);
 }

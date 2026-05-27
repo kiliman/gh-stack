@@ -1,5 +1,5 @@
 // gh-stack delete — Delete a branch from the stack (re-link parent chain)
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import { removeBranchFromStack, getChildren } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCurrentStack, ensureValidStack } from "../lib/safety.ts";

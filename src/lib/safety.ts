@@ -2,7 +2,7 @@
 import * as git from "./git.ts";
 import { metadataExists, readMetadata, findStackForBranch } from "./metadata.ts";
 import type { StackMetadata, Stack } from "../types.ts";
-import * as p from "@clack/prompts";
+import * as p from "./output.ts";
 import pc from "picocolors";
 
 /**

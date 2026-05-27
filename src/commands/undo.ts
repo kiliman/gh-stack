@@ -1,5 +1,5 @@
 // gh-stack undo — Restore from last snapshot
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import * as git from "../lib/git.ts";
 import pc from "picocolors";
 import { ensureMetadata, ensureCleanWorkingTree } from "../lib/safety.ts";

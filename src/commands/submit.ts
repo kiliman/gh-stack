@@ -1,5 +1,5 @@
 // gh-stack submit — Push branches and create/update PRs
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import { $ } from "bun";
 import * as git from "../lib/git.ts";

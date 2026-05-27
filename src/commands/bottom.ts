@@ -1,5 +1,5 @@
 // gh-stack bottom — Jump to the base of the stack
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";

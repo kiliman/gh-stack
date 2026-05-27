@@ -1,5 +1,5 @@
 // gh-stack log — Display current stack tree (default command)
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import {

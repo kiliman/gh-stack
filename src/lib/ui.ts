@@ -1,5 +1,5 @@
 // TUI helpers: tree rendering, formatting, prompts
-import * as p from "@clack/prompts";
+import * as p from "./output.ts";
 import pc from "picocolors";
 import type { Stack, StackMetadata } from "../types.ts";
 import { getOrderedBranches } from "./metadata.ts";

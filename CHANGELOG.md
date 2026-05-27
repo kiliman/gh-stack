@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0
+
+> **Quiet output for agents:** new `--plain` flag (auto-enabled under `GH_STACK_YES=1`) strips spinners, colors, and box-drawing chrome so tools like `tokf` can filter output cleanly.
+
+### ✨ Features
+- **`--plain` flag and `GH_STACK_PLAIN=1` env var** ([#8](https://github.com/kiliman/gh-stack/issues/8)) — drop the @clack `intro`/`outro` banners, spinners, and ANSI colors. Output collapses to plain `console.log` lines while preserving branch names, PR URLs, and errors.
+- **`GH_STACK_YES=1` now implies `--plain`** — agents already set this; no reason to also burn tokens on spinner frames and color codes a human won't see.
+- `--plain` alone keeps interactive prompts active (rare but supported); pair with `--yes` for fully non-interactive plain mode.
+
 ## 0.6.0
 
 > **Minor version bump:** `submit` is now self-healing — it bootstraps a stack from bare local branches instead of failing.

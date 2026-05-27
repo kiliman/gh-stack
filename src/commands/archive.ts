@@ -1,5 +1,5 @@
 // gh-stack archive — Manage archived stacks
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import { writeMetadata } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";

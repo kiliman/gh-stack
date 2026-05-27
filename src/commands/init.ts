@@ -1,5 +1,5 @@
 // gh-stack init — Create a new stack, auto-detecting branch chains
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import {

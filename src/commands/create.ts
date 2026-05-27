@@ -1,5 +1,5 @@
 // gh-stack create — Create a new branch and add to the stack
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, addBranchToStack } from "../lib/metadata.ts";

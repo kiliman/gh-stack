@@ -1,6 +1,6 @@
 // gh-stack restack — Rebase children onto updated parents
 // Port of reference/gh-stack-sync.sh — the most critical command
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import {

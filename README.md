@@ -177,14 +177,18 @@ archive [--restore <name>]
 
 ```
 --yes, -y      Skip all confirmations (for agents/CI)
+--plain        Plain output — no spinners, colors, or banner boxes
 --help         Show help for a command
 --version, -V  Show version
 ```
 
+`--plain` is auto-enabled when `--yes` / `GH_STACK_YES=1` is set, so agents get clean, easily-filtered output by default. Use `--plain` alone if you want plain output but still interactive prompts.
+
 ## Environment Variables
 
 ```
-GH_STACK_YES=1         Skip all confirmations (same as --yes)
+GH_STACK_YES=1         Skip all confirmations (same as --yes; also enables --plain)
+GH_STACK_PLAIN=1       Plain output (same as --plain)
 GH_STACK_NO_COLOR=1    Disable colored output
 ```
 

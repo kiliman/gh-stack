@@ -1,5 +1,5 @@
 // gh-stack down — Move to parent branch (downstack)
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, writeMetadata } from "../lib/metadata.ts";

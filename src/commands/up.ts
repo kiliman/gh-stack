@@ -1,5 +1,5 @@
 // gh-stack up — Move to child branch (upstack)
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, getChildren, writeMetadata } from "../lib/metadata.ts";

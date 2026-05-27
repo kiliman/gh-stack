@@ -1,6 +1,6 @@
 // gh-stack update-prs — Update PR descriptions with stack visualization
 // Port of reference/gh-stack-update-pr.sh
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches } from "../lib/metadata.ts";

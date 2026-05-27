@@ -1,5 +1,5 @@
 // gh-stack checkout — Switch between branches or stacks
-import * as p from "@clack/prompts";
+import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { writeMetadata, getOrderedBranches, findStackForBranch } from "../lib/metadata.ts";

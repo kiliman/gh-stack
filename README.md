@@ -149,9 +149,12 @@ merge [--dry-run] [-d|--delete-branch] [--collapse]
                 review the cumulative diff on GitHub. Re-run
                 `gh-stack merge` (without --collapse) to finish.
 
-delete [<branch>]
-    Remove a branch from the stack and re-parent its children.
-    Interactive selector if no branch specified.
+delete [<branch>] [-k|--keep-branch] [--no-remote]
+    Remove a branch from the stack and re-parent its children, then
+    delete the underlying local git branch (and the remote branch if
+    it was pushed). Interactive selector if no branch specified.
+    --keep-branch leaves the git branches untouched (metadata only);
+    --no-remote deletes the local branch but keeps the remote.
 ```
 
 ### Info & Maintenance

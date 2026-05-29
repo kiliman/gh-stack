@@ -159,6 +159,24 @@ export async function localBranchExists(branch: string): Promise<boolean> {
 }
 
 /**
+ * Delete a local branch. Uses -D (force) since stacked branches are
+ * routinely rebased and won't appear "merged" to git. Returns false if
+ * the branch didn't exist or the delete failed.
+ */
+export async function deleteLocalBranch(branch: string): Promise<boolean> {
+  const { exitCode } = await $`git branch -D ${branch}`.nothrow().quiet();
+  return exitCode === 0;
+}
+
+/**
+ * Delete a branch on the remote (origin). Returns false on failure.
+ */
+export async function deleteRemoteBranch(branch: string): Promise<boolean> {
+  const { exitCode } = await $`git push origin --delete ${branch}`.nothrow().quiet();
+  return exitCode === 0;
+}
+
+/**
  * Create a temporary tag at a specific commit.
  */
 export async function createTag(name: string, commit: string): Promise<void> {

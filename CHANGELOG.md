@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1
+
+### 🐛 Fixes
+- **`delete` no longer hangs under `GH_STACK_YES=1`** ([#9](https://github.com/kiliman/gh-stack/issues/9)) — `delete` called `p.confirm` directly instead of the auto-yes-aware `confirmAction()`, so under an agent (no TTY) the confirmation prompt blocked forever and the process was killed mid-operation, leaving nothing done. It now respects `--yes`/`GH_STACK_YES=1` like every other destructive command.
+- **`delete` actually deletes the git branch now** ([#9](https://github.com/kiliman/gh-stack/issues/9)) — previously `delete` only edited stack metadata; the local branch (and any pushed remote branch) survived and had to be cleaned up by hand. It now removes the stack entry **and** deletes the local branch, deletes the remote branch if it exists, and switches off the branch first if you're standing on it.
+  - `--keep-branch` / `-k` — old behavior: remove from stack metadata only, leave git branches.
+  - `--no-remote` — delete the local branch but keep the remote.
+
 ## 0.7.0
 
 > **Quiet output for agents:** new `--plain` flag (auto-enabled under `GH_STACK_YES=1`) strips spinners, colors, and box-drawing chrome so tools like `tokf` can filter output cleanly.

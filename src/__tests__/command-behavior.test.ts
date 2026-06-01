@@ -179,4 +179,43 @@ describe("buildStackViz", () => {
     expect(viz).toContain('href="https://github.com/acme/widgets/pull/124"');
     expect(viz).not.toContain("beehiiv/swarm");
   });
+
+  test("defaults the base node to main", () => {
+    const viz = buildStackViz(
+      [
+        { branch: "pr1", prNumber: 1, prTitle: "One", prUrl: null, reviewEmojiStr: "✅" },
+        { branch: "pr2", prNumber: 2, prTitle: "Two", prUrl: null, reviewEmojiStr: "⏳" },
+      ],
+      0,
+    );
+    expect(viz).toContain("⚫ main");
+  });
+
+  test("renders a split stack's base branch (with PR link) instead of main", () => {
+    const viz = buildStackViz(
+      [
+        { branch: "pr12", prNumber: 12, prTitle: "New work", prUrl: null, reviewEmojiStr: "⏳" },
+        { branch: "pr13", prNumber: 13, prTitle: "More work", prUrl: null, reviewEmojiStr: "⏳" },
+      ],
+      0,
+      { label: "pr11", prNumber: 11, prUrl: "https://github.com/acme/widgets/pull/11" },
+    );
+    // Base node points at PR11, not main.
+    expect(viz).toContain('<a href="https://github.com/acme/widgets/pull/11">#11</a> pr11');
+    expect(viz).not.toContain("⚫ main");
+  });
+
+  test("single-branch split stack links the base PR", () => {
+    const viz = buildStackViz(
+      [{ branch: "pr12", prNumber: 12, prTitle: "Solo", prUrl: null, reviewEmojiStr: "⏳" }],
+      0,
+      {
+        label: "pr11",
+        prNumber: 11,
+        prUrl: null,
+      },
+    );
+    expect(viz).toContain("#11 pr11");
+    expect(viz).not.toContain("**main**");
+  });
 });

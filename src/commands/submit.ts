@@ -13,7 +13,7 @@ import { isAutoYes } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
 import { getPrNumber, getPrInfo, getPrBody, updatePrBody, reviewEmoji } from "../lib/github.ts";
 import { resolveOrCreateStack } from "../lib/chain.ts";
-import { buildStackViz } from "./update-prs.ts";
+import { buildStackViz, resolveBaseRef } from "./update-prs.ts";
 
 const HELP = `
 gh-stack submit — Push branches and create/update PRs
@@ -400,11 +400,13 @@ export default async function submit(args: string[]): Promise<void> {
   // Update each PR that has a number
   let vizUpdated = 0;
 
+  const baseRef = await resolveBaseRef(meta, stack);
+
   for (let i = 0; i < branchInfos.length; i++) {
     const info = branchInfos[i]!;
     if (!info.prNumber) continue;
 
-    const stackViz = buildStackViz(branchInfos, i);
+    const stackViz = buildStackViz(branchInfos, i, baseRef);
 
     const currentBody = await getPrBody(info.prNumber);
     if (currentBody === null) continue;

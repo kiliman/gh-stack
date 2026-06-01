@@ -2,7 +2,7 @@
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
-import { findStackForBranch, writeMetadata } from "../lib/metadata.ts";
+import { findStackForBranch, stackBase, writeMetadata } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
 
 export default async function down(args: string[]): Promise<void> {
@@ -35,6 +35,8 @@ OPTIONS
   }
 
   const stack = meta.stacks[stackName]!;
+  const base = stackBase(stack);
+  let moved = 0;
 
   for (let i = 0; i < steps; i++) {
     const branchMeta = stack.branches[currentBranch];
@@ -43,17 +45,23 @@ OPTIONS
       return;
     }
 
+    // The stack bottoms out at its base (main for a normal stack, or the base
+    // branch for a split stack). The root's parent IS the base — stop there
+    // rather than crossing into a parent stack.
     const parent = branchMeta.parent;
-    if (parent === "main" || parent === "master") {
-      if (i === 0) {
+    if (parent === base) {
+      if (moved === 0) {
         p.log.warn(`${pc.yellow(currentBranch)} is already at the bottom of the stack`);
-      } else {
-        p.log.info(`Reached bottom of stack at ${pc.yellow(currentBranch)} after ${i} step(s)`);
+        return;
       }
-      return;
+      // Reached the bottom partway through a multi-step move — stop here but
+      // still check out as far as we got.
+      p.log.info(`Reached bottom of stack after ${moved} step(s)`);
+      break;
     }
 
     currentBranch = parent;
+    moved++;
   }
 
   await git.checkout(currentBranch);

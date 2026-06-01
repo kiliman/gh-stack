@@ -13,6 +13,9 @@
 
 - **`submit` adopts new branches onto a non-main-based stack** ([#11](https://github.com/kiliman/gh-stack/issues/11)) — the chain-resolution walk now stops at the **nearest tracked ancestor** and adopts the untracked tail into that stack, instead of climbing all the way to `main` and bailing with "spans multiple stacks". This makes the split workflow's natural next step work: keep stacking new slices on a child stack and `gh-stack submit` just registers them (base preserved), no manual create+reset dance.
 
+- **`restack` pushes every ref it touches and verifies they landed** ([#12](https://github.com/kiliman/gh-stack/issues/12)) — previously restack force-updated the children it rebased but left the **committed/base branch's ref** stale on origin (and could skip a never-pushed branch entirely), so PRs showed outdated heads. Now restack pushes **each** branch as it finishes it — including the branch you committed on, whether or not it needed rebasing — and ends with a verification pass that fails loudly, listing any ref that didn't reach origin, instead of falsely reporting success. Re-running restack reconciles any stale refs (idempotent).
+- **All navigation/display commands are base-aware** — `down` now bottoms out at the stack's root (treating a non-main base as the boundary, never crossing into a parent stack) and moves as far as possible when a multi-step move overshoots, instead of refusing to move.
+
 ### 🛡️ Guards
 - `sync` and `merge` refuse to run on a non-main-based stack and point you at `gh-stack restack` / `gh-stack restack --onto main` instead — syncing/merging only makes sense once a stack is rooted on the trunk.
 

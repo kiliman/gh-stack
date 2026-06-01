@@ -392,6 +392,37 @@ describe("down", () => {
     const meta = await readMetadata(tmpDir);
     expect(meta.stacks["test-stack"]!.last_branch).toBe("pr2");
   });
+
+  test("moves as far as possible when the step count overshoots", async () => {
+    await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr3");
+
+    await down(["10"]); // only 2 steps available (pr3 → pr2 → pr1)
+
+    // Lands on the root rather than refusing to move at all.
+    expect(await getCurrentBranch(tmpDir)).toBe("pr1");
+  });
+
+  test("stops at the root of a split stack — never crosses into the base branch", async () => {
+    await createLinearStack(tmpDir);
+    // Re-shape into a child stack {pr2, pr3} based on pr1 (a non-main base).
+    const meta = await readMetadata(tmpDir);
+    meta.stacks["child"] = {
+      description: "",
+      last_branch: "pr3",
+      base: "pr1",
+      branches: { pr2: { parent: "pr1" }, pr3: { parent: "pr2" } },
+    };
+    meta.stacks["test-stack"]!.branches = { pr1: { parent: "main" } };
+    meta.stacks["test-stack"]!.last_branch = "pr1";
+    meta.current_stack = "child";
+    await writeMetadata(tmpDir, meta);
+
+    await checkout(tmpDir, "pr3");
+    await down(["5"]); // pr3 → pr2, then base boundary (pr1) — stop
+
+    expect(await getCurrentBranch(tmpDir)).toBe("pr2");
+  });
 });
 
 describe("top", () => {

@@ -14,12 +14,7 @@ import {
   readMetadata,
   writeMetadata,
 } from "../lib/metadata.ts";
-import {
-  ensureMetadata,
-  ensureCleanWorkingTree,
-  ensureNotMain,
-  ensureValidStack,
-} from "../lib/safety.ts";
+import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot, findPreRewriteSha } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
@@ -81,6 +76,9 @@ ALIASES
 
   const meta = await ensureMetadata();
   const rebasedBranches: string[] = [];
+  // Every branch restack is responsible for this run (rebased OR already
+  // up to date) — we push each one and verify its ref landed at the end.
+  const touched: string[] = [];
 
   p.intro(pc.cyan("Git Stack Restack"));
 
@@ -89,11 +87,11 @@ ALIASES
   await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
   if (ontoFlag) {
-    await handleReroot(meta, ontoFlag, rebasedBranches, dryRun, verbose);
+    await handleReroot(meta, ontoFlag, rebasedBranches, touched, dryRun, verbose);
   } else if (resume) {
-    await handleResume(meta, rebasedBranches, verbose);
+    await handleResume(meta, rebasedBranches, touched, verbose);
   } else {
-    await handleFreshRestack(meta, rebasedBranches, dryRun, verbose);
+    await handleFreshRestack(meta, rebasedBranches, touched, dryRun, verbose);
   }
 
   // Summary
@@ -107,12 +105,60 @@ ALIASES
     }
   }
 
+  // Verification pass: assert every touched branch's ref actually landed on
+  // origin. Fail loudly (listing the stale ones) rather than reporting success
+  // when a push didn't take. (#12)
+  if (!dryRun) {
+    const stale = await findStaleRefs(touched);
+    if (stale.length > 0) {
+      console.log();
+      p.log.error("Some branch refs are NOT in sync with origin:");
+      for (const { branch, local, remote } of stale) {
+        console.log(`  ${pc.red("✗")} ${branch}  local ${local.slice(0, 8)}  origin ${remote}`);
+      }
+      console.log();
+      console.log(
+        `  Reconcile with: ${pc.green("gh-stack restack")} (re-runs the push for stale refs)`,
+      );
+      p.outro(pc.red("Restack finished with un-pushed refs"));
+      process.exit(1);
+    }
+  }
+
   p.outro(pc.green("Stack Restack Complete!"));
+}
+
+/**
+ * For each branch, compare its local tip against origin. Returns the ones that
+ * differ (or whose remote ref is missing), so restack can report exactly which
+ * refs didn't land instead of falsely claiming success. (#12)
+ */
+async function findStaleRefs(
+  branches: string[],
+): Promise<{ branch: string; local: string; remote: string }[]> {
+  const stale: { branch: string; local: string; remote: string }[] = [];
+  const seen = new Set<string>();
+  for (const branch of branches) {
+    if (seen.has(branch) || branch === "main" || branch === "master") continue;
+    seen.add(branch);
+    if (!(await git.localBranchExists(branch))) continue;
+    const local = await git.revParse(branch);
+    if (!(await git.remoteBranchExists(branch))) {
+      stale.push({ branch, local, remote: "(missing)" });
+      continue;
+    }
+    const remote = await git.revParse(`origin/${branch}`).catch(() => "");
+    if (remote !== local) {
+      stale.push({ branch, local, remote: remote ? remote.slice(0, 8) : "(unknown)" });
+    }
+  }
+  return stale;
 }
 
 async function handleResume(
   meta: StackMetadata,
   rebasedBranches: string[],
+  touched: string[],
   verbose: boolean,
 ): Promise<void> {
   p.log.warn("Resuming from saved state...");
@@ -151,10 +197,11 @@ async function handleResume(
   // Rebase completed successfully
   p.log.success("Rebase completed successfully");
   rebasedBranches.push(expectedBranch);
+  touched.push(expectedBranch);
   await clearRestackState();
 
   // Prompt to push the resumed branch
-  await promptPush(expectedBranch);
+  await pushBranchRef(expectedBranch);
 
   // Continue with remaining branches in chain
   const stackName = state.stack_name;
@@ -165,13 +212,23 @@ async function handleResume(
   const currentIndex = state.current_index + 1;
 
   if (currentIndex < chain.length) {
-    await processChain(meta, stackName, chain, currentIndex, rebasedBranches, false, verbose);
+    await processChain(
+      meta,
+      stackName,
+      chain,
+      currentIndex,
+      rebasedBranches,
+      touched,
+      false,
+      verbose,
+    );
   }
 }
 
 async function handleFreshRestack(
   meta: StackMetadata,
   rebasedBranches: string[],
+  touched: string[],
   dryRun: boolean,
   verbose: boolean,
 ): Promise<void> {
@@ -226,12 +283,19 @@ async function handleFreshRestack(
 
     chain = chain.filter((b) => stack.branches[b]?.parent !== base);
 
+    // We don't rebase the base branch, but if you committed on it its ref is
+    // now stale on origin — push it so the PR reflects the new commit. (#12)
+    if (!dryRun) {
+      for (const baseBranch of baseBranches) {
+        if (await git.localBranchExists(baseBranch)) {
+          touched.push(baseBranch);
+          await pushBranchRef(baseBranch);
+        }
+      }
+    }
+
     if (chain.length === 0) {
-      p.log.warn("No branches to process after skipping base branches");
-      console.log();
-      console.log("  Either:");
-      console.log("    1. Run from a child branch (e.g., PR2)");
-      console.log(`    2. Use ${pc.green("gh-stack sync")} to include rebasing base onto main`);
+      p.log.info("No child branches to rebase — base branch ref reconciled above.");
       return;
     }
 
@@ -251,7 +315,7 @@ async function handleFreshRestack(
   }
 
   // Process the chain
-  await processChain(meta, stackName, chain, 0, rebasedBranches, dryRun, verbose);
+  await processChain(meta, stackName, chain, 0, rebasedBranches, touched, dryRun, verbose);
 }
 
 /**
@@ -268,6 +332,7 @@ async function handleReroot(
   meta: StackMetadata,
   newBase: string,
   rebasedBranches: string[],
+  touched: string[],
   dryRun: boolean,
   verbose: boolean,
 ): Promise<void> {
@@ -365,13 +430,14 @@ async function handleReroot(
   }
 
   rebasedBranches.push(root);
-  await promptPush(root);
+  touched.push(root);
+  await pushBranchRef(root);
 
   // Restack the children onto the moved root.
   const children = ordered.slice(1);
   if (children.length > 0) {
     const chain = buildRebaseChain(stack, children[0]!);
-    await processChain(meta, stackName, chain, 0, rebasedBranches, false, verbose);
+    await processChain(meta, stackName, chain, 0, rebasedBranches, touched, false, verbose);
   }
 }
 
@@ -381,6 +447,7 @@ async function processChain(
   chain: string[],
   startIndex: number,
   rebasedBranches: string[],
+  touched: string[],
   dryRun: boolean,
   verbose: boolean,
 ): Promise<void> {
@@ -402,9 +469,16 @@ async function processChain(
     console.log(pc.cyan("━".repeat(40)));
     console.log();
 
-    // Check if already up to date
+    // Check if already up to date. The branch doesn't need rebasing, but its
+    // remote ref may still be stale — e.g. this is the branch you just
+    // committed on, which triggered the restack. Push it so origin (and its
+    // PR) reflects the new commit. (#12)
     if (await git.isAncestor(parent, branch)) {
       p.log.success("Already up to date with parent");
+      if (!dryRun) {
+        touched.push(branch);
+        await pushBranchRef(branch);
+      }
       continue;
     }
 
@@ -496,10 +570,12 @@ async function processChain(
     if (success) {
       p.log.success("Rebase successful");
       rebasedBranches.push(branch);
+      touched.push(branch);
       await clearRestackState();
 
-      // Prompt to push immediately (don't batch)
-      await promptPush(branch);
+      // Push immediately (don't batch) so an interrupt can't leave later
+      // branches un-pushed.
+      await pushBranchRef(branch);
     } else {
       // Conflict!
       console.log();
@@ -520,36 +596,42 @@ async function processChain(
   }
 }
 
-async function promptPush(branch: string): Promise<void> {
-  ensureNotMain(branch);
-
-  if (!(await git.remoteBranchExists(branch))) return;
+/**
+ * Reconcile a single branch's ref with origin. Pushes when the local tip
+ * differs from origin OR the remote branch doesn't exist yet (so a branch
+ * that was never pushed still lands). No-op when already in sync. (#12)
+ */
+async function pushBranchRef(branch: string): Promise<void> {
+  if (branch === "main" || branch === "master") return;
 
   const localSha = await git.revParse(branch);
-  let remoteSha: string;
-  try {
-    remoteSha = await git.revParse(`origin/${branch}`);
-  } catch {
-    return;
-  }
+  const hasRemote = await git.remoteBranchExists(branch);
+  const remoteSha = hasRemote ? await git.revParse(`origin/${branch}`).catch(() => null) : null;
 
-  if (localSha === remoteSha) return;
+  if (hasRemote && remoteSha === localSha) return; // already in sync — nothing to do
 
   console.log();
   console.log(pc.cyan("━".repeat(40)));
-  console.log(pc.blue("  Push Rebased Branch?"));
+  console.log(pc.blue(hasRemote ? "  Push Rebased Branch?" : "  Push New Branch?"));
   console.log(pc.cyan("━".repeat(40)));
   console.log();
   console.log(`${pc.blue("Branch:")} ${branch}`);
-  console.log(pc.yellow("⚠ Branch is out of sync with remote"));
-  console.log(`  Local:  ${localSha.slice(0, 8)}`);
-  console.log(`  Remote: ${remoteSha.slice(0, 8)}`);
+  if (hasRemote) {
+    console.log(pc.yellow("⚠ Branch is out of sync with remote"));
+    console.log(`  Local:  ${localSha.slice(0, 8)}`);
+    console.log(`  Remote: ${remoteSha ? remoteSha.slice(0, 8) : "(unknown)"}`);
+  } else {
+    console.log(pc.yellow("⚠ Branch has no remote ref yet"));
+    console.log(`  Local:  ${localSha.slice(0, 8)}`);
+  }
   console.log();
 
-  const confirmed = await confirmAction("Push with --force-with-lease?");
+  const confirmed = await confirmAction(
+    hasRemote ? "Push with --force-with-lease?" : `Push ${branch} to origin?`,
+  );
   if (confirmed) {
     p.log.info(`Pushing ${branch}...`);
-    const ok = await git.forcePushWithLease(branch);
+    const ok = await git.pushStackedBranch(branch);
     if (ok) {
       p.log.success("Pushed successfully");
     } else {

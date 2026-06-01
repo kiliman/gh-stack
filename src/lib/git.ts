@@ -139,6 +139,17 @@ export async function forcePushWithLease(branch?: string): Promise<boolean> {
 }
 
 /**
+ * Push a stacked branch's ref to origin, setting upstream and using
+ * force-with-lease. Works whether or not the remote branch already exists
+ * (creates it on first push) — so restack can reconcile every ref, including
+ * a branch that was never pushed before.
+ */
+export async function pushStackedBranch(branch: string): Promise<boolean> {
+  const { exitCode } = await $`git push -u --force-with-lease origin ${branch}`.nothrow().quiet();
+  return exitCode === 0;
+}
+
+/**
  * Check if a branch exists on the remote.
  */
 export async function remoteBranchExists(branch: string): Promise<boolean> {

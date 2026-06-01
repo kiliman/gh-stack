@@ -12,6 +12,12 @@ export interface Stack {
   description: string;
   last_branch: string | null;
   branches: Record<string, Branch>;
+  // The ref this stack is rooted on. Usually the trunk ("main"), but for a
+  // stack that was split off another (see `gh-stack split`), this is a branch
+  // belonging to the parent stack. The stack's root branch is the one whose
+  // `parent` equals this value. Optional on disk for back-compat; treat a
+  // missing value as "main" via `stackBase()`.
+  base?: string;
 }
 
 export interface Branch {

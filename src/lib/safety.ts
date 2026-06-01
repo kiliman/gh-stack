@@ -1,6 +1,6 @@
 // Pre-flight safety checks
 import * as git from "./git.ts";
-import { metadataExists, readMetadata, findStackForBranch } from "./metadata.ts";
+import { metadataExists, readMetadata, findStackForBranch, stackBase } from "./metadata.ts";
 import type { StackMetadata, Stack } from "../types.ts";
 import * as p from "./output.ts";
 import pc from "picocolors";
@@ -106,6 +106,7 @@ export async function validateStack(meta: StackMetadata, stackName: string): Pro
 
   const branchNames = Object.keys(stack.branches);
   const errors: string[] = [];
+  const base = stackBase(stack);
 
   for (const branchName of branchNames) {
     const branch = stack.branches[branchName]!;
@@ -118,7 +119,10 @@ export async function validateStack(meta: StackMetadata, stackName: string): Pro
       errors.push(`Branch "${branchName}" cannot be its own parent`);
     }
 
-    if (branch.parent !== "main" && branch.parent !== "master" && !stack.branches[branch.parent]) {
+    // A branch's parent must be either the stack's base (the root branch) or
+    // another branch in the stack. For a split stack the base is a branch in
+    // the parent stack, which legitimately lives outside `stack.branches`.
+    if (branch.parent !== base && !stack.branches[branch.parent]) {
       errors.push(`Branch "${branchName}" has unknown parent "${branch.parent}"`);
     }
   }
@@ -148,13 +152,13 @@ function validateStackGraph(stack: Stack): string[] {
   if (branchNames.length === 0) return [];
 
   const errors: string[] = [];
+  const base = stackBase(stack);
   const roots = branchNames.filter((branchName) => {
-    const parent = stack.branches[branchName]!.parent;
-    return parent === "main" || parent === "master";
+    return stack.branches[branchName]!.parent === base;
   });
 
   if (roots.length === 0) {
-    errors.push("Stack has no root branch with parent main/master");
+    errors.push(`Stack has no root branch with parent "${base}"`);
   }
   if (roots.length > 1) {
     errors.push(`Stack must have exactly one root branch; found ${roots.length}`);

@@ -121,7 +121,7 @@ export default async function init(args: string[]): Promise<void> {
   }
 
   // ── Create stack ──
-  meta = await createStack(meta, stackName, descFlag || "");
+  meta = await createStack(meta, stackName, descFlag || "", trunk);
 
   // ── Add branches with PR detection ──
   const prSpinner = p.spinner();

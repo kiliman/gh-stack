@@ -69,6 +69,10 @@ switch (command) {
     await (await import("./commands/delete.ts")).default(commandArgs);
     break;
 
+  case "split":
+    await (await import("./commands/split.ts")).default(commandArgs);
+    break;
+
   case "checkout":
   case "co":
     await (await import("./commands/checkout.ts")).default(commandArgs);
@@ -165,6 +169,7 @@ ${bold("STACK MANAGEMENT")}
   ${green("restack")}        Rebase children onto updated parents
   ${green("sync")}           Sync base with main + restack all
   ${green("merge")}          Local squash-merge top-down
+  ${green("split")}          Cut a stack into two at a branch
   ${green("delete")}         Remove a branch from the stack
 
 ${bold("INFO & MAINTENANCE")}

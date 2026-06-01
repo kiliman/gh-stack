@@ -3,7 +3,12 @@ import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import { $ } from "bun";
 import * as git from "../lib/git.ts";
-import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
+import {
+  findStackForBranch,
+  getOrderedBranches,
+  stackBase,
+  writeMetadata,
+} from "../lib/metadata.ts";
 import { ensureMetadata, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { getPrMergeState } from "../lib/github.ts";
@@ -83,6 +88,19 @@ OPTIONS
   const stack = meta.stacks[stackName]!;
   await ensureValidStack(meta, stackName);
   const ordered = getOrderedBranches(stack);
+
+  // A split stack is rooted on a branch in another stack, so its base PR
+  // doesn't target main — merging it now would land it against the wrong base.
+  // Re-root onto main first (after the parent stack merges).
+  const base = stackBase(stack);
+  if (base !== "main" && base !== "master") {
+    p.cancel(
+      `${pc.yellow(stackName)} is based on ${pc.yellow(base)}, not main — can't merge yet.\n\n` +
+        `  Merge (or finish) the parent stack first, then re-root onto main:\n` +
+        `    ${pc.green("gh-stack restack --onto main")}`,
+    );
+    process.exit(1);
+  }
 
   if (ordered.length <= 1) {
     // Single branch — just enable auto-merge

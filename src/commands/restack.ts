@@ -5,11 +5,14 @@ import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import {
   findStackForBranch,
+  stackBase,
   buildRebaseChain,
+  getOrderedBranches,
   saveRestackState,
   loadRestackState,
   clearRestackState,
   readMetadata,
+  writeMetadata,
 } from "../lib/metadata.ts";
 import {
   ensureMetadata,
@@ -26,14 +29,23 @@ export default async function restack(args: string[]): Promise<void> {
   const resume = args.includes("--resume");
   const verbose = args.includes("--verbose") || args.includes("-v");
 
+  // --onto <branch>: re-root the current stack onto a new base (e.g. move a
+  // split stack from its parent branch onto main once the parent has merged).
+  let ontoFlag: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--onto" && args[i + 1]) ontoFlag = args[++i];
+  }
+
   if (args.includes("--help")) {
     console.log(`
 gh-stack restack — Rebase children onto updated parents
 
 USAGE
   gh-stack restack [options]
+  gh-stack restack --onto <branch>    Re-root the current stack onto <branch>
 
 OPTIONS
+  --onto <ref> Re-root the stack onto a new base ref (changes stack base)
   --yes, -y   Skip confirmations (auto-accept all rebases and pushes)
   --resume    Resume after resolving rebase conflicts
   --dry-run   Show what would happen without executing
@@ -43,6 +55,8 @@ EXAMPLES
   gh-stack restack              Interactive (prompts before each rebase)
   gh-stack restack --yes        Non-interactive (for agents/CI)
   gh-stack restack --resume     Continue after resolving conflicts
+  gh-stack restack --onto main  Re-root a split stack onto main after its
+                                parent stack has merged
 
 ALIASES
   gh-stack rebase
@@ -74,7 +88,9 @@ ALIASES
   // (pre-snapshot). Keeps users upgrading from <0.4 from seeing stale tags.
   await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
-  if (resume) {
+  if (ontoFlag) {
+    await handleReroot(meta, ontoFlag, rebasedBranches, dryRun, verbose);
+  } else if (resume) {
     await handleResume(meta, rebasedBranches, verbose);
   } else {
     await handleFreshRestack(meta, rebasedBranches, dryRun, verbose);
@@ -189,19 +205,26 @@ async function handleFreshRestack(
   }
   console.log();
 
-  // Skip base branches (parent = main) unless this is a sync
-  const baseBranches = chain.filter((b) => stack.branches[b]?.parent === "main");
+  // Skip the stack's root branch (parent = base) when the base is the trunk —
+  // rebasing onto trunk is `sync`'s job, not restack's. For a split stack
+  // whose base is a sibling branch, the root SHOULD be rebased onto that base
+  // so changes propagate, so we don't skip it.
+  const base = stackBase(stack);
+  const baseIsTrunk = base === "main" || base === "master";
+  const baseBranches = baseIsTrunk ? chain.filter((b) => stack.branches[b]?.parent === base) : [];
   if (baseBranches.length > 0) {
-    p.log.warn("Skipping base branch(es) (parent: main):");
-    for (const base of baseBranches) {
-      console.log(`  ${pc.cyan("Skip:")} ${base} ${pc.blue("(parent: main)")}`);
+    p.log.warn(`Skipping base branch(es) (parent: ${base}):`);
+    for (const baseBranch of baseBranches) {
+      console.log(`  ${pc.cyan("Skip:")} ${baseBranch} ${pc.blue(`(parent: ${base})`)}`);
     }
     console.log();
     console.log(`  ${pc.dim("This is a restack — propagating changes from parent to children.")}`);
-    console.log(`  ${pc.dim(`To include rebasing onto main, use: ${pc.green("gh-stack sync")}`)}`);
+    console.log(
+      `  ${pc.dim(`To include rebasing onto ${base}, use: ${pc.green("gh-stack sync")}`)}`,
+    );
     console.log();
 
-    chain = chain.filter((b) => stack.branches[b]?.parent !== "main");
+    chain = chain.filter((b) => stack.branches[b]?.parent !== base);
 
     if (chain.length === 0) {
       p.log.warn("No branches to process after skipping base branches");
@@ -229,6 +252,127 @@ async function handleFreshRestack(
 
   // Process the chain
   await processChain(meta, stackName, chain, 0, rebasedBranches, dryRun, verbose);
+}
+
+/**
+ * Re-root the current stack onto a new base (`restack --onto <newBase>`).
+ *
+ * Used to move a split stack off its parent-stack branch and onto the trunk
+ * once that parent stack has merged. The root branch is rebased with
+ * `git rebase --onto <newBase> <oldBaseTip> <root>`, where oldBaseTip is the
+ * tip of the current base branch — so only the root's own commits replay onto
+ * the new base (the now-merged parent commits are dropped). Children then
+ * restack onto the moved root via the normal chain logic.
+ */
+async function handleReroot(
+  meta: StackMetadata,
+  newBase: string,
+  rebasedBranches: string[],
+  dryRun: boolean,
+  verbose: boolean,
+): Promise<void> {
+  const currentBranch = await git.currentBranch();
+  const stackName = findStackForBranch(meta, currentBranch);
+
+  if (!stackName) {
+    p.cancel(`Branch ${pc.blue(currentBranch)} is not in any stack.`);
+    process.exit(1);
+  }
+
+  const stack = meta.stacks[stackName]!;
+  await ensureValidStack(meta, stackName);
+
+  const oldBase = stackBase(stack);
+  if (oldBase === newBase) {
+    p.log.warn(
+      `${pc.yellow(stackName)} is already based on ${pc.yellow(newBase)} — nothing to do.`,
+    );
+    return;
+  }
+
+  // The root is the branch whose parent is the current base.
+  const ordered = getOrderedBranches(stack);
+  const root = ordered[0];
+  if (!root) {
+    p.cancel("Stack has no branches");
+    process.exit(1);
+  }
+
+  // The rebase base = the tip the root was built on (the old base branch).
+  // Prefer the live branch tip; fall back to merge-base if it's already gone.
+  let oldBaseTip: string | null = null;
+  let oldBaseSource = "old-base branch tip";
+  if (await git.localBranchExists(oldBase)) {
+    oldBaseTip = await git.revParse(oldBase);
+  } else {
+    oldBaseTip = await git.mergeBase(root, newBase);
+    oldBaseSource = "merge-base (old base branch is gone — verify the result)";
+  }
+
+  if (!oldBaseTip) {
+    p.cancel(
+      `Could not determine the old base for ${pc.yellow(root)}.\n\n  Re-root manually with: ${pc.green(
+        `git rebase --onto ${newBase} <old-base> ${root}`,
+      )}`,
+    );
+    process.exit(1);
+  }
+
+  p.log.info(`Re-rooting ${pc.yellow(stackName)}: ${pc.dim(oldBase)} → ${pc.green(newBase)}`);
+  p.log.info(`Root branch: ${pc.yellow(root)}`);
+  if (verbose) {
+    p.log.info(`Rebase base: ${oldBaseTip.slice(0, 8)} (${oldBaseSource})`);
+  }
+  console.log();
+
+  if (dryRun) {
+    p.log.warn(`[DRY RUN] Would rebase ${root} onto ${newBase} (from ${oldBaseTip.slice(0, 8)})`);
+    const children = ordered.slice(1);
+    if (children.length > 0) {
+      p.log.info(`[DRY RUN] Would restack ${children.length} child branch(es) onto the moved root`);
+    }
+    return;
+  }
+
+  const confirmed = await confirmAction(
+    `Re-root ${pc.yellow(stackName)} onto ${pc.yellow(newBase)}?`,
+  );
+  if (!confirmed) {
+    p.cancel("Cancelled");
+    process.exit(0);
+  }
+
+  // Snapshot before rewriting, then commit the new base into metadata.
+  await takeSnapshot(meta, stackName, "reroot");
+  stack.base = newBase;
+  stack.branches[root]!.parent = newBase;
+  await writeMetadata(meta);
+
+  // Rebase the root onto the new base, dropping the old base's commits.
+  p.log.info(`Checking out ${pc.yellow(root)}...`);
+  await git.checkout(root);
+  p.log.info(`Rebasing ${pc.yellow(root)} onto ${pc.yellow(newBase)}...`);
+  const ok = await git.rebaseOnto(newBase, oldBaseTip, root);
+
+  if (!ok) {
+    console.log();
+    p.log.error("Rebase conflict — resolve and run:");
+    console.log(`  ${pc.green("git rebase --continue")}`);
+    console.log(
+      `  ${pc.green("gh-stack restack")}   ${pc.dim("(from the first child, to restack the rest)")}`,
+    );
+    process.exit(2);
+  }
+
+  rebasedBranches.push(root);
+  await promptPush(root);
+
+  // Restack the children onto the moved root.
+  const children = ordered.slice(1);
+  if (children.length > 0) {
+    const chain = buildRebaseChain(stack, children[0]!);
+    await processChain(meta, stackName, chain, 0, rebasedBranches, false, verbose);
+  }
 }
 
 async function processChain(

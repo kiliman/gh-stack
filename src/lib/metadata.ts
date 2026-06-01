@@ -57,11 +57,40 @@ export async function readMetadata(): Promise<StackMetadata | null> {
       current_stack: v1.current_stack,
       stacks: v1.stacks,
     };
+    backfillStackBase(v2);
     await writeMetadata(v2);
     return v2;
   }
 
-  return raw as StackMetadata;
+  // Backfill `base` in-memory for stacks written before the split feature.
+  // We deliberately do NOT persist here — reads must not mutate the file (it
+  // would break dry-run invariants). The default is re-applied on every read,
+  // and `stackBase()` falls back to "main" regardless, so callers are safe.
+  const meta = raw as StackMetadata;
+  backfillStackBase(meta);
+  return meta;
+}
+
+/**
+ * The ref a stack is rooted on. Defaults to "main" for stacks created before
+ * the `base` field existed.
+ */
+export function stackBase(stack: Stack): string {
+  return stack.base ?? "main";
+}
+
+/**
+ * Ensure every stack has an explicit `base`. Returns true if anything changed.
+ */
+function backfillStackBase(meta: StackMetadata): boolean {
+  let changed = false;
+  for (const stack of Object.values(meta.stacks)) {
+    if (stack.base == null) {
+      stack.base = "main";
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 /**
@@ -123,11 +152,13 @@ export async function createStack(
   meta: StackMetadata,
   name: string,
   description: string,
+  base: string = "main",
 ): Promise<StackMetadata> {
   meta.stacks[name] = {
     description,
     last_branch: null,
     branches: {},
+    base,
   };
   meta.current_stack = name;
   await writeMetadata(meta);
@@ -212,7 +243,7 @@ export function getOrderedBranches(stack: Stack): string[] {
     }
   }
 
-  addChildrenOf("main");
+  addChildrenOf(stackBase(stack));
   return ordered;
 }
 

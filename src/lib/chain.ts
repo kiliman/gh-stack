@@ -116,6 +116,7 @@ export async function resolveOrCreateStack(
       description: "",
       last_branch: null,
       branches: {},
+      base: trunk,
     };
     meta.current_stack = stackName;
     created = true;

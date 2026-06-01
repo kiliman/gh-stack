@@ -2,7 +2,12 @@
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
-import { findStackForBranch, getOrderedBranches, saveRestackState } from "../lib/metadata.ts";
+import {
+  findStackForBranch,
+  getOrderedBranches,
+  saveRestackState,
+  stackBase,
+} from "../lib/metadata.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
@@ -56,12 +61,27 @@ with the base branch included.
 
   p.intro(pc.cyan("Git Stack Sync"));
 
-  // Find the base branch (first branch, parent = main)
+  // Find the root branch (whose parent is the stack's base)
+  const base = stackBase(stack);
+  const baseIsTrunk = base === "main" || base === "master";
   const baseBranch = ordered[0]!;
   const baseParent = stack.branches[baseBranch]?.parent;
 
-  if (baseParent !== "main") {
-    p.cancel(`Base branch ${pc.yellow(baseBranch)} doesn't have main as parent`);
+  // sync only makes sense for trunk-rooted stacks — it fetches main and
+  // rebases onto it. A split stack is rooted on a branch in another stack, so
+  // syncing it means restacking onto that base (handled by `restack`), or
+  // re-rooting onto main once the parent stack has merged.
+  if (!baseIsTrunk) {
+    p.cancel(
+      `${pc.yellow(stackName)} is based on ${pc.yellow(base)}, not main — sync doesn't apply.\n\n` +
+        `  • Parent moved? Restack onto it:   ${pc.green("gh-stack restack")}\n` +
+        `  • Parent stack merged to main?     ${pc.green("gh-stack restack --onto main")}`,
+    );
+    process.exit(1);
+  }
+
+  if (baseParent !== base) {
+    p.cancel(`Root branch ${pc.yellow(baseBranch)} doesn't have ${base} as parent`);
     process.exit(1);
   }
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.0
+
+> **Stacks can now be based on a branch, not just main.** New `gh-stack split` cuts a long chain into independent stacks; `gh-stack restack --onto` re-roots a stack onto a new base.
+
+### ✨ Features
+- **`gh-stack split <branch>`** ([#10](https://github.com/kiliman/gh-stack/issues/10)) — cut the current stack into two at `<branch>`. The cut branch and everything above it move into a new stack whose base is the cut branch's parent (which stays in the original stack). Purely a metadata operation — no git branches are moved or rebased, since stack membership is just bookkeeping on top of the real branch graph.
+  - Use it when a long chain is in review and can't merge yet but new work is piling on top: split at the first "new work" branch so the original stays the review unit and the new stack rides on its tip.
+  - `--name <name>` sets the new stack's name (defaults to the cut branch name).
+- **Stacks now have an explicit `base`** — usually `main`, or a branch in another stack (for split stacks). `gh-stack log` renders the real base at the root. Existing metadata is back-compatible: a missing `base` is treated as `main`.
+- **`gh-stack restack --onto <ref>`** — re-root the current stack onto a new base ref. Use it to move a split stack off its parent-stack branch and onto `main` once that parent stack has merged; only the stack's own commits replay onto the new base (the now-merged parent commits are dropped via the existing snapshot/rebase machinery).
+
+### 🛡️ Guards
+- `sync` and `merge` refuse to run on a non-main-based stack and point you at `gh-stack restack` / `gh-stack restack --onto main` instead — syncing/merging only makes sense once a stack is rooted on the trunk.
+
 ## 0.7.1
 
 ### 🐛 Fixes

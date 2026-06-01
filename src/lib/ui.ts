@@ -2,7 +2,7 @@
 import * as p from "./output.ts";
 import pc from "picocolors";
 import type { Stack, StackMetadata } from "../types.ts";
-import { getOrderedBranches } from "./metadata.ts";
+import { getOrderedBranches, stackBase } from "./metadata.ts";
 
 // ── Auto-yes mode (for agents/CI) ──
 
@@ -32,7 +32,10 @@ export function renderStackTree(
   const showNumbers = options?.showNumbers ?? true;
   const lines: string[] = [];
 
-  lines.push(`${pc.green("◯")} main`);
+  const base = stackBase(stack);
+  const baseIsTrunk = base === "main" || base === "master";
+  const baseHint = baseIsTrunk ? "" : pc.dim(" (base — in parent stack)");
+  lines.push(`${pc.green("◯")} ${base}${baseHint}`);
 
   for (let i = 0; i < ordered.length; i++) {
     const branchName = ordered[i]!;

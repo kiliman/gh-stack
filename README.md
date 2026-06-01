@@ -62,6 +62,11 @@ gh-stack sync
 
 # Check PR status
 gh-stack status
+
+# Split a long in-review chain so new work becomes its own stack
+gh-stack split feat-12           # feat-12.. → new stack based on feat-11
+# ...later, after the original stack merges to main:
+gh-stack restack --onto main     # re-root the split stack onto main
 ```
 
 ## Commands
@@ -133,6 +138,12 @@ restack [--resume] [--dry-run] [--verbose]
 
     (alias: rebase)
 
+restack --onto <ref>
+    Re-root the current stack onto a new base ref, changing the stack's
+    base. Use this to move a split stack off its parent-stack branch and
+    onto main once the parent stack has merged — only the stack's own
+    commits replay onto the new base.
+
 sync [--dry-run]
     Fetch main, rebase the base branch onto main, then restack all
     children. Snapshots every branch's pre-sync tip so children can be
@@ -148,6 +159,19 @@ merge [--dry-run] [-d|--delete-branch] [--collapse]
                 leaves the base PR open against main so you can
                 review the cumulative diff on GitHub. Re-run
                 `gh-stack merge` (without --collapse) to finish.
+
+split [<branch>] [--name <name>]
+    Cut the current stack into two at <branch>. The cut branch and every
+    branch above it move into a NEW stack whose base is the cut branch's
+    parent (which stays in the original stack). Purely a metadata
+    operation — no git branches are moved or rebased. Interactive
+    selector if no branch is given; you can't split at the stack's root.
+
+    Use it when a long chain is in review and can't merge yet, but new
+    work is piling on top: split at the first "new work" branch so the
+    original stack stays the review unit and the new stack rides on its
+    tip. Once the original stack merges, re-root the new stack with
+    `gh-stack restack --onto main`.
 
 delete [<branch>] [-k|--keep-branch] [--no-remote]
     Remove a branch from the stack and re-parent its children, then

@@ -4,7 +4,7 @@
 // auto-create/register a stack from a bare set of local branches so the
 // end state is always stack registered + branches pushed + PRs created).
 import * as git from "./git.ts";
-import { findStackForBranch } from "./metadata.ts";
+import { findStackForBranch, getOrderedBranches, stackBase } from "./metadata.ts";
 import type { StackMetadata, Branch } from "../types.ts";
 
 /**
@@ -55,7 +55,8 @@ export async function detectBranchChain(currentBranch: string, trunk: string): P
 
 export interface StackResolution {
   stackName: string;
-  chain: string[]; // trunk→current order
+  base: string; // effective base of the resulting stack (for display)
+  chain: string[]; // resulting stack's branches, base→tip (for display)
   created: boolean; // true if a brand-new stack was created
   addedBranches: string[]; // branches newly registered into the stack
 }
@@ -67,75 +68,106 @@ export interface StackResolution {
  * effects).
  *
  * Behavior:
- *   - Detects the chain trunk→current.
- *   - If any branch in the chain already belongs to a stack, reconciles
- *     into that existing stack (adds only the missing branches).
- *   - Otherwise creates a new stack named after the current branch
- *     (auto-suffixed if that name is taken).
- *   - Registers missing branches with correct parent links (chain[0]'s
- *     parent is trunk; each subsequent branch's parent is the prior one).
+ *   - Detects the ancestry chain trunk→current.
+ *   - Finds the NEAREST tracked ancestor of `branch`. If one exists, adopts
+ *     the untracked tail above it into that ancestor's stack — stopping at
+ *     that stack's boundary. This is what lets a stack with a non-main base
+ *     (one stacked on top of another stack) keep accepting new branches: the
+ *     walk never crosses into the parent stack, so it can't mistake a clean
+ *     stacked-on-a-stack layout for an ambiguous multi-stack chain. (#11)
+ *   - Otherwise creates a new stack rooted at `trunk`, named after the current
+ *     branch (auto-suffixed if that name is taken). (#7)
  *
- * Throws if the chain spans more than one existing stack (ambiguous).
+ * Throws only if the untracked tail genuinely interleaves another stack's
+ * branches — which a clean stacked-on-a-stack layout never does.
  */
 export async function resolveOrCreateStack(
   meta: StackMetadata,
   branch: string,
   trunk: string,
 ): Promise<StackResolution> {
-  const chain = await detectBranchChain(branch, trunk);
+  const fullChain = await detectBranchChain(branch, trunk); // trunk→current
 
-  // Which existing stacks (if any) already own branches in this chain?
-  const owningStacks = new Set<string>();
-  for (const b of chain) {
-    const owner = findStackForBranch(meta, b);
-    if (owner) owningStacks.add(owner);
-  }
-
-  if (owningStacks.size > 1) {
-    throw new Error(
-      `Branches in this chain span multiple stacks (${[...owningStacks].join(
-        ", ",
-      )}). Resolve manually with gh-stack init / delete.`,
-    );
-  }
-
-  let stackName: string;
-  let created = false;
-
-  if (owningStacks.size === 1) {
-    // Reconcile into the existing stack
-    stackName = [...owningStacks][0]!;
-  } else {
-    // Create a new stack named after the current branch (auto-suffix on clash)
-    stackName = branch;
-    let n = 2;
-    while (meta.stacks[stackName]) {
-      stackName = `${branch}-${n++}`;
+  // Walk from just below `branch` downward; the first tracked ancestor is the
+  // attachment point. Everything above it (up to `branch`) is the untracked
+  // tail we adopt — by definition not tracked, since this is the *nearest*
+  // tracked ancestor.
+  let anchorIndex = -1;
+  let anchorStack: string | null = null;
+  for (let i = fullChain.length - 2; i >= 0; i--) {
+    const owner = findStackForBranch(meta, fullChain[i]!);
+    if (owner) {
+      anchorIndex = i;
+      anchorStack = owner;
+      break;
     }
-    meta.stacks[stackName] = {
-      description: "",
-      last_branch: null,
-      branches: {},
-      base: trunk,
-    };
-    meta.current_stack = stackName;
-    created = true;
   }
+
+  if (anchorStack) {
+    const stack = meta.stacks[anchorStack]!;
+    const tail = fullChain.slice(anchorIndex); // [anchor, ...untracked..., current]
+    const addedBranches: string[] = [];
+
+    for (let i = 1; i < tail.length; i++) {
+      const name = tail[i]!;
+      const parent = tail[i - 1]!;
+
+      // Safety net: a clean stacked-on-a-stack layout never trips this, but if
+      // the tail somehow already belongs to a different stack, it's genuinely
+      // ambiguous — refuse rather than silently move branches between stacks.
+      const existingOwner = findStackForBranch(meta, name);
+      if (existingOwner && existingOwner !== anchorStack) {
+        throw new Error(
+          `Branches in this chain span multiple stacks (${anchorStack}, ${existingOwner}). Resolve manually with gh-stack init / delete.`,
+        );
+      }
+
+      if (stack.branches[name]) continue; // already tracked — leave as-is
+      stack.branches[name] = { parent };
+      stack.last_branch = name;
+      addedBranches.push(name);
+    }
+
+    return {
+      stackName: anchorStack,
+      base: stackBase(stack),
+      chain: getOrderedBranches(stack),
+      created: false,
+      addedBranches,
+    };
+  }
+
+  // No tracked ancestor — create a new stack rooted at trunk.
+  let stackName = branch;
+  let n = 2;
+  while (meta.stacks[stackName]) {
+    stackName = `${branch}-${n++}`;
+  }
+  meta.stacks[stackName] = {
+    description: "",
+    last_branch: null,
+    branches: {},
+    base: trunk,
+  };
+  meta.current_stack = stackName;
 
   const stack = meta.stacks[stackName]!;
   const addedBranches: string[] = [];
-
-  // Register missing branches with correct parent links.
-  for (let i = 0; i < chain.length; i++) {
-    const name = chain[i]!;
-    if (stack.branches[name]) continue; // already tracked — leave as-is
-
-    const parent = i === 0 ? trunk : chain[i - 1]!;
+  for (let i = 0; i < fullChain.length; i++) {
+    const name = fullChain[i]!;
+    if (stack.branches[name]) continue;
+    const parent = i === 0 ? trunk : fullChain[i - 1]!;
     const branchData: Branch = { parent };
     stack.branches[name] = branchData;
     stack.last_branch = name;
     addedBranches.push(name);
   }
 
-  return { stackName, chain, created, addedBranches };
+  return {
+    stackName,
+    base: trunk,
+    chain: getOrderedBranches(stack),
+    created: true,
+    addedBranches,
+  };
 }

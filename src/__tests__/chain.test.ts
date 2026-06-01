@@ -145,25 +145,84 @@ describe("resolveOrCreateStack", () => {
     expect(meta.stacks["c"]!.branches["other"]).toBeDefined();
   });
 
-  test("throws when the chain spans multiple existing stacks", async () => {
+  test("adopts into the nearest ancestor's stack across a non-main base (#11)", async () => {
+    // stack-b is stacked on top of stack-a (base = "a", a non-main branch).
+    // A new untracked branch `c` on top of stack-b's tip must be adopted into
+    // stack-b — the walk stops at stack-b's base and never crosses into
+    // stack-a, so this is NOT treated as an ambiguous multi-stack chain.
     await bareChain();
     const meta: StackMetadata = {
       version: 2,
-      current_stack: "stack-a",
+      current_stack: "stack-b",
       stacks: {
         "stack-a": {
           description: "",
           last_branch: "a",
           branches: { a: { parent: "main" } },
+          base: "main",
         },
         "stack-b": {
           description: "",
           last_branch: "b",
           branches: { b: { parent: "a" } },
+          base: "a",
         },
       },
     };
 
-    await expect(resolveOrCreateStack(meta, "c", "main")).rejects.toThrow(/span multiple stacks/);
+    const res = await resolveOrCreateStack(meta, "c", "main");
+
+    expect(res.created).toBe(false);
+    expect(res.stackName).toBe("stack-b");
+    expect(res.base).toBe("a");
+    expect(res.addedBranches).toEqual(["c"]);
+    expect(meta.stacks["stack-b"]!.branches["c"]!.parent).toBe("b");
+    // stack-a is untouched — the walk never crossed the base boundary.
+    expect(Object.keys(meta.stacks["stack-a"]!.branches)).toEqual(["a"]);
+  });
+
+  test("adopts a new tip onto a child stack with a non-main base — full repro (#11)", async () => {
+    // Parent stack S0: main → s0a → mocktip ; child stack S1 (base mocktip):
+    // mocktip → pr1 → pr2. New untracked branch pr3 on top of pr2.
+    await createBranch(tmpDir, "s0a", "main");
+    await makeCommit(tmpDir, "s0a.txt", "s0a\n", "s0a");
+    await createBranch(tmpDir, "mocktip", "s0a");
+    await makeCommit(tmpDir, "mocktip.txt", "mocktip\n", "mocktip");
+    await createBranch(tmpDir, "pr1", "mocktip");
+    await makeCommit(tmpDir, "pr1.txt", "pr1\n", "pr1");
+    await createBranch(tmpDir, "pr2", "pr1");
+    await makeCommit(tmpDir, "pr2.txt", "pr2\n", "pr2");
+    await createBranch(tmpDir, "pr3", "pr2");
+    await makeCommit(tmpDir, "pr3.txt", "pr3\n", "pr3");
+
+    const meta: StackMetadata = {
+      version: 2,
+      current_stack: "S1",
+      stacks: {
+        S0: {
+          description: "",
+          last_branch: "mocktip",
+          branches: { s0a: { parent: "main" }, mocktip: { parent: "s0a" } },
+          base: "main",
+        },
+        S1: {
+          description: "",
+          last_branch: "pr2",
+          branches: { pr1: { parent: "mocktip" }, pr2: { parent: "pr1" } },
+          base: "mocktip",
+        },
+      },
+    };
+
+    const res = await resolveOrCreateStack(meta, "pr3", "main");
+
+    expect(res.created).toBe(false);
+    expect(res.stackName).toBe("S1");
+    expect(res.base).toBe("mocktip");
+    expect(res.addedBranches).toEqual(["pr3"]);
+    expect(meta.stacks["S1"]!.branches["pr3"]!.parent).toBe("pr2");
+    expect(meta.stacks["S1"]!.last_branch).toBe("pr3");
+    // S0 (the parent stack) is left completely alone.
+    expect(Object.keys(meta.stacks["S0"]!.branches).sort()).toEqual(["mocktip", "s0a"]);
   });
 });

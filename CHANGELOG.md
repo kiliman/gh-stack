@@ -11,6 +11,8 @@
 - **Stacks now have an explicit `base`** — usually `main`, or a branch in another stack (for split stacks). `gh-stack log` renders the real base at the root, and the PR-description stack visualization (`📚 Stacked on`) shows the base branch (linked to its PR when it has one) instead of always showing `main`. Existing metadata is back-compatible: a missing `base` is treated as `main`.
 - **`gh-stack restack --onto <ref>`** — re-root the current stack onto a new base ref. Use it to move a split stack off its parent-stack branch and onto `main` once that parent stack has merged; only the stack's own commits replay onto the new base (the now-merged parent commits are dropped via the existing snapshot/rebase machinery).
 
+- **`submit` adopts new branches onto a non-main-based stack** ([#11](https://github.com/kiliman/gh-stack/issues/11)) — the chain-resolution walk now stops at the **nearest tracked ancestor** and adopts the untracked tail into that stack, instead of climbing all the way to `main` and bailing with "spans multiple stacks". This makes the split workflow's natural next step work: keep stacking new slices on a child stack and `gh-stack submit` just registers them (base preserved), no manual create+reset dance.
+
 ### 🛡️ Guards
 - `sync` and `merge` refuse to run on a non-main-based stack and point you at `gh-stack restack` / `gh-stack restack --onto main` instead — syncing/merging only makes sense once a stack is rooted on the trunk.
 

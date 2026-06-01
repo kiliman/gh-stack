@@ -136,7 +136,7 @@ export default async function submit(args: string[]): Promise<void> {
   // Reconstruct the stack from local branch ancestry so the end state is
   // always stack registered + branches pushed + PRs created — no need to
   // remember to run `gh-stack init` first.
-  let heal: { trunk: string; chain: string[]; created: boolean; added: string[] } | null = null;
+  let heal: { base: string; chain: string[]; created: boolean; added: string[] } | null = null;
   if (!stackName) {
     const trunk = await git.trunkBranch();
 
@@ -157,7 +157,7 @@ export default async function submit(args: string[]): Promise<void> {
 
     stackName = resolution.stackName;
     heal = {
-      trunk,
+      base: resolution.base,
       chain: resolution.chain,
       created: resolution.created,
       added: resolution.addedBranches,
@@ -183,13 +183,15 @@ export default async function submit(args: string[]): Promise<void> {
         `No stack found — created ${pc.yellow(stackName)} from ${heal.chain.length} local branch(es)`,
       );
     } else if (heal.added.length > 0) {
+      const baseNote =
+        heal.base === "main" || heal.base === "master" ? "" : ` (base: ${heal.base})`;
       p.log.success(
-        `Reconciled ${heal.added.length} untracked branch(es) into ${pc.yellow(stackName)}`,
+        `Adopted ${heal.added.length} untracked branch(es) into ${pc.yellow(stackName)}${pc.dim(baseNote)}`,
       );
     }
 
     console.log();
-    console.log(`  ${pc.dim(heal.trunk)}`);
+    console.log(`  ${pc.dim(heal.base)}`);
     for (let i = 0; i < heal.chain.length; i++) {
       const b = heal.chain[i]!;
       const isLast = i === heal.chain.length - 1;

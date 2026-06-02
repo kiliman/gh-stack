@@ -188,8 +188,19 @@ log
     Display the current stack as a tree with branch numbers,
     PR info, and descriptions. This is the default command.
 
+stacks [--current] [--json]
+    List all stacks and their topology. Read-only and network-free —
+    emits stack membership straight from local metadata, so external
+    tools (status scripts, dashboards) can consume --json as a stable
+    interface instead of parsing the .git/.gh-stack/ store directly.
+    --current  Only the stack containing the current branch
+    --json     Topology as JSON: { current_stack, current_branch,
+               stacks: [{ name, description, base, is_current,
+               branches: [{ branch, parent, pr, description }] }] }
+
 status [--current] [--json]
     PR dashboard showing review state, CI status, and merge readiness.
+    Unlike `stacks`, this hits the network to fetch live PR/CI status.
     --current  Show only the current stack or standalone PR
     --json     Structured JSON output (progress goes to stderr)
 

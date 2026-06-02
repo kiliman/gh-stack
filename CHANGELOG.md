@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0
+
+### ✨ Features
+- **`gh-stack stacks [--json]`** — a read-only, network-free dump of all stacks and their topology (ordered branches, PR numbers, base). It exists so external tooling can consume `--json` as a stable interface instead of reaching into the `.git/.gh-stack/` store and parsing the on-disk format directly. Shape: `{ current_stack, current_branch, stacks: [{ name, description, base, is_current, branches: [{ branch, parent, pr, description }] }] }`. `--current` narrows to the stack containing the checked-out branch. Distinct from `status --json`, which hits the network for live PR/CI state.
+
 ## 0.9.0
 
 > **Metadata is now a folder, not a file.** The single `.git/gh-stack-metadata.json` monolith is replaced by per-stack files under `.git/.gh-stack/` plus git-native branch config. This removes whole classes of bugs structurally — stacks vanishing on merge, `current_stack` drift, snapshot-array churn — rather than patching them one at a time. Run `gh-stack doctor` once to migrate.

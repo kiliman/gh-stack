@@ -115,6 +115,10 @@ switch (command) {
     await (await import("./commands/update-prs.ts")).default(commandArgs);
     break;
 
+  case "stacks":
+    await (await import("./commands/stacks.ts")).default(commandArgs);
+    break;
+
   case "archive":
     await (await import("./commands/archive.ts")).default(commandArgs);
     break;
@@ -172,6 +176,7 @@ ${bold("STACK NAVIGATION")}
   ${green("top")}            Jump to the tip of the stack
   ${green("bottom")}         Jump to the base of the stack
   ${green("ls")}             List branches with numbers
+  ${green("stacks")}         List all stacks (--json for tools)
 
 ${bold("STACK MANAGEMENT")}
   ${green("restack")}        Rebase children onto updated parents

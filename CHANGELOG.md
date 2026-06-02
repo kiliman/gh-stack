@@ -4,6 +4,14 @@
 
 > **Metadata is now a folder, not a file.** The single `.git/gh-stack-metadata.json` monolith is replaced by per-stack files under `.git/.gh-stack/` plus git-native branch config. This removes whole classes of bugs structurally — stacks vanishing on merge, `current_stack` drift, snapshot-array churn — rather than patching them one at a time. Run `gh-stack doctor` once to migrate.
 
+### ⚡ Performance
+- **`submit` is far faster on large stacks** ([#16](https://github.com/kiliman/gh-stack/issues/16)) — it no longer makes ~4 serial GitHub calls per branch just to re-push one. The stack visualization is now rendered entirely from local metadata (plus one cached repo-identity lookup for links), and `submit`:
+  - **skips the PR-description PATCH** for any PR whose rendered block is unchanged (cached `vizHash`) — a re-submit touching one branch on a 12-PR stack does ~1 update, not 12;
+  - **skips `gh pr edit --base`** when the parent hasn't changed since the last submit (cached `prBase`);
+  - **caches PR titles** so the viz needs no per-PR fetch, backfilling only the first time, in parallel;
+  - **parallelizes** the description updates that do remain.
+- **Stack viz now numbers each branch** by its position in the stack (`1.`, `2.`, …) and **drops the review/CI emoji** (tracked out-of-band) — which is what makes the block fully local-renderable. `gh-stack update-prs` (now wired into the CLI) gains `--force` to rewrite all descriptions regardless of the cache.
+
 ### ✨ Features
 - **`gh-stack doctor`** ([#14](https://github.com/kiliman/gh-stack/issues/14)) — migrates old (v2) metadata to the v3 layout, reconciles git branch config against the topology files, and flags stacks whose base stack appears already-merged into main. Idempotent; safe to run repeatedly.
 - **v3 metadata layout** ([#14](https://github.com/kiliman/gh-stack/issues/14)) — metadata moves from one JSON blob to a folder under `.git/.gh-stack/`:

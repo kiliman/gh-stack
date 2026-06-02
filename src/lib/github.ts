@@ -2,6 +2,30 @@
 import { $ } from "bun";
 import type { PrInfo, PrStatus } from "../types.ts";
 
+let cachedNwo: string | null | undefined; // undefined = not yet looked up
+
+/**
+ * Get the repository's `owner/name` (once, cached for the process). Used to
+ * construct PR URLs locally — `https://github.com/<nwo>/pull/<n>` — so the
+ * stack visualization doesn't need a per-PR API call just for links.
+ * Returns null if it can't be resolved (links degrade to plain `#<n>`).
+ */
+export async function getRepoNwo(): Promise<string | null> {
+  if (cachedNwo !== undefined) return cachedNwo;
+  try {
+    const out = (await $`gh repo view --json nameWithOwner --jq .nameWithOwner`.text()).trim();
+    cachedNwo = out.length > 0 ? out : null;
+  } catch {
+    cachedNwo = null;
+  }
+  return cachedNwo;
+}
+
+/** Build a PR URL from a cached nwo (or null if nwo is unknown). */
+export function prUrlFor(nwo: string | null, prNumber: number): string | null {
+  return nwo ? `https://github.com/${nwo}/pull/${prNumber}` : null;
+}
+
 /**
  * Get PR number for a branch (auto-detect via gh).
  * Returns null if no PR exists.

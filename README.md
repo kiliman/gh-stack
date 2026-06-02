@@ -240,16 +240,25 @@ Snapshots also power `gh-stack undo`, so the same data structure does double dut
 
 ### Stack Visualization
 
-`submit` automatically adds a stack section to all PR descriptions:
+`submit` automatically adds a stack section to all PR descriptions, with each
+branch numbered by its position in the stack (handy for spotting "which one is
+PR 6 of 12"):
 
 ```
 ### 📚 Stacked on
 ⚫ main
 ┃
-┣━ ✅ #123 Backend models
+┣━ 1. #123 Backend models
 ┃
-┗━ ⏳ #124 Frontend UI 👈
+┗━ 2. #124 Frontend UI 👈
 ```
+
+The block is rendered entirely from local metadata plus one repo-identity
+lookup for links — no per-PR API call — and `submit` only rewrites a PR
+description whose block actually changed (membership/order/title), so a
+re-submit that touched one branch on a 12-PR stack does ~1 update, not 12.
+Review/CI status is intentionally not shown here. Run `gh-stack update-prs`
+(`--force` to rewrite all) to refresh manually.
 
 ### Metadata (v3)
 

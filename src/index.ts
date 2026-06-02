@@ -111,6 +111,10 @@ switch (command) {
     await (await import("./commands/doctor.ts")).default(commandArgs);
     break;
 
+  case "update-prs":
+    await (await import("./commands/update-prs.ts")).default(commandArgs);
+    break;
+
   case "archive":
     await (await import("./commands/archive.ts")).default(commandArgs);
     break;
@@ -180,6 +184,7 @@ ${bold("INFO & MAINTENANCE")}
   ${green("status")}         PR dashboard (CI, reviews)
   ${green("undo")}           Restore from last snapshot
   ${green("archive")}        Manage archived stacks
+  ${green("update-prs")}     Refresh stack visualization in PR descriptions
   ${green("doctor")}         Migrate & repair stack metadata
 
 ${bold("GLOBAL OPTIONS")}

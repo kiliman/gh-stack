@@ -162,14 +162,12 @@ describe("buildStackViz", () => {
           prNumber: 123,
           prTitle: "Backend models",
           prUrl: "https://github.com/acme/widgets/pull/123",
-          reviewEmojiStr: "✅",
         },
         {
           branch: "pr2",
           prNumber: 124,
           prTitle: "Frontend UI",
           prUrl: "https://github.com/acme/widgets/pull/124",
-          reviewEmojiStr: "⏳",
         },
       ],
       1,
@@ -180,11 +178,29 @@ describe("buildStackViz", () => {
     expect(viz).not.toContain("beehiiv/swarm");
   });
 
+  test("numbers each branch by its stack position and omits review emoji", () => {
+    const viz = buildStackViz(
+      [
+        { branch: "pr1", prNumber: 123, prTitle: "Backend models", prUrl: null },
+        { branch: "pr2", prNumber: 124, prTitle: "Frontend UI", prUrl: null },
+      ],
+      1,
+    );
+
+    // 1-based stack index prefixes each line.
+    expect(viz).toContain("1. #123 Backend models");
+    expect(viz).toContain("2. #124 Frontend UI 👈");
+    // Review/CI status is intentionally not rendered (tracked out-of-band).
+    expect(viz).not.toContain("✅");
+    expect(viz).not.toContain("⏳");
+    expect(viz).not.toContain("👀");
+  });
+
   test("defaults the base node to main", () => {
     const viz = buildStackViz(
       [
-        { branch: "pr1", prNumber: 1, prTitle: "One", prUrl: null, reviewEmojiStr: "✅" },
-        { branch: "pr2", prNumber: 2, prTitle: "Two", prUrl: null, reviewEmojiStr: "⏳" },
+        { branch: "pr1", prNumber: 1, prTitle: "One", prUrl: null },
+        { branch: "pr2", prNumber: 2, prTitle: "Two", prUrl: null },
       ],
       0,
     );
@@ -194,8 +210,8 @@ describe("buildStackViz", () => {
   test("renders a split stack's base branch (with PR link) instead of main", () => {
     const viz = buildStackViz(
       [
-        { branch: "pr12", prNumber: 12, prTitle: "New work", prUrl: null, reviewEmojiStr: "⏳" },
-        { branch: "pr13", prNumber: 13, prTitle: "More work", prUrl: null, reviewEmojiStr: "⏳" },
+        { branch: "pr12", prNumber: 12, prTitle: "New work", prUrl: null },
+        { branch: "pr13", prNumber: 13, prTitle: "More work", prUrl: null },
       ],
       0,
       { label: "pr11", prNumber: 11, prUrl: "https://github.com/acme/widgets/pull/11" },
@@ -206,16 +222,36 @@ describe("buildStackViz", () => {
   });
 
   test("single-branch split stack links the base PR", () => {
-    const viz = buildStackViz(
-      [{ branch: "pr12", prNumber: 12, prTitle: "Solo", prUrl: null, reviewEmojiStr: "⏳" }],
-      0,
-      {
-        label: "pr11",
-        prNumber: 11,
-        prUrl: null,
-      },
-    );
+    const viz = buildStackViz([{ branch: "pr12", prNumber: 12, prTitle: "Solo", prUrl: null }], 0, {
+      label: "pr11",
+      prNumber: 11,
+      prUrl: null,
+    });
     expect(viz).toContain("#11 pr11");
     expect(viz).not.toContain("**main**");
+  });
+
+  // The submit fast-path (#16) skips a PR's PATCH when the rendered block is
+  // byte-identical to last time. These guard the two invariants that makes
+  // that hash-skip safe and correct.
+  test("is deterministic for identical inputs (enables hash-skip)", () => {
+    const branches = [
+      { branch: "pr1", prNumber: 1, prTitle: "One", prUrl: null },
+      { branch: "pr2", prNumber: 2, prTitle: "Two", prUrl: null },
+    ];
+    expect(buildStackViz(branches, 0)).toBe(buildStackViz(branches, 0));
+  });
+
+  test("adding a branch changes existing PRs' rendered block (forces re-PATCH)", () => {
+    const before = [
+      { branch: "pr1", prNumber: 1, prTitle: "One", prUrl: null },
+      { branch: "pr2", prNumber: 2, prTitle: "Two", prUrl: null },
+    ];
+    const after = [...before, { branch: "pr3", prNumber: 3, prTitle: "Three", prUrl: null }];
+
+    // PR1's block (targetIndex 0) must differ once a new tip joins the stack,
+    // so its cached hash misses and it gets the updated tree.
+    expect(buildStackViz(after, 0)).not.toBe(buildStackViz(before, 0));
+    expect(buildStackViz(after, 0)).toContain("3. #3 Three");
   });
 });

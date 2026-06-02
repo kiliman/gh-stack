@@ -30,6 +30,12 @@ export interface Branch {
   parent: string; // "main" or another branch name
   pr?: number; // GitHub PR number
   description?: string; // Human-readable label
+
+  // ── submit caches (v0.9.0, issue #16) ──
+  // Let `submit` skip redundant network calls when nothing relevant changed.
+  prTitle?: string; // last-known GitHub PR title, for rendering the stack viz without a fetch
+  prBase?: string; // last base we set on the PR via `gh pr edit --base`; skip the edit when parent is unchanged
+  vizHash?: string; // hash of the stack-viz block we last wrote to this PR; skip the PATCH when it would be identical
 }
 
 export interface Snapshot {

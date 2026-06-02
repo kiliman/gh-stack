@@ -1,11 +1,22 @@
 // gh-stack update-prs — Update PR descriptions with stack visualization
-// Port of reference/gh-stack-update-pr.sh
+//
+// The visualization is rendered entirely from local metadata (PR number,
+// cached title, stack position) plus a single repo-identity lookup for URLs —
+// no per-PR API call. `submit` reuses `refreshStackViz` and skips PATCHing any
+// PR whose rendered block hasn't changed (see issue #16). Review/CI status is
+// intentionally NOT shown here; that's tracked out-of-band.
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
+import { createHash } from "node:crypto";
 import * as git from "../lib/git.ts";
-import { findStackForBranch, getOrderedBranches, stackBase } from "../lib/metadata.ts";
+import {
+  findStackForBranch,
+  getOrderedBranches,
+  stackBase,
+  writeMetadata,
+} from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
-import { getPrInfo, getPrBody, updatePrBody, reviewEmoji } from "../lib/github.ts";
+import { getPrInfo, getPrBody, updatePrBody, getRepoNwo, prUrlFor } from "../lib/github.ts";
 import type { StackMetadata, Stack } from "../types.ts";
 
 /** The ref a stack is rooted on, for rendering the base node of the viz. */
@@ -15,23 +26,136 @@ export interface BaseRef {
   prUrl?: string | null;
 }
 
+export interface BranchPrInfo {
+  branch: string;
+  prNumber: number | null;
+  prTitle: string;
+  prUrl: string | null;
+}
+
+/** Derive a readable PR title from a branch name (fallback when uncached). */
+export function branchToTitle(branch: string): string {
+  let name = branch.includes("/") ? branch.split("/").slice(1).join("/") : branch;
+  name = name.replace(/-/g, " ");
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
 /**
  * Resolve the base node for a stack's visualization. For a split stack whose
- * base is a branch in another stack, look up that branch's PR so the viz can
- * link to it (instead of always showing "main").
+ * base is a branch in another stack, link to that branch's PR. The URL is
+ * constructed locally from the repo identity — no API call.
  */
-export async function resolveBaseRef(meta: StackMetadata, stack: Stack): Promise<BaseRef> {
+export async function resolveBaseRef(
+  meta: StackMetadata,
+  stack: Stack,
+  nwo: string | null,
+): Promise<BaseRef> {
   const base = stackBase(stack);
   if (base === "main" || base === "master") return { label: base };
 
   const ownerName = findStackForBranch(meta, base);
   const prNumber = ownerName ? (meta.stacks[ownerName]?.branches[base]?.pr ?? null) : null;
-  let prUrl: string | null = null;
-  if (prNumber) {
-    const info = await getPrInfo(prNumber);
-    prUrl = info?.url ?? null;
-  }
-  return { label: base, prNumber, prUrl };
+  return { label: base, prNumber, prUrl: prNumber ? prUrlFor(nwo, prNumber) : null };
+}
+
+/** Build a BranchPrInfo from metadata alone (no network). */
+function toBranchInfo(stack: Stack, branch: string, nwo: string | null): BranchPrInfo {
+  const bm = stack.branches[branch]!;
+  const prNumber = bm.pr ?? null;
+  return {
+    branch,
+    prNumber,
+    prTitle: bm.prTitle || bm.description || branchToTitle(branch),
+    prUrl: prNumber ? prUrlFor(nwo, prNumber) : null,
+  };
+}
+
+/**
+ * Fill in missing cached PR titles (one-time, e.g. right after migrating to v3
+ * or adopting existing PRs). Fetches only the branches that lack a title, in
+ * parallel; subsequent submits read straight from the cache. Returns true if
+ * any title was written.
+ */
+async function backfillTitles(stack: Stack, ordered: string[]): Promise<boolean> {
+  const missing = ordered.filter((b) => {
+    const bm = stack.branches[b]!;
+    return bm.pr != null && !bm.prTitle;
+  });
+  if (missing.length === 0) return false;
+
+  await mapLimit(missing, 8, async (branch) => {
+    const bm = stack.branches[branch]!;
+    const info = await getPrInfo(bm.pr!);
+    if (info?.title) bm.prTitle = info.title;
+  });
+  return true;
+}
+
+function vizHash(viz: string): string {
+  return createHash("sha1").update(viz).digest("hex");
+}
+
+/** Splice the rendered viz block into a PR body, replacing any existing one. */
+function mergeViz(body: string, viz: string): string {
+  let base = body;
+  const idx = base.indexOf("### 📚 Stacked on");
+  if (idx !== -1) base = base.slice(0, idx).trimEnd();
+  return base ? `${base}\n\n${viz}` : viz;
+}
+
+export interface VizResult {
+  updated: number; // PRs whose description we PATCHed
+  unchanged: number; // PRs skipped because their rendered block was identical
+  skipped: number; // branches with no PR
+  dirty: boolean; // metadata mutated (caller should persist)
+}
+
+/**
+ * Refresh the stack visualization across a stack's PRs. Renders every block
+ * locally, then PATCHes only the PRs whose block actually changed (unless
+ * `force`), running the surviving PATCHes concurrently.
+ */
+export async function refreshStackViz(
+  meta: StackMetadata,
+  stack: Stack,
+  ordered: string[],
+  opts: { force?: boolean } = {},
+): Promise<VizResult> {
+  const force = opts.force ?? false;
+  const nwo = await getRepoNwo();
+
+  let dirty = await backfillTitles(stack, ordered);
+
+  const branchInfos = ordered.map((b) => toBranchInfo(stack, b, nwo));
+  const baseRef = await resolveBaseRef(meta, stack, nwo);
+
+  // Render every block locally and decide what needs writing — no network yet.
+  const plans = branchInfos
+    .map((info, i) => ({ info, i }))
+    .filter(({ info }) => info.prNumber != null)
+    .map(({ info, i }) => {
+      const viz = buildStackViz(branchInfos, i, baseRef);
+      const hash = vizHash(viz);
+      const bm = stack.branches[info.branch]!;
+      return { info, viz, hash, bm, needsUpdate: force || bm.vizHash !== hash };
+    });
+
+  const toUpdate = plans.filter((plan) => plan.needsUpdate);
+  const unchanged = plans.length - toUpdate.length;
+  const skipped = branchInfos.length - plans.length;
+
+  const oks = await mapLimit(toUpdate, 8, async (plan) => {
+    const body = await getPrBody(plan.info.prNumber!);
+    if (body === null) return false;
+    const ok = await updatePrBody(plan.info.prNumber!, mergeViz(body, plan.viz));
+    if (ok) plan.bm.vizHash = plan.hash;
+    return ok;
+  });
+
+  const updated = oks.filter(Boolean).length;
+  if (updated > 0) dirty = true;
+
+  return { updated, unchanged, skipped, dirty };
 }
 
 export default async function updatePrs(args: string[]): Promise<void> {
@@ -40,14 +164,16 @@ export default async function updatePrs(args: string[]): Promise<void> {
 gh-stack update-prs — Update PR descriptions with stack visualization
 
 USAGE
-  gh-stack update-prs
+  gh-stack update-prs [--force]
 
 Updates all PRs in the current stack with a standardized stack section
-showing the tree structure, PR links, and review status.
+showing the tree structure, PR links, and per-PR stack index. By default
+PRs whose rendered block is unchanged are skipped; --force rewrites all.
 `);
     return;
   }
 
+  const force = args.includes("--force");
   const meta = await ensureMetadata();
   const branch = await git.currentBranch();
   const stackName = findStackForBranch(meta, branch);
@@ -65,107 +191,21 @@ showing the tree structure, PR links, and review status.
   p.log.info(`Found ${ordered.length} branch(es) in stack`);
   console.log();
 
-  // Collect PR info for all branches
   const s = p.spinner();
-  s.start("Fetching PR info from GitHub...");
+  s.start("Updating PR descriptions...");
+  const result = await refreshStackViz(meta, stack, ordered, { force });
+  s.stop("Done");
 
-  interface BranchPrInfo {
-    branch: string;
-    prNumber: number | null;
-    prTitle: string;
-    prUrl: string | null;
-    reviewEmojiStr: string;
-  }
-
-  const branchInfos: BranchPrInfo[] = [];
-
-  for (const branchName of ordered) {
-    const branchMeta = stack.branches[branchName]!;
-    const prNumber = branchMeta.pr ?? null;
-    let prTitle = branchMeta.description || branchName;
-    let prUrl: string | null = null;
-    let review = "PENDING";
-
-    if (prNumber) {
-      const info = await getPrInfo(prNumber);
-      if (info) {
-        prTitle = info.title || prTitle;
-        prUrl = info.url;
-        review = info.reviewDecision || "PENDING";
-      }
-    }
-
-    branchInfos.push({
-      branch: branchName,
-      prNumber,
-      prTitle,
-      prUrl,
-      reviewEmojiStr: reviewEmoji(review),
-    });
-  }
-
-  s.stop("Fetched PR info");
-
-  const baseRef = await resolveBaseRef(meta, stack);
-
-  // Update each PR
-  let updated = 0;
-  let skipped = 0;
-
-  for (let targetIdx = 0; targetIdx < branchInfos.length; targetIdx++) {
-    const target = branchInfos[targetIdx]!;
-
-    if (!target.prNumber) {
-      p.log.info(`${pc.dim("⏭")} ${target.branch} — no PR, skipping`);
-      skipped++;
-      continue;
-    }
-
-    // Build stack visualization for this PR
-    const stackViz = buildStackViz(branchInfos, targetIdx, baseRef);
-
-    // Get current PR body and replace/append stack section
-    const currentBody = await getPrBody(target.prNumber);
-    if (currentBody === null) {
-      p.log.warn(`Could not fetch body for PR #${target.prNumber}`);
-      skipped++;
-      continue;
-    }
-
-    // Remove existing stack section
-    let updatedBody = currentBody;
-    const stackSectionIdx = updatedBody.indexOf("### 📚 Stacked on");
-    if (stackSectionIdx !== -1) {
-      updatedBody = updatedBody.slice(0, stackSectionIdx).trimEnd();
-    }
-
-    // Append new stack section
-    const newBody = updatedBody ? `${updatedBody}\n\n${stackViz}` : stackViz;
-
-    // Update PR
-    const ok = await updatePrBody(target.prNumber, newBody);
-    if (ok) {
-      p.log.success(`PR #${target.prNumber} ${target.prTitle}`);
-      updated++;
-    } else {
-      p.log.error(`Failed to update PR #${target.prNumber}`);
-    }
-  }
+  if (result.dirty) await writeMetadata(meta);
 
   console.log();
   p.outro(
     pc.green(
-      `Done! Updated ${updated} PR(s)${skipped > 0 ? `, skipped ${skipped} without PRs` : ""}`,
+      `Updated ${result.updated} PR(s)` +
+        (result.unchanged > 0 ? `, ${result.unchanged} unchanged` : "") +
+        (result.skipped > 0 ? `, ${result.skipped} without PRs` : ""),
     ),
   );
-}
-
-interface BranchPrInfo {
-  branch: string;
-  prNumber: number | null;
-  prTitle: string;
-  prUrl: string | null;
-  reviewEmojiStr: string;
 }
 
 export function buildStackViz(
@@ -209,7 +249,9 @@ export function buildStackViz(
     // Tree character
     const tree = isLast ? "┗━" : "┣━";
 
-    lines.push(`${tree} ${info.reviewEmojiStr} ${prLink} ${info.prTitle}${marker}`);
+    // Leading `N.` is the branch's 1-based position in the stack — makes it
+    // easy to tell which PR is #6 in a 12-PR stack at a glance.
+    lines.push(`${tree} ${i + 1}. ${prLink} ${info.prTitle}${marker}`);
 
     if (!isLast) {
       lines.push("┃");
@@ -218,4 +260,24 @@ export function buildStackViz(
 
   lines.push("</pre>");
   return lines.join("\n");
+}
+
+/** Run `fn` over `items` with at most `limit` concurrent in flight. */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = Array.from<R>({ length: items.length });
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]!, i);
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
 }

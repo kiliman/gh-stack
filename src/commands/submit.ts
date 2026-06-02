@@ -11,9 +11,9 @@ import {
 } from "../lib/metadata.ts";
 import { isAutoYes } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
-import { getPrNumber, getPrInfo, getPrBody, updatePrBody, reviewEmoji } from "../lib/github.ts";
+import { getPrNumber } from "../lib/github.ts";
 import { resolveOrCreateStack } from "../lib/chain.ts";
-import { buildStackViz, resolveBaseRef } from "./update-prs.ts";
+import { refreshStackViz, branchToTitle } from "./update-prs.ts";
 
 const HELP = `
 gh-stack submit — Push branches and create/update PRs
@@ -51,15 +51,6 @@ EXAMPLES
  * Strips common prefixes like "kiliman/", replaces hyphens with spaces,
  * and capitalizes the first letter.
  */
-function branchToTitle(branch: string): string {
-  // Strip common prefixes like "kiliman/", "user/"
-  let name = branch.includes("/") ? branch.split("/").slice(1).join("/") : branch;
-  // Replace hyphens with spaces
-  name = name.replace(/-/g, " ");
-  // Capitalize first letter
-  return name.charAt(0).toUpperCase() + name.slice(1);
-}
-
 /**
  * Check if a local branch is up-to-date with its remote counterpart.
  */
@@ -258,16 +249,21 @@ export default async function submit(args: string[]): Promise<void> {
     }
 
     if (prNumber) {
-      // ── Existing PR: update base if needed ──
+      // ── Existing PR: update base only if the parent actually changed ──
       existing++;
       if (dryRun) {
         p.log.step(`${pc.dim("exists")} PR #${prNumber} for ${branchName}`);
       } else {
-        // Ensure the PR base is correct
-        try {
-          await $`gh pr edit ${prNumber} --base ${parentBranch}`.quiet();
-        } catch {
-          // Best effort — base might already be correct
+        // Skip the network round-trip when the base we last set still matches
+        // the current parent — the common case on a re-submit (issue #16).
+        if (branchMeta.prBase !== parentBranch) {
+          try {
+            await $`gh pr edit ${prNumber} --base ${parentBranch}`.quiet();
+            branchMeta.prBase = parentBranch;
+            metadataChanged = true;
+          } catch {
+            // Best effort — base might already be correct
+          }
         }
         p.log.info(`${pc.dim("✓")} PR #${prNumber} for ${pc.blue(branchName)}`);
       }
@@ -329,6 +325,8 @@ export default async function submit(args: string[]): Promise<void> {
 
           if (newPrNumber) {
             branchMeta.pr = newPrNumber;
+            branchMeta.prTitle = title;
+            branchMeta.prBase = parentBranch;
             metadataChanged = true;
             s.stop(`Created PR #${newPrNumber} for ${pc.blue(branchName)}`);
           } else {
@@ -344,11 +342,6 @@ export default async function submit(args: string[]): Promise<void> {
     }
   }
 
-  // Save metadata if we discovered or created PRs
-  if (metadataChanged && !dryRun) {
-    await writeMetadata(meta);
-  }
-
   console.log();
 
   if (dryRun) {
@@ -360,78 +353,23 @@ export default async function submit(args: string[]): Promise<void> {
     return;
   }
 
-  // ── Phase 2: Update stack visualization in all PR descriptions ──
+  // ── Phase 2: Refresh the stack visualization (renders locally, PATCHes only
+  // the PRs whose block actually changed; see issue #16). ──
   p.log.info(pc.cyan("Updating stack visualization..."));
+  const viz = await refreshStackViz(meta, stack, ordered);
 
-  // Collect PR info for ALL branches in the stack (not just scope)
-  interface BranchPrInfo {
-    branch: string;
-    prNumber: number | null;
-    prTitle: string;
-    prUrl: string | null;
-    reviewEmojiStr: string;
-  }
-
-  const branchInfos: BranchPrInfo[] = [];
-
-  for (const branchName of ordered) {
-    const branchMeta = stack.branches[branchName]!;
-    const prNum = branchMeta.pr ?? null;
-    let prTitle = branchMeta.description || branchName;
-    let prUrl: string | null = null;
-    let review = "PENDING";
-
-    if (prNum) {
-      const info = await getPrInfo(prNum);
-      if (info) {
-        prTitle = info.title || prTitle;
-        prUrl = info.url;
-        review = info.reviewDecision || "PENDING";
-      }
-    }
-
-    branchInfos.push({
-      branch: branchName,
-      prNumber: prNum,
-      prTitle,
-      prUrl,
-      reviewEmojiStr: reviewEmoji(review),
-    });
-  }
-
-  // Update each PR that has a number
-  let vizUpdated = 0;
-
-  const baseRef = await resolveBaseRef(meta, stack);
-
-  for (let i = 0; i < branchInfos.length; i++) {
-    const info = branchInfos[i]!;
-    if (!info.prNumber) continue;
-
-    const stackViz = buildStackViz(branchInfos, i, baseRef);
-
-    const currentBody = await getPrBody(info.prNumber);
-    if (currentBody === null) continue;
-
-    // Remove existing stack section
-    let updatedBody = currentBody;
-    const stackSectionIdx = updatedBody.indexOf("### 📚 Stacked on");
-    if (stackSectionIdx !== -1) {
-      updatedBody = updatedBody.slice(0, stackSectionIdx).trimEnd();
-    }
-
-    // Append new stack section
-    const newBody = updatedBody ? `${updatedBody}\n\n${stackViz}` : stackViz;
-
-    const ok = await updatePrBody(info.prNumber, newBody);
-    if (ok) vizUpdated++;
+  // One persist for everything we cached this run (discovered PRs, base edits,
+  // backfilled titles, viz hashes).
+  if (metadataChanged || viz.dirty) {
+    await writeMetadata(meta);
   }
 
   // ── Summary ──
   console.log();
   p.outro(
     pc.green(
-      `Done! Pushed ${pushed} branch(es), created ${created} PR(s), updated ${vizUpdated} description(s)`,
+      `Done! Pushed ${pushed} branch(es), created ${created} PR(s), updated ${viz.updated} description(s)` +
+        (viz.unchanged > 0 ? `, ${viz.unchanged} unchanged` : ""),
     ),
   );
 }

@@ -1,7 +1,13 @@
-// gh-stack metadata schema (v2)
+// gh-stack metadata schema.
+//
+// `StackMetadata` is the in-memory shape shared by every command. Its on-disk
+// representation has evolved (v1 monolith → v2 monolith → v3 per-stack files +
+// git branch config), but the in-memory object stays stable so commands never
+// need to know which storage version produced it. `version` reflects the
+// store the object was assembled from.
 
 export interface StackMetadata {
-  version: 2;
+  version: 2 | 3;
   current_stack: string | null;
   stacks: Record<string, Stack>;
   archive?: Record<string, Stack>;
@@ -30,6 +36,7 @@ export interface Snapshot {
   timestamp: string; // ISO 8601
   operation: string; // "restack" | "merge" | "sync" | "remove"
   branches: Record<string, string>; // branch name -> commit SHA
+  stack?: string; // owning stack (v3: drives per-stack retention + file naming)
 }
 
 // Resume state for restack --resume

@@ -5,6 +5,7 @@ import * as git from "../lib/git.ts";
 import {
   readMetadata,
   metadataExists,
+  legacyMetadataExists,
   getOrderedBranches,
   findStackForBranch,
 } from "../lib/metadata.ts";
@@ -31,6 +32,12 @@ Progress/spinner output goes to stderr so stdout stays clean for piping.
 
   const jsonMode = args.includes("--json");
   const currentOnly = args.includes("--current");
+
+  // Read-only command, so don't hard-block — but if v2 metadata hasn't been
+  // migrated, stacks won't be grouped. Nudge to stderr (keeps stdout/JSON clean).
+  if (!(await metadataExists()) && (await legacyMetadataExists())) {
+    process.stderr.write("Note: stack metadata is unmigrated (v2). Run `gh-stack doctor`.\n");
+  }
 
   // Progress goes to stderr so stdout is clean for agents
   process.stderr.write("Fetching open PRs...\n");

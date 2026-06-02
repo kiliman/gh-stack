@@ -85,25 +85,124 @@ export async function isAncestor(
   return exitCode === 0;
 }
 
+// ── v3 metadata layout (mirrors src/lib/metadata.ts + paths.ts) ──
+//
+// Tests run the real CLI against temp repos, so the helper has to produce the
+// same on-disk shape the CLI reads: per-stack files under .git/.gh-stack/,
+// plus a `current` hint. Branch config is intentionally NOT written here — the
+// CLI reconciles it on the next write, and reads assemble topology from files.
+
+function ghStackBase(dir: string): string {
+  return `${dir}/.git/.gh-stack`;
+}
+
+function stackFileName(name: string): string {
+  return `${encodeURIComponent(name)}.json`;
+}
+
+function stackNameFromFile(file: string): string {
+  return decodeURIComponent(file.replace(/\.json$/, ""));
+}
+
+function serializeStack(stack: StackMetadata["stacks"][string]): string {
+  return (
+    JSON.stringify(
+      {
+        description: stack.description,
+        last_branch: stack.last_branch,
+        base: stack.base ?? "main",
+        branches: stack.branches,
+      },
+      null,
+      2,
+    ) + "\n"
+  );
+}
+
 /**
- * Write metadata directly to a temp repo's .git dir.
+ * Write metadata directly to a temp repo in the v3 on-disk layout.
  */
 export async function writeMetadata(dir: string, meta: StackMetadata): Promise<void> {
-  await Bun.write(`${dir}/.git/gh-stack-metadata.json`, JSON.stringify(meta, null, 2) + "\n");
+  const base = ghStackBase(dir);
+  await fs.mkdir(`${base}/active`, { recursive: true });
+  await fs.mkdir(`${base}/archived`, { recursive: true });
+  await fs.mkdir(`${base}/snapshots`, { recursive: true });
+
+  await Bun.write(`${base}/current`, (meta.current_stack ?? "") + "\n");
+
+  for (const [name, stack] of Object.entries(meta.stacks)) {
+    await Bun.write(`${base}/active/${stackFileName(name)}`, serializeStack(stack));
+  }
+  for (const [name, stack] of Object.entries(meta.archive ?? {})) {
+    await Bun.write(`${base}/archived/${stackFileName(name)}`, serializeStack(stack));
+  }
+  for (const snap of meta.snapshots ?? []) {
+    const ts = snap.timestamp.replace(/[:.]/g, "-");
+    const fname = `${ts}__${encodeURIComponent(snap.stack ?? "")}.json`;
+    await Bun.write(`${base}/snapshots/${fname}`, JSON.stringify(snap, null, 2) + "\n");
+  }
+}
+
+async function readStackDir(dir: string): Promise<StackMetadata["stacks"]> {
+  const out: StackMetadata["stacks"] = {};
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return out;
+  }
+  for (const file of entries) {
+    if (!file.endsWith(".json")) continue;
+    out[stackNameFromFile(file)] = await Bun.file(`${dir}/${file}`).json();
+  }
+  return out;
 }
 
 /**
- * Read metadata from a temp repo.
+ * Read metadata from a temp repo, assembling the v3 layout into the in-memory
+ * shape (matches what the CLI's readMetadata returns).
  */
 export async function readMetadata(dir: string): Promise<StackMetadata> {
-  return Bun.file(`${dir}/.git/gh-stack-metadata.json`).json();
+  const base = ghStackBase(dir);
+
+  let current: string | null = null;
+  try {
+    const text = (await Bun.file(`${base}/current`).text()).trim();
+    current = text.length > 0 ? text : null;
+  } catch {
+    current = null;
+  }
+
+  const stacks = await readStackDir(`${base}/active`);
+  const archive = await readStackDir(`${base}/archived`);
+
+  const loaded: NonNullable<StackMetadata["snapshots"]> = [];
+  try {
+    for (const file of await fs.readdir(`${base}/snapshots`)) {
+      if (!file.endsWith(".json")) continue;
+      loaded.push(await Bun.file(`${base}/snapshots/${file}`).json());
+    }
+  } catch {
+    // no snapshots dir
+  }
+  const snapshots = loaded.toSorted((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+  const meta: StackMetadata = { version: 3, current_stack: current, stacks };
+  if (Object.keys(archive).length > 0) meta.archive = archive;
+  if (snapshots.length > 0) meta.snapshots = snapshots;
+  return meta;
 }
 
 /**
- * Check if metadata file exists.
+ * Check if v3 metadata exists in a temp repo.
  */
 export async function metadataExists(dir: string): Promise<boolean> {
-  return Bun.file(`${dir}/.git/gh-stack-metadata.json`).exists();
+  try {
+    await fs.stat(ghStackBase(dir));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

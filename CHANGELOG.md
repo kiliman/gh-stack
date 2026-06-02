@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0
+
+> **Metadata is now a folder, not a file.** The single `.git/gh-stack-metadata.json` monolith is replaced by per-stack files under `.git/.gh-stack/` plus git-native branch config. This removes whole classes of bugs structurally — stacks vanishing on merge, `current_stack` drift, snapshot-array churn — rather than patching them one at a time. Run `gh-stack doctor` once to migrate.
+
+### ✨ Features
+- **`gh-stack doctor`** ([#14](https://github.com/kiliman/gh-stack/issues/14)) — migrates old (v2) metadata to the v3 layout, reconciles git branch config against the topology files, and flags stacks whose base stack appears already-merged into main. Idempotent; safe to run repeatedly.
+- **v3 metadata layout** ([#14](https://github.com/kiliman/gh-stack/issues/14)) — metadata moves from one JSON blob to a folder under `.git/.gh-stack/`:
+  - **Per-stack files** (`active/<stack>.json`, `archived/`, `deleted/`) — a bad write can't corrupt other stacks, and lifecycle transitions are atomic file moves. A stale stack file is **tombstoned** to `deleted/`, never just unlinked, so a stack can't silently vanish (the root cause of [#13](https://github.com/kiliman/gh-stack/issues/13)'s metadata wipe).
+  - **Git-native branch membership** — each branch records its stack/parent/PR in git config (`branch.<name>.ghstack-stack` / `-parent` / `-pr`). `git branch -m` moves the config, `git branch -D` deletes it — rename/delete tracking for free, and the current stack is derivable from the branch you're on (no `current_stack` drift).
+  - **Append-only snapshots** retained **per-stack** — a busy stack can no longer evict a dependent stack's only recorded tip (the staleness behind [#1](https://github.com/kiliman/gh-stack/issues/1)/[#13](https://github.com/kiliman/gh-stack/issues/13)).
+
+### 🛡️ Guards
+- Commands refuse to run on unmigrated v2 metadata and point you at `gh-stack doctor` (read-only `status` only nudges, so it stays pipeable).
+
+### 🔁 Migration
+- One-time `v2 → v3` via `gh-stack doctor`: fans the monolith out into per-stack files, backfills branch config, explodes `snapshots[]` into per-file records, and keeps a `.bak` of the old file. Fresh repos (`gh-stack init`) start on v3 directly.
+
 ## 0.8.0
 
 > **Stacks can now be based on a branch, not just main.** New `gh-stack split` cuts a long chain into independent stacks; `gh-stack restack --onto` re-roots a stack onto a new base.

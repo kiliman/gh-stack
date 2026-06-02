@@ -1,72 +1,135 @@
-// Read/write/validate .git/gh-stack-metadata.json
-import type { StackMetadata, StackMetadataV1, Stack, Branch, RestackState } from "../types.ts";
-import { gitDir } from "./git.ts";
+// v3 metadata: assemble from / fan out to `.git/.gh-stack/`.
+//
+// The in-memory `StackMetadata` shape is unchanged from v2 — every command
+// still reads `meta.stacks[...]` / `meta.current_stack` and calls
+// `writeMetadata(meta)`. Only the on-disk representation changed: instead of
+// one monolithic JSON file, each stack is its own file and per-branch
+// membership additionally lives in git config (see ./branch-config.ts).
+//
+// Two structural guarantees fall out of per-stack files:
+//   • A bad write can't corrupt other stacks (no all-or-nothing blast radius).
+//   • A stack can never silently vanish — on write, a stale stack file is moved
+//     to `deleted/` (a recoverable tombstone), never just unlinked.
+import type { StackMetadata, Stack, Branch, RestackState } from "../types.ts";
+import { mkdir, readdir, rename, unlink, stat } from "node:fs/promises";
+import {
+  ghStackDir,
+  activeDir,
+  archivedDir,
+  deletedDir,
+  snapshotsDir,
+  currentFile,
+  restackStateFile,
+  legacyMetadataPath,
+  stackFileName,
+  stackNameFromFile,
+} from "./paths.ts";
+import {
+  allBranchMemberships,
+  setBranchMembership,
+  clearBranchMembership,
+  type BranchMembership,
+} from "./branch-config.ts";
+import { loadSnapshots } from "./snapshot.ts";
 
-let cachedGitDir: string | null = null;
-
-async function getGitDir(): Promise<string> {
-  if (!cachedGitDir) {
-    cachedGitDir = await gitDir();
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
   }
-  return cachedGitDir;
+}
+
+/** Create the `.gh-stack/` folder and its subdirectories if missing. */
+async function ensureDirs(): Promise<void> {
+  for (const dir of [
+    await activeDir(),
+    await archivedDir(),
+    await deletedDir(),
+    await snapshotsDir(),
+  ]) {
+    await mkdir(dir, { recursive: true });
+  }
+}
+
+/** True if the v3 store (`.git/.gh-stack/`) exists. */
+export async function v3Exists(): Promise<boolean> {
+  return pathExists(await ghStackDir());
+}
+
+/** True if the legacy v2 monolith exists and hasn't been migrated yet. */
+export async function legacyMetadataExists(): Promise<boolean> {
+  return Bun.file(await legacyMetadataPath()).exists();
 }
 
 /**
- * Get the path to the metadata file.
- */
-export async function metadataPath(): Promise<string> {
-  const dir = await getGitDir();
-  return `${dir}/gh-stack-metadata.json`;
-}
-
-/**
- * Get the path to the restack state file.
- */
-export async function restackStatePath(): Promise<string> {
-  const dir = await getGitDir();
-  return `${dir}/.gh-stack-sync-state`;
-}
-
-/**
- * Check if metadata file exists.
+ * Whether usable metadata exists. In v3 this means the `.gh-stack/` store is
+ * present. (A bare legacy file is intentionally NOT counted — it must be
+ * migrated via `gh-stack doctor` first; the gate in safety.ts surfaces that.)
  */
 export async function metadataExists(): Promise<boolean> {
-  const path = await metadataPath();
-  return Bun.file(path).exists();
+  return v3Exists();
+}
+
+export async function restackStatePath(): Promise<string> {
+  return restackStateFile();
 }
 
 /**
- * Read and parse metadata, with auto-migration from v1.
- * Returns null if file doesn't exist.
+ * Read one directory of `<stack>.json` files into a name→Stack map. Files that
+ * fail to parse are skipped (doctor reports them) rather than aborting a read.
  */
-export async function readMetadata(): Promise<StackMetadata | null> {
-  const path = await metadataPath();
-  const file = Bun.file(path);
+async function readStackDir(dir: string): Promise<Record<string, Stack>> {
+  const out: Record<string, Stack> = {};
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return out;
+  }
+  for (const file of entries) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const stack = (await Bun.file(`${dir}/${file}`).json()) as Stack;
+      out[stackNameFromFile(file)] = stack;
+    } catch {
+      // Malformed stack file — skip; `doctor` will flag it.
+    }
+  }
+  return out;
+}
 
-  if (!(await file.exists())) {
+async function readCurrent(): Promise<string | null> {
+  try {
+    const text = (await Bun.file(await currentFile()).text()).trim();
+    return text.length > 0 ? text : null;
+  } catch {
     return null;
   }
+}
 
-  const raw = await file.json();
+/**
+ * Read and assemble metadata from `.git/.gh-stack/`.
+ * Returns null if the store doesn't exist.
+ */
+export async function readMetadata(): Promise<StackMetadata | null> {
+  if (!(await v3Exists())) return null;
+  await ensureDirs();
 
-  // Auto-migrate v1 -> v2
-  if (!raw.version) {
-    const v1 = raw as StackMetadataV1;
-    const v2: StackMetadata = {
-      version: 2,
-      current_stack: v1.current_stack,
-      stacks: v1.stacks,
-    };
-    backfillStackBase(v2);
-    await writeMetadata(v2);
-    return v2;
-  }
+  const stacks = await readStackDir(await activeDir());
+  const archive = await readStackDir(await archivedDir());
+  const current = await readCurrent();
+  const snapshots = await loadSnapshots();
 
-  // Backfill `base` in-memory for stacks written before the split feature.
-  // We deliberately do NOT persist here — reads must not mutate the file (it
-  // would break dry-run invariants). The default is re-applied on every read,
-  // and `stackBase()` falls back to "main" regardless, so callers are safe.
-  const meta = raw as StackMetadata;
+  const meta: StackMetadata = {
+    version: 3,
+    current_stack: current,
+    stacks,
+  };
+  if (Object.keys(archive).length > 0) meta.archive = archive;
+  if (snapshots.length > 0) meta.snapshots = snapshots;
+
   backfillStackBase(meta);
   return meta;
 }
@@ -79,34 +142,127 @@ export function stackBase(stack: Stack): string {
   return stack.base ?? "main";
 }
 
-/**
- * Ensure every stack has an explicit `base`. Returns true if anything changed.
- */
-function backfillStackBase(meta: StackMetadata): boolean {
-  let changed = false;
+/** Ensure every stack has an explicit `base` (in-memory only). */
+function backfillStackBase(meta: StackMetadata): void {
   for (const stack of Object.values(meta.stacks)) {
-    if (stack.base == null) {
-      stack.base = "main";
-      changed = true;
+    if (stack.base == null) stack.base = "main";
+  }
+  for (const stack of Object.values(meta.archive ?? {})) {
+    if (stack.base == null) stack.base = "main";
+  }
+}
+
+function serializeStack(stack: Stack): string {
+  const out: Stack = {
+    description: stack.description,
+    last_branch: stack.last_branch,
+    base: stackBase(stack),
+    branches: stack.branches,
+  };
+  return JSON.stringify(out, null, 2) + "\n";
+}
+
+/**
+ * Fan `meta` out to disk: write each active/archived stack to its own file,
+ * tombstone any stack file that's no longer present, and reconcile git branch
+ * config to match active membership.
+ */
+export async function writeMetadata(meta: StackMetadata): Promise<void> {
+  await ensureDirs();
+
+  // 1. current hint
+  await Bun.write(await currentFile(), (meta.current_stack ?? "") + "\n");
+
+  const aDir = await activeDir();
+  const arDir = await archivedDir();
+
+  // 2. write active + archived stack files (write desired state BEFORE
+  //    removing anything — that's what makes "can't vanish" hold).
+  for (const [name, stack] of Object.entries(meta.stacks)) {
+    await Bun.write(`${aDir}/${stackFileName(name)}`, serializeStack(stack));
+  }
+  for (const [name, stack] of Object.entries(meta.archive ?? {})) {
+    await Bun.write(`${arDir}/${stackFileName(name)}`, serializeStack(stack));
+  }
+
+  // 3. reconcile stale files. A name that moved to the other category (active
+  //    ↔ archived) is just unlinked here; one that left both is tombstoned.
+  const activeNames = new Set(Object.keys(meta.stacks));
+  const archivedNames = new Set(Object.keys(meta.archive ?? {}));
+  await reconcileStale(aDir, activeNames, (name) => archivedNames.has(name));
+  await reconcileStale(arDir, archivedNames, (name) => activeNames.has(name));
+
+  // 4. mirror active membership into git config
+  await syncBranchConfig(meta);
+}
+
+/**
+ * Remove stack files in `dir` whose names aren't in `keep`. A file whose name
+ * lives in the other lifecycle bucket (`movedElsewhere`) is unlinked; anything
+ * else is moved to `deleted/` as a recoverable tombstone.
+ */
+async function reconcileStale(
+  dir: string,
+  keep: Set<string>,
+  movedElsewhere: (name: string) => boolean,
+): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return;
+  }
+  for (const file of entries) {
+    if (!file.endsWith(".json")) continue;
+    const name = stackNameFromFile(file);
+    if (keep.has(name)) continue;
+
+    const from = `${dir}/${file}`;
+    if (movedElsewhere(name)) {
+      await unlink(from).catch(() => {});
+    } else {
+      // Tombstone rather than delete — a stack must never just disappear.
+      const to = `${await deletedDir()}/${file}`;
+      await rename(from, to).catch(() => unlink(from).catch(() => {}));
     }
   }
-  return changed;
 }
 
 /**
- * Write metadata to disk.
+ * Reconcile git branch config so it exactly mirrors active-stack membership.
+ * Only branches whose recorded membership differs are touched, to avoid
+ * shelling out to `git config` for every branch on every write.
  */
-export async function writeMetadata(data: StackMetadata): Promise<void> {
-  const path = await metadataPath();
-  await Bun.write(path, JSON.stringify(data, null, 2) + "\n");
+async function syncBranchConfig(meta: StackMetadata): Promise<void> {
+  const desired = new Map<string, BranchMembership>();
+  for (const [stackName, stack] of Object.entries(meta.stacks)) {
+    for (const [branchName, b] of Object.entries(stack.branches)) {
+      desired.set(branchName, { stack: stackName, parent: b.parent, pr: b.pr });
+    }
+  }
+
+  const existing = await allBranchMemberships();
+
+  for (const [branch, m] of desired) {
+    const cur = existing.get(branch);
+    if (!cur || cur.stack !== m.stack || cur.parent !== m.parent || cur.pr !== m.pr) {
+      await setBranchMembership(branch, m);
+    }
+  }
+
+  // Branches that still carry gh-stack config but are no longer active members.
+  for (const branch of existing.keys()) {
+    if (!desired.has(branch)) await clearBranchMembership(branch);
+  }
 }
 
 /**
- * Initialize an empty metadata file.
+ * Initialize an empty v3 store.
  */
 export async function initMetadata(): Promise<StackMetadata> {
+  await ensureDirs();
   const data: StackMetadata = {
-    version: 2,
+    version: 3,
     current_stack: null,
     stacks: {},
   };
@@ -215,6 +371,11 @@ export async function removeBranchFromStack(
   // Remove the branch
   delete stack.branches[branchName];
 
+  // The removed branch may still exist in git but is no longer a member —
+  // drop its membership config explicitly (syncBranchConfig also would, but
+  // be direct since the branch is gone from `meta`).
+  await clearBranchMembership(branchName);
+
   // Update last_branch if it was the removed one
   if (stack.last_branch === branchName) {
     const remaining = Object.keys(stack.branches);
@@ -305,8 +466,8 @@ export async function updateLastBranch(
  * Save restack state for resume.
  */
 export async function saveRestackState(state: RestackState): Promise<void> {
-  const path = await restackStatePath();
-  await Bun.write(path, JSON.stringify(state, null, 2) + "\n");
+  await ensureDirs();
+  await Bun.write(await restackStateFile(), JSON.stringify(state, null, 2) + "\n");
 }
 
 /**
@@ -314,13 +475,10 @@ export async function saveRestackState(state: RestackState): Promise<void> {
  * Returns null if no state file exists.
  */
 export async function loadRestackState(): Promise<RestackState | null> {
-  const path = await restackStatePath();
-  const file = Bun.file(path);
-
+  const file = Bun.file(await restackStateFile());
   if (!(await file.exists())) {
     return null;
   }
-
   return file.json();
 }
 
@@ -328,11 +486,8 @@ export async function loadRestackState(): Promise<RestackState | null> {
  * Clear restack state file.
  */
 export async function clearRestackState(): Promise<void> {
-  const path = await restackStatePath();
-  const file = Bun.file(path);
-
-  if (await file.exists()) {
-    const { unlink } = await import("node:fs/promises");
-    await unlink(path);
+  const path = await restackStateFile();
+  if (await Bun.file(path).exists()) {
+    await unlink(path).catch(() => {});
   }
 }

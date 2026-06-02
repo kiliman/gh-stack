@@ -1,6 +1,12 @@
 // Pre-flight safety checks
 import * as git from "./git.ts";
-import { metadataExists, readMetadata, findStackForBranch, stackBase } from "./metadata.ts";
+import {
+  metadataExists,
+  legacyMetadataExists,
+  readMetadata,
+  findStackForBranch,
+  stackBase,
+} from "./metadata.ts";
 import type { StackMetadata, Stack } from "../types.ts";
 import * as p from "./output.ts";
 import pc from "picocolors";
@@ -16,10 +22,26 @@ export async function ensureGitRepo(): Promise<void> {
 }
 
 /**
- * Ensure metadata file exists. Returns the metadata.
+ * If no v3 store exists but a legacy v2 monolith does, halt and point the user
+ * at `gh-stack doctor`. Call this from any command that checks for metadata
+ * directly (i.e. doesn't go through ensureMetadata) so the migration gate is
+ * uniform. No-op when there's no legacy file to migrate.
  */
+export async function gateLegacyMetadata(): Promise<void> {
+  if (await metadataExists()) return;
+  if (await legacyMetadataExists()) {
+    p.cancel(
+      `Stack metadata is in the old format and needs migrating.\n\n  Run:\n    ${pc.green("gh-stack doctor")}`,
+    );
+    process.exit(1);
+  }
+}
+
 export async function ensureMetadata(): Promise<StackMetadata> {
   if (!(await metadataExists())) {
+    // A v2 monolith still on disk means this repo predates v3 — gate behind an
+    // explicit one-time migration rather than silently reading the old format.
+    await gateLegacyMetadata();
     p.cancel(
       `No stack metadata found.\n\n  Create your first stack with:\n    ${pc.green("gh-stack init")}`,
     );
@@ -142,7 +164,7 @@ export async function ensureValidStack(meta: StackMetadata, stackName: string): 
   }
   console.log();
   console.log(
-    pc.dim("Fix .git/gh-stack-metadata.json or repair the local branches before retrying."),
+    pc.dim(`Repair the local branches, or run ${pc.green("gh-stack doctor")}, before retrying.`),
   );
   process.exit(1);
 }

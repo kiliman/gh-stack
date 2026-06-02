@@ -8,6 +8,7 @@ import {
   createTempRepo,
   getCurrentBranch,
   makeCommit,
+  metadataExists,
   readMetadata,
   writeMetadata,
 } from "./helpers.ts";
@@ -89,12 +90,12 @@ describe("init (smart defaults)", () => {
     await createBranch(tmpDir, "feature-1", "main");
     await makeCommit(tmpDir, "f1.txt", "feature 1\n", "add feature 1");
 
-    const exists = await Bun.file(`${tmpDir}/.git/gh-stack-metadata.json`).exists();
+    const exists = await metadataExists(tmpDir);
     expect(exists).toBe(false);
 
     await init([]);
 
-    const existsAfter = await Bun.file(`${tmpDir}/.git/gh-stack-metadata.json`).exists();
+    const existsAfter = await metadataExists(tmpDir);
     expect(existsAfter).toBe(true);
   });
 

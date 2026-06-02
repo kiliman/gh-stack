@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { checkout, cleanup, createLinearStack, createTempRepo, readMetadata } from "./helpers.ts";
+import {
+  checkout,
+  cleanup,
+  createLinearStack,
+  createTempRepo,
+  readMetadata,
+  writeMetadata,
+} from "./helpers.ts";
 
 const cliPath = new URL("../index.ts", import.meta.url).pathname;
 
@@ -76,7 +83,7 @@ describe("CLI entrypoint", () => {
   test("rejects destructive commands when stack metadata is invalid", async () => {
     const { meta } = await createLinearStack(tmpDir);
     meta.stacks["test-stack"]!.branches["pr3"]!.parent = "ghost-parent";
-    await Bun.write(`${tmpDir}/.git/gh-stack-metadata.json`, JSON.stringify(meta, null, 2) + "\n");
+    await writeMetadata(tmpDir, meta);
     await checkout(tmpDir, "pr2");
 
     const result = await runCli(["restack", "--dry-run"]);

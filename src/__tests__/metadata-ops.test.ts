@@ -316,9 +316,9 @@ describe("validateStack", () => {
 // ────────────────────────────────────────────────────────
 
 describe("metadata migration", () => {
-  test("v1 metadata (no version field) gets migrated to v2", async () => {
-    // Write v1 metadata (no version field)
-    const v1 = {
+  test("doctor migrates a legacy (v1/v2) monolith to the v3 store", async () => {
+    // Write a v1 monolith (no version field) directly to the legacy path.
+    const legacy = {
       current_stack: "old-stack",
       stacks: {
         "old-stack": {
@@ -331,16 +331,22 @@ describe("metadata migration", () => {
       },
     };
 
-    await Bun.write(`${tmpDir}/.git/gh-stack-metadata.json`, JSON.stringify(v1, null, 2));
+    await Bun.write(`${tmpDir}/.git/gh-stack-metadata.json`, JSON.stringify(legacy, null, 2));
 
-    // Import and read — should auto-migrate
-    // We need to reset the cached git dir since we're in a different repo
+    // doctor performs the migration (auto-migration on read was removed in v3).
+    const { default: doctor } = await import("../commands/doctor.ts");
+    await doctor([]);
+
     const mod = await import("../lib/metadata.ts");
     const result = await mod.readMetadata();
 
     expect(result).not.toBeNull();
-    expect(result!.version).toBe(2);
+    expect(result!.version).toBe(3);
     expect(result!.current_stack).toBe("old-stack");
     expect(result!.stacks["old-stack"]!.branches["pr1"]!.parent).toBe("main");
+
+    // Legacy monolith is retired to a .bak, not left in place.
+    expect(await Bun.file(`${tmpDir}/.git/gh-stack-metadata.json`).exists()).toBe(false);
+    expect(await Bun.file(`${tmpDir}/.git/gh-stack-metadata.json.bak`).exists()).toBe(true);
   });
 });

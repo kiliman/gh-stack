@@ -9,10 +9,12 @@ import {
   writeMetadata,
 } from "../lib/metadata.ts";
 import { renderStackTree } from "../lib/ui.ts";
+import { gateLegacyMetadata } from "../lib/safety.ts";
 
 export default async function log(_args: string[]): Promise<void> {
   // Check if metadata exists
   if (!(await metadataExists())) {
+    await gateLegacyMetadata(); // exits with a migrate hint if a v2 file remains
     p.log.warn("No stack metadata found");
     console.log();
     console.log(`  Create your first stack with:`);

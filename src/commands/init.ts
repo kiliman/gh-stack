@@ -13,6 +13,7 @@ import {
 import { getPrNumber } from "../lib/github.ts";
 import { isAutoYes } from "../lib/ui.ts";
 import { detectBranchChain } from "../lib/chain.ts";
+import { gateLegacyMetadata } from "../lib/safety.ts";
 import type { StackMetadata, Branch } from "../types.ts";
 
 const HELP = `
@@ -71,6 +72,8 @@ export default async function init(args: string[]): Promise<void> {
   if (await metadataExists()) {
     meta = (await readMetadata())!;
   } else {
+    // Don't create a fresh v3 store on top of an unmigrated v2 file.
+    await gateLegacyMetadata();
     meta = await initMetadata();
   }
 

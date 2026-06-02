@@ -2,7 +2,7 @@
 
 Stacked PR manager for squash-merge workflows.
 
-Manages stacked pull requests with metadata stored in `.git/gh-stack-metadata.json`. Designed for repositories that use squash-merge (where tools like Graphite break down). Inspired by [Graphite](https://graphite.dev/) (`gt`) but works directly against GitHub — no backend required.
+Manages stacked pull requests with metadata stored locally under `.git/.gh-stack/` (never committed). Designed for repositories that use squash-merge (where tools like Graphite break down). Inspired by [Graphite](https://graphite.dev/) (`gt`) but works directly against GitHub — no backend required.
 
 ## Install
 
@@ -198,6 +198,11 @@ undo
 
 archive [--restore <name>]
     List archived stacks by default, or restore one by name.
+
+doctor
+    Migrate old (v2) metadata to the v3 layout, reconcile git branch
+    config against the topology files, and flag stacks whose base
+    stack appears already-merged into main. Safe to run repeatedly.
 ```
 
 ## Global Options
@@ -246,36 +251,65 @@ Snapshots also power `gh-stack undo`, so the same data structure does double dut
 ┗━ ⏳ #124 Frontend UI 👈
 ```
 
-### Metadata
+### Metadata (v3)
 
-Stack metadata lives at `.git/gh-stack-metadata.json` (never committed):
+Stack metadata lives under `.git/.gh-stack/` (never committed) — a folder of
+per-stack files plus git-native branch config, rather than a single JSON blob:
+
+```
+.git/.gh-stack/
+  current                      hint: last-active stack name
+  active/<stack>.json          topology of a live stack (ordered branches, base, description)
+  archived/<stack>.json        merged/closed stacks
+  deleted/<stack>.json         tombstones (recoverable)
+  snapshots/<ts>__<stack>.json append-only, retained per-stack
+  restack-state.json           in-flight restack/sync resume state
+```
+
+A single `active/<stack>.json` looks like:
 
 ```json
 {
-  "version": 2,
-  "current_stack": "kiliman/feature-2",
-  "stacks": {
-    "kiliman/feature-2": {
-      "description": "",
-      "last_branch": "kiliman/feature-2",
-      "branches": {
-        "kiliman/feature-1": {
-          "parent": "main",
-          "pr": 21729
-        },
-        "kiliman/feature-2": {
-          "parent": "kiliman/feature-1",
-          "pr": 21730
-        }
-      }
-    }
+  "description": "",
+  "last_branch": "kiliman/feature-2",
+  "base": "main",
+  "branches": {
+    "kiliman/feature-1": { "parent": "main", "pr": 21729 },
+    "kiliman/feature-2": { "parent": "kiliman/feature-1", "pr": 21730 }
   }
 }
 ```
 
+Per-branch membership is *also* recorded in git's own config, so renaming or
+deleting a branch updates/cleans it automatically:
+
+```
+branch.<name>.ghstack-stack   <stack>
+branch.<name>.ghstack-parent  <parent-branch>
+branch.<name>.ghstack-pr      <number>
+```
+
+The two representations cross-check each other; `gh-stack doctor` reconciles
+any drift. Why this shape:
+
+- **A stack can't silently vanish** — lifecycle transitions are file moves
+  (`active/ → archived/ → deleted/`), and a stale stack file is tombstoned, never
+  just unlinked.
+- **No `current_stack` drift** — the stack you're on is derivable from the
+  branch's own config, so a written pointer can't contradict reality.
+- **No all-or-nothing blast radius** — one bad write can't corrupt other stacks.
+
+#### Migrating from v2
+
+Repos created before v3 store a single `.git/gh-stack-metadata.json`. Run
+`gh-stack doctor` once — it fans the monolith out into the layout above,
+backfills branch config, explodes snapshots into per-file records, and keeps a
+`.bak` of the old file. Commands refuse to run on unmigrated metadata and point
+you at `doctor`.
+
 ### Snapshots
 
-Before any destructive operation (restack, sync, merge, delete), gh-stack saves a snapshot of all branch HEADs. Run `gh-stack undo` to restore.
+Before any destructive operation (restack, sync, merge, delete), gh-stack saves a snapshot of all branch HEADs as an append-only file under `snapshots/`, retained per-stack. Run `gh-stack undo` to restore.
 
 ## Example Workflow
 

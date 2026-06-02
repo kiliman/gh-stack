@@ -39,7 +39,7 @@ bun test                 # Run tests
 - Use `Bun.spawn` / `Bun.spawnSync` for git/gh commands
 - All user-facing output goes through `@clack/prompts` or `picocolors`
 - Never modify metadata without reading it fresh first (avoid stale state)
-- Metadata lives at `.git/gh-stack-metadata.json` (never committed)
+- Metadata lives under `.git/.gh-stack/` (v3: per-stack files + git branch config; never committed). The old v2 `.git/gh-stack-metadata.json` monolith is migrated by `gh-stack doctor`. See `src/lib/metadata.ts`, `src/lib/paths.ts`, `src/lib/branch-config.ts`.
 - All destructive operations (restack, merge, sync, remove) must take a snapshot first
 - Reject rebase operations if working tree is dirty (force user to stash/commit)
 - Never force-push main

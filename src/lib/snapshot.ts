@@ -1,7 +1,17 @@
-// Snapshot system for undo support and pre-rewrite base recovery
+// Snapshot system for undo support and pre-rewrite base recovery.
+//
+// v3 stores each snapshot as its own append-only file under
+// `.git/.gh-stack/snapshots/`, retained per-stack. This replaces the single
+// growing `snapshots[]` array of v2 — the array was rewritten on every command
+// (churn + a conflict magnet) and global trimming could evict a dependent
+// stack's only record while a busy sibling stack churned (see issue #13).
 import type { StackMetadata, Snapshot } from "../types.ts";
 import * as git from "./git.ts";
-import { writeMetadata, getOrderedBranches } from "./metadata.ts";
+import { getOrderedBranches } from "./metadata.ts";
+import { snapshotsDir } from "./paths.ts";
+import { mkdir, readdir, unlink } from "node:fs/promises";
+
+const MAX_SNAPSHOTS_PER_STACK = 10;
 
 /**
  * Find the pre-rewrite SHA for a parent branch by walking snapshots newest-first.
@@ -76,10 +86,54 @@ export async function findPreRewriteSha(
   return null;
 }
 
-const MAX_SNAPSHOTS = 10;
+// Snapshot files are named `<sortable-timestamp>__<encoded-stack>.json`. The
+// timestamp keeps colons/dots out of the filename (Windows-safe) while sorting
+// chronologically as a plain string; the stack name is URL-encoded so `/` in a
+// branch-derived name doesn't create subdirectories.
+function snapshotFileName(snapshot: Snapshot): string {
+  const ts = snapshot.timestamp.replace(/[:.]/g, "-");
+  return `${ts}__${encodeURIComponent(snapshot.stack ?? "")}.json`;
+}
+
+/** Write a fully-formed snapshot to its file. Used by takeSnapshot and the
+ * v2→v3 migration (which replays historical snapshots without touching git). */
+export async function writeSnapshotFile(snapshot: Snapshot): Promise<void> {
+  const dir = await snapshotsDir();
+  await mkdir(dir, { recursive: true });
+  await Bun.write(`${dir}/${snapshotFileName(snapshot)}`, JSON.stringify(snapshot, null, 2) + "\n");
+}
 
 /**
- * Take a snapshot of all branch HEADs in the current stack before a destructive operation.
+ * Load all snapshots from disk, oldest → newest. This populates
+ * `meta.snapshots` on read so the in-memory shape matches v2.
+ */
+export async function loadSnapshots(): Promise<Snapshot[]> {
+  const dir = await snapshotsDir();
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return [];
+  }
+
+  const snapshots: Snapshot[] = [];
+  for (const file of entries) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      snapshots.push((await Bun.file(`${dir}/${file}`).json()) as Snapshot);
+    } catch {
+      // Skip malformed snapshot files.
+    }
+  }
+
+  // ISO 8601 timestamps sort chronologically as strings.
+  return snapshots.toSorted((a, b) => a.timestamp.localeCompare(b.timestamp));
+}
+
+/**
+ * Take a snapshot of all branch HEADs in the current stack before a destructive
+ * operation. Writes one append-only file and trims that stack's history to the
+ * most recent N — sibling stacks are never touched.
  */
 export async function takeSnapshot(
   meta: StackMetadata,
@@ -104,21 +158,35 @@ export async function takeSnapshot(
     timestamp: new Date().toISOString(),
     operation,
     branches,
+    stack: stackName,
   };
 
-  if (!meta.snapshots) {
-    meta.snapshots = [];
-  }
+  await writeSnapshotFile(snapshot);
 
+  // Keep in-memory array consistent for callers that read it afterward.
+  if (!meta.snapshots) meta.snapshots = [];
   meta.snapshots.push(snapshot);
 
-  // Keep only the last N snapshots
-  if (meta.snapshots.length > MAX_SNAPSHOTS) {
-    meta.snapshots = meta.snapshots.slice(-MAX_SNAPSHOTS);
-  }
+  await gcStackSnapshots(stackName);
 
-  await writeMetadata(meta);
   return meta;
+}
+
+/** Trim a single stack's snapshot files to the most recent N. */
+async function gcStackSnapshots(stackName: string): Promise<void> {
+  const dir = await snapshotsDir();
+  const suffix = `__${encodeURIComponent(stackName)}.json`;
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return;
+  }
+  const mine = entries.filter((f) => f.endsWith(suffix)).toSorted(); // sortable ts prefix
+  const excess = mine.length - MAX_SNAPSHOTS_PER_STACK;
+  for (let i = 0; i < excess; i++) {
+    await unlink(`${dir}/${mine[i]!}`).catch(() => {});
+  }
 }
 
 /**
@@ -132,7 +200,7 @@ export function getLastSnapshot(meta: StackMetadata): Snapshot | null {
 }
 
 /**
- * Pop the last snapshot (remove it after restoring).
+ * Pop the last snapshot (remove it after restoring) — deletes its file too.
  */
 export async function popSnapshot(
   meta: StackMetadata,
@@ -142,6 +210,7 @@ export async function popSnapshot(
   }
 
   const snapshot = meta.snapshots.pop()!;
-  await writeMetadata(meta);
+  const dir = await snapshotsDir();
+  await unlink(`${dir}/${snapshotFileName(snapshot)}`).catch(() => {});
   return { meta, snapshot };
 }

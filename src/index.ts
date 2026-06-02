@@ -107,6 +107,10 @@ switch (command) {
     await (await import("./commands/undo.ts")).default(commandArgs);
     break;
 
+  case "doctor":
+    await (await import("./commands/doctor.ts")).default(commandArgs);
+    break;
+
   case "archive":
     await (await import("./commands/archive.ts")).default(commandArgs);
     break;
@@ -176,6 +180,7 @@ ${bold("INFO & MAINTENANCE")}
   ${green("status")}         PR dashboard (CI, reviews)
   ${green("undo")}           Restore from last snapshot
   ${green("archive")}        Manage archived stacks
+  ${green("doctor")}         Migrate & repair stack metadata
 
 ${bold("GLOBAL OPTIONS")}
   --yes, -y        Skip confirmations ${dim("(for agents/CI)")}

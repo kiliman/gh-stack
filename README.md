@@ -154,7 +154,9 @@ merge [--dry-run] [-d|--delete-branch] [--collapse]
     then enables auto-merge for the base PR into main. All merges
     happen on GitHub so PRs show as "Merged", Linear tickets close
     automatically, and GitHub Actions fire normally. Skips already-
-    merged PRs (safe to re-run). Waits for GitHub between merges.
+    merged PRs (safe to re-run). Waits for GitHub between merges, and
+    self-heals its spurious "Head branch is out of date" (a stale PR
+    head pointer after a child squash) by re-syncing and retrying.
     --collapse  Stop after collapsing the stack into the base PR;
                 leaves the base PR open against main so you can
                 review the cumulative diff on GitHub. Re-run
@@ -200,6 +202,12 @@ delete [<branch>] [-k|--keep-branch] [--no-remote]
 log
     Display the current stack as a tree with branch numbers,
     PR info, and descriptions. This is the default command.
+
+update-prs [--force]
+    Refresh the "📚 Stacked on" visualization block in every PR
+    description for the current stack. PRs whose rendered block is
+    unchanged are skipped; --force rewrites all of them. (submit does
+    this automatically — use this to refresh without pushing.)
 
 stacks [--current] [--json]
     List all stacks and their topology. Read-only and network-free —

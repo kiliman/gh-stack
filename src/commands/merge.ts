@@ -171,7 +171,10 @@ All merges happen on GitHub, so PRs show as "Merged", Linear tickets
 close automatically, and all GitHub Actions/webhooks fire normally.
 
 Skips PRs that are already merged (safe to re-run after partial failure).
-Waits for GitHub to process between merges if needed.
+Waits for GitHub to process between merges, and self-heals GitHub's
+spurious "Head branch is out of date" (a stale PR head pointer after a
+child squash) by re-syncing the branch and retrying — only a genuine
+conflict or failing required check is reported as a hard failure.
 
 OPTIONS
   -d, --delete-branch  Delete remote branches after merging

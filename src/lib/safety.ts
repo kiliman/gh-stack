@@ -72,6 +72,23 @@ export function ensureCurrentStack(meta: StackMetadata): string {
 }
 
 /**
+ * Resolve the stack to operate on from a branch argument. The branch names its
+ * own stack unambiguously, so commands that take a branch (split, delete) use
+ * this instead of trusting the current stack — letting `<cmd> <branch>` work
+ * from anywhere, not only while standing on that stack.
+ */
+export function resolveStackForBranchArg(meta: StackMetadata, branch: string): string {
+  const stackName = findStackForBranch(meta, branch);
+  if (!stackName) {
+    p.cancel(
+      `Branch ${pc.yellow(branch)} is not in any stack.\n\n  See your stacks with:\n    ${pc.green("gh-stack stacks")}`,
+    );
+    process.exit(1);
+  }
+  return stackName;
+}
+
+/**
  * Ensure current branch is in a stack. Returns the stack name.
  */
 export async function ensureBranchInStack(meta: StackMetadata): Promise<string> {

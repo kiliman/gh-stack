@@ -342,7 +342,10 @@ describe("metadata migration", () => {
 
     expect(result).not.toBeNull();
     expect(result!.version).toBe(3);
-    expect(result!.current_stack).toBe("old-stack");
+    // current_stack is derived from the checked-out branch, not carried over
+    // from the legacy file. We're on main (old-stack's pr1 branch doesn't even
+    // exist here), so there is no current stack.
+    expect(result!.current_stack).toBeNull();
     expect(result!.stacks["old-stack"]!.branches["pr1"]!.parent).toBe("main");
 
     // Legacy monolith is retired to a .bak, not left in place.

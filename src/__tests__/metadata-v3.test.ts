@@ -4,7 +4,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { $ } from "bun";
 import * as fs from "node:fs/promises";
 import type { StackMetadata } from "../types.ts";
-import { createTempRepo, createLinearStack, cleanup } from "./helpers.ts";
+import { createTempRepo, createLinearStack, checkout, cleanup } from "./helpers.ts";
 import { readMetadata, writeMetadata, v3Exists, initMetadata } from "../lib/metadata.ts";
 import {
   setBranchMembership,
@@ -78,6 +78,9 @@ describe("branch config", () => {
 describe("v3 storage", () => {
   test("writeMetadata fans out to per-stack files + branch config; readMetadata reassembles", async () => {
     await createLinearStack(tmpDir); // writes v3 directly via helper
+    // current_stack is derived from the checked-out branch — stand on a member
+    // so it resolves to test-stack (createLinearStack leaves you on main).
+    await checkout(tmpDir, "pr2");
 
     const meta = await readMetadata();
     expect(meta).not.toBeNull();
@@ -99,6 +102,44 @@ describe("v3 storage", () => {
     expect(files).toContain("test-stack.json");
     // Old monolith must not exist.
     expect(await Bun.file(`${tmpDir}/.git/gh-stack-metadata.json`).exists()).toBe(false);
+  });
+});
+
+// ── current_stack is derived from the branch, and self-heals on read ──
+
+describe("current stack derivation", () => {
+  const currentFilePath = () => `${tmpDir}/.git/.gh-stack/current`;
+
+  test("reading from a member branch resolves current to that stack", async () => {
+    await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr2");
+
+    const meta = await readMetadata();
+    expect(meta!.current_stack).toBe("test-stack");
+    expect((await Bun.file(currentFilePath()).text()).trim()).toBe("test-stack");
+  });
+
+  test("a stale current hint is cleared when the branch is in no stack", async () => {
+    // createLinearStack leaves the stored hint = "test-stack" but checks out
+    // main — a branch in no stack. The hint is now stale.
+    await createLinearStack(tmpDir);
+    expect((await Bun.file(currentFilePath()).text()).trim()).toBe("test-stack");
+
+    // Reading reconciles: no current stack, and the on-disk pointer is emptied.
+    const meta = await readMetadata();
+    expect(meta!.current_stack).toBeNull();
+    expect((await Bun.file(currentFilePath()).text()).trim()).toBe("");
+  });
+
+  test("a current hint pointing at the wrong stack is corrected to the branch's stack", async () => {
+    await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr3");
+    // Forge a hint that disagrees with where we're standing.
+    await Bun.write(currentFilePath(), "some-other-stack\n");
+
+    const meta = await readMetadata();
+    expect(meta!.current_stack).toBe("test-stack");
+    expect((await Bun.file(currentFilePath()).text()).trim()).toBe("test-stack");
   });
 });
 

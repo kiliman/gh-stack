@@ -31,6 +31,7 @@ import {
   type BranchMembership,
 } from "./branch-config.ts";
 import { loadSnapshots } from "./snapshot.ts";
+import * as git from "./git.ts";
 
 async function pathExists(p: string): Promise<boolean> {
   try {
@@ -136,7 +137,55 @@ export async function readMetadata(): Promise<StackMetadata | null> {
   // (which also repoints renamed branches' child config). Keeping reads
   // side-effect-free avoids surprising writes from `status`/`--dry-run`.
   await reconcileRenames(meta);
+  // The current stack is *derived* from the branch you're on, never trusted
+  // from the stored hint. Every read re-verifies it (and corrects the on-disk
+  // pointer) so no command can act on a stack you've already left.
+  await reconcileCurrentStack(meta);
   return meta;
+}
+
+/**
+ * Resolve and pin `meta.current_stack` to whichever active stack owns the
+ * checked-out branch — the single source of truth for "what stack am I on."
+ *
+ * Resolution, mirroring the on-disk authority order:
+ *   1. The branch's git config (`branch.<name>.ghstack-stack`) — rename-proof
+ *      membership — *if* the named stack is active and still lists the branch.
+ *   2. Otherwise scan the assembled active stacks for the branch by name.
+ *   3. Otherwise (branch in no stack, or HEAD detached) there is no current
+ *      stack → null.
+ *
+ * The resolved value is also written back to the `current` pointer file when it
+ * drifts, so a stale hint left by a prior session, a merge, or a plain
+ * `git checkout` self-heals on the very next command. Only the pointer file is
+ * touched — stack topology, refs, and snapshots are never written here, so this
+ * stays safe for read-only / `--dry-run` commands.
+ */
+async function reconcileCurrentStack(meta: StackMetadata): Promise<void> {
+  let branch: string | null = null;
+  try {
+    branch = await git.currentBranch();
+  } catch {
+    // Detached HEAD / not on a branch → no current stack.
+  }
+
+  let resolved: string | null = null;
+  if (branch) {
+    // 1. Trust branch config only if the topology still backs it up.
+    const config = await allBranchMemberships();
+    const configStack = config.get(branch)?.stack;
+    if (configStack && meta.stacks[configStack]?.branches[branch]) {
+      resolved = configStack;
+    } else {
+      // 2. Fall back to scanning the active stacks.
+      resolved = findStackForBranch(meta, branch);
+    }
+  }
+
+  if (meta.current_stack !== resolved) {
+    meta.current_stack = resolved;
+    await Bun.write(await currentFile(), (resolved ?? "") + "\n");
+  }
 }
 
 /**

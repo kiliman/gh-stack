@@ -3,10 +3,10 @@
 ## 0.10.1
 
 ### 🐛 Fixes
-- **The current stack is now consistently derived from the branch you're on — never a stale stored hint.** The invariant: a stack is "current" only while you're on a branch that belongs to it; stand on `main` or any branch in no stack and there is **no** current stack. Three places violated this and could resurface a stack you'd already left:
-  - **`merge`** set `current_stack` to `remaining[0]` (the first arbitrary still-active stack) after archiving the merged one. Since you're on `main` after a merge, it now clears `current_stack` to `null` instead of grabbing a random leftover.
-  - **`stacks --json`** fell back to the persisted `current_stack` when you were off-stack; its `current_stack` field is now derived purely from the checked-out branch (`findStackForBranch`).
-  - **`log` / `list`** fell back to the persisted `current_stack` when the checked-out branch wasn't in any stack, silently rendering a previously-used stack. They now report "not in any stack" and exit, instead of resurfacing one.
+- **The current stack is now derived from the branch you're on — never a stale stored hint — and self-heals on every command.** The invariant: a stack is "current" only while you're on a branch that belongs to it; stand on `main` or any branch in no stack and there is **no** current stack. This is now enforced in one place — `readMetadata` resolves `current_stack` on every read (branch git config → scan active stacks → else none) and rewrites the on-disk `current` pointer when it drifts. A stale hint left by a prior session, a `merge`, or a plain `git checkout` clears itself on the next command rather than resurfacing a stack you'd already left. Knock-on changes:
+  - **`merge`** no longer hands "current" to an arbitrary leftover stack (`remaining[0]`) after archiving the merged one — you're on `main` afterward, so there's simply no current stack.
+  - **`log` / `list` / `stacks --json`** stop falling back to the stored hint; off-stack they report no current stack instead of rendering a previously-used one.
+  - **`split <branch>` / `delete <branch>`** now resolve their target stack from the **branch argument** (which names its stack unambiguously) rather than from "current," so they operate on the right stack from anywhere — not only while standing on it. Interactive mode (no branch given) still uses the current stack.
 
 ## 0.10.0
 

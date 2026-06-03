@@ -2,7 +2,12 @@
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import { removeBranchFromStack, getChildren } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCurrentStack, ensureValidStack } from "../lib/safety.ts";
+import {
+  ensureMetadata,
+  ensureCurrentStack,
+  ensureValidStack,
+  resolveStackForBranchArg,
+} from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { selectBranch, confirmAction } from "../lib/ui.ts";
 import * as git from "../lib/git.ts";
@@ -34,7 +39,12 @@ OPTIONS
   const positional = args.filter((a) => !a.startsWith("-"));
 
   const meta = await ensureMetadata();
-  const stackName = ensureCurrentStack(meta);
+  // The branch to delete names its own stack — resolve from it so
+  // `delete <branch>` works from anywhere. Only fall back to the current stack
+  // (the branch you're on) in interactive mode, when no branch was given.
+  const stackName = positional[0]
+    ? resolveStackForBranchArg(meta, positional[0]!)
+    : ensureCurrentStack(meta);
   await ensureValidStack(meta, stackName);
   const stack = meta.stacks[stackName]!;
   const currentBranch = await git.currentBranch();

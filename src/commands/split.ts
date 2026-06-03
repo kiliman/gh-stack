@@ -12,7 +12,12 @@
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import { buildRebaseChain, getOrderedBranches, stackBase, writeMetadata } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCurrentStack, ensureValidStack } from "../lib/safety.ts";
+import {
+  ensureMetadata,
+  ensureCurrentStack,
+  ensureValidStack,
+  resolveStackForBranchArg,
+} from "../lib/safety.ts";
 import { selectBranch, confirmAction } from "../lib/ui.ts";
 import * as git from "../lib/git.ts";
 import type { Stack } from "../types.ts";
@@ -55,7 +60,12 @@ export default async function split(args: string[]): Promise<void> {
   const positional = args.filter((a) => !a.startsWith("-"));
 
   const meta = await ensureMetadata();
-  const stackName = ensureCurrentStack(meta);
+  // The cut branch names its own stack — resolve from it so `split <branch>`
+  // works from anywhere. Only fall back to the current stack (the branch you're
+  // on) in interactive mode, when no branch was given.
+  const stackName = positional[0]
+    ? resolveStackForBranchArg(meta, positional[0]!)
+    : ensureCurrentStack(meta);
   await ensureValidStack(meta, stackName);
   const stack = meta.stacks[stackName]!;
   const currentBranch = await git.currentBranch();

@@ -99,7 +99,10 @@ metadata. Use --json as a stable interface so scripts don't parse the
     console.log(
       JSON.stringify(
         {
-          current_stack: currentStackName ?? meta.current_stack ?? null,
+          // Derived purely from the branch you're on — never the persisted
+          // hint, which can be stale (e.g. you `git checkout main` without
+          // gh-stack knowing). On/off a stacked branch is the only signal.
+          current_stack: currentStackName,
           current_branch: currentBranch,
           stacks: entries,
         },

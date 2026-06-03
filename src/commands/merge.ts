@@ -513,8 +513,10 @@ OPTIONS
   meta.archive[stackName] = { ...stack };
   delete meta.stacks[stackName];
   if (meta.current_stack === stackName) {
-    const remaining = Object.keys(meta.stacks);
-    meta.current_stack = remaining.length > 0 ? remaining[0]! : null;
+    // Don't auto-pick a random leftover stack as "current" — that switches you
+    // to a stack you never checked out. The current stack is derived from the
+    // branch you're on; after a merge you're on main, so default to none.
+    meta.current_stack = null;
   }
   await writeMetadata(meta);
 

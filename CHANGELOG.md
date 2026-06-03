@@ -3,7 +3,10 @@
 ## 0.10.1
 
 ### 🐛 Fixes
-- **`merge` no longer auto-selects a random leftover stack as "current"** — when the current stack was merged and archived, `merge` set `current_stack` to `remaining[0]` (the first arbitrary still-active stack) and persisted it. After a merge you're on `main`, so the current stack should be **none** — the current stack is only ever the one containing the branch you're actually on. `merge` now clears `current_stack` to `null` in that case. Relatedly, `stacks --json` no longer falls back to the persisted `current_stack` hint when you're off-stack: its `current_stack` field is now derived purely from the checked-out branch (`findStackForBranch`), so a `git checkout main` without gh-stack's knowledge can't resurface a stale stack to downstream tooling.
+- **The current stack is now consistently derived from the branch you're on — never a stale stored hint.** The invariant: a stack is "current" only while you're on a branch that belongs to it; stand on `main` or any branch in no stack and there is **no** current stack. Three places violated this and could resurface a stack you'd already left:
+  - **`merge`** set `current_stack` to `remaining[0]` (the first arbitrary still-active stack) after archiving the merged one. Since you're on `main` after a merge, it now clears `current_stack` to `null` instead of grabbing a random leftover.
+  - **`stacks --json`** fell back to the persisted `current_stack` when you were off-stack; its `current_stack` field is now derived purely from the checked-out branch (`findStackForBranch`).
+  - **`log` / `list`** fell back to the persisted `current_stack` when the checked-out branch wasn't in any stack, silently rendering a previously-used stack. They now report "not in any stack" and exit, instead of resurfacing one.
 
 ## 0.10.0
 

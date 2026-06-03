@@ -11,11 +11,120 @@ import {
 } from "../lib/metadata.ts";
 import { ensureMetadata, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
-import { getPrMergeState } from "../lib/github.ts";
+import { getBranchRefSha, getPrMergeState, resyncPrHead } from "../lib/github.ts";
 import { confirmAction } from "../lib/ui.ts";
 
 const MAX_RETRIES = 12;
 const RETRY_DELAY_MS = 5000;
+
+// After GitHub rejects a merge with the "still recomputing" signature, back off
+// (capped) and re-poll before retrying. One entry per retry; length+1 = max
+// attempts. Bounds total transient wait per PR to ~30s.
+const MERGE_RETRY_BACKOFF_MS = [2000, 4000, 8000, 8000, 8000];
+
+/**
+ * GitHub returns these when `mergePullRequest` rejects a merge it considers
+ * out of date. In a top-down cascade this is almost always one of two timing
+ * artifacts (NOT a genuine conflict): a stale PR head pointer (most common —
+ * the child squash moved this branch but GitHub didn't advance the PR's
+ * `headRefOid`), or the brief async mergeability-recompute window.
+ */
+export function isTransientMergeError(stderr: string): boolean {
+  const s = stderr.toLowerCase();
+  return (
+    s.includes("head branch is out of date") ||
+    s.includes("base branch was modified") ||
+    s.includes("review and try the merge again")
+  );
+}
+
+/**
+ * Squash-merge a PR, healing the two timing artifacts a top-down cascade
+ * provokes — neither of which is a real conflict:
+ *
+ *  1. **Stale PR head (the dominant case).** Squash-merging the child moves
+ *     this PR's branch server-side, but GitHub sometimes fails to advance the
+ *     PR's recorded `headRefOid`. Every status read (`mergeable`,
+ *     `mergeStateStatus`, base…head compare) is computed against that stale
+ *     head and reports CLEAN, yet `mergePullRequest` checks the live ref and
+ *     rejects "Head branch is out of date" — indefinitely. We detect it by
+ *     comparing the PR's head to the live branch ref, and fix it by
+ *     close→reopen (`resyncPrHead`), which forces GitHub to re-read the branch.
+ *  2. **Mergeability recompute window.** Heads already match but GitHub is
+ *     still recomputing (`mergeStateStatus: UNKNOWN`); back off and re-poll.
+ *
+ * Only a state that settles genuinely non-mergeable (real conflict / failing
+ * required check) — or exhausted retries — is a hard failure.
+ */
+async function squashMergeWithRetry(
+  prNumber: number,
+  branch: string,
+  deleteFlag: boolean,
+  s: ReturnType<typeof p.spinner>,
+): Promise<{ ok: true } | { ok: false; stderr: string; genuine: boolean }> {
+  const maxAttempts = MERGE_RETRY_BACKOFF_MS.length + 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const ghArgs = ["pr", "merge", String(prNumber), "--squash"];
+    if (deleteFlag) ghArgs.push("--delete-branch");
+
+    const proc = Bun.spawn(["gh", ...ghArgs], { stdout: "pipe", stderr: "pipe" });
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    if (exitCode === 0) return { ok: true };
+
+    // Raced with another merge / a prior re-run? If it's already merged, done.
+    const state = await getPrMergeState(prNumber);
+    if (state?.state === "MERGED") return { ok: true };
+
+    const transient = isTransientMergeError(stderr);
+    if (!transient || attempt === maxAttempts) {
+      return { ok: false, stderr: stderr.trim(), genuine: !transient };
+    }
+
+    // Is the PR's head stuck behind the live branch tip? If so, the merge will
+    // fail forever until GitHub re-reads the branch — nudge it via close/reopen
+    // rather than burning the backoff budget polling a status that never moves.
+    const liveSha = await getBranchRefSha(branch);
+    if (liveSha && state?.headRefOid && state.headRefOid !== liveSha) {
+      s.message(`PR #${prNumber}: head out of sync with ${pc.yellow(branch)} — nudging GitHub...`);
+      await resyncPrHead(prNumber);
+      await waitForHeadSync(prNumber, liveSha, s);
+      await waitForMergeable(prNumber, s);
+      continue; // retry the merge with a freshly-synced head
+    }
+
+    // Heads match — genuine recompute window. Back off and re-poll; if it
+    // settles non-mergeable instead, it was a real conflict after all.
+    const delay = MERGE_RETRY_BACKOFF_MS[attempt - 1]!;
+    s.message(
+      `PR #${prNumber}: GitHub still recomputing mergeability — retrying in ${delay / 1000}s (${attempt}/${maxAttempts - 1})...`,
+    );
+    await Bun.sleep(delay);
+    const ready = await waitForMergeable(prNumber, s);
+    if (!ready) return { ok: false, stderr: stderr.trim(), genuine: true };
+  }
+  // Unreachable — the loop returns on the final attempt.
+  return { ok: false, stderr: "merge retries exhausted", genuine: false };
+}
+
+/**
+ * After a `resyncPrHead` nudge, poll until GitHub advances the PR's recorded
+ * head to the live branch SHA (or we give up). Bounded by MAX_RETRIES.
+ */
+async function waitForHeadSync(
+  prNumber: number,
+  liveSha: string,
+  spinner: ReturnType<typeof p.spinner>,
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const state = await getPrMergeState(prNumber);
+    if (state?.headRefOid === liveSha) return true;
+    if (state?.state === "MERGED") return true;
+    spinner.message(`Waiting for PR #${prNumber} head to sync... (${attempt}/${MAX_RETRIES})`);
+    await Bun.sleep(RETRY_DELAY_MS);
+  }
+  return false;
+}
 
 /**
  * Wait for a PR to become mergeable after a previous merge lands.
@@ -230,21 +339,22 @@ OPTIONS
 
     s.message(`Squash-merging PR #${childPrNum} via GitHub...`);
 
-    const ghArgs = ["pr", "merge", String(childPrNum), "--squash"];
-    if (deleteFlag) ghArgs.push("--delete-branch");
+    const result = await squashMergeWithRetry(childPrNum, childBranch, deleteFlag, s);
 
-    const proc = Bun.spawn(["gh", ...ghArgs], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const stderr = await new Response(proc.stderr).text();
-    const exitCode = await proc.exited;
-
-    if (exitCode === 0) {
+    if (result.ok) {
       s.stop(`Merged PR #${childPrNum} into ${pc.blue(parentBranch)}`);
     } else {
       s.stop(pc.red(`Failed to merge PR #${childPrNum}`));
-      p.log.error(stderr.trim());
+      p.log.error(result.stderr);
+      if (result.genuine) {
+        p.log.info(
+          "This looks like a real conflict or a failing required check — resolve it on GitHub.",
+        );
+      } else {
+        p.log.info(
+          "GitHub's mergeability recompute didn't settle in time (transient lag, not a conflict).",
+        );
+      }
       p.log.info("Re-run merge to continue from where you left off.");
       process.exit(2);
     }

@@ -150,16 +150,60 @@ export async function getPrBody(prNumber: number): Promise<string | null> {
 
 /**
  * Get the merge state of a PR.
- * Returns { state, mergeable, mergeStateStatus }.
+ * Returns { state, mergeable, mergeStateStatus, headRefName, headRefOid }.
+ *
+ * NOTE: `mergeable`/`mergeStateStatus` are computed against the PR's *recorded*
+ * head (`headRefOid`), which GitHub occasionally fails to advance after a child
+ * squash-merge lands on this branch. Compare `headRefOid` against the live ref
+ * (`getBranchRefSha`) to detect that staleness — see `merge.ts`.
  */
-export async function getPrMergeState(
-  prNumber: number,
-): Promise<{ state: string; mergeable: string; mergeStateStatus: string } | null> {
+export async function getPrMergeState(prNumber: number): Promise<{
+  state: string;
+  mergeable: string;
+  mergeStateStatus: string;
+  headRefName: string;
+  headRefOid: string;
+} | null> {
   try {
-    const result = await $`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus`.text();
+    const result =
+      await $`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,headRefName,headRefOid`.text();
     return JSON.parse(result.trim());
   } catch {
     return null;
+  }
+}
+
+/**
+ * Resolve the live SHA of a branch ref on the remote (`origin`), independent of
+ * any PR's cached head. Returns null if the ref can't be resolved.
+ */
+export async function getBranchRefSha(branch: string): Promise<string | null> {
+  const nwo = await getRepoNwo();
+  if (!nwo) return null;
+  try {
+    const sha = (
+      await $`gh api repos/${nwo}/git/ref/heads/${branch} --jq .object.sha`.text()
+    ).trim();
+    return sha.length > 0 ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Force GitHub to re-read a PR's head branch by closing and immediately
+ * reopening it. Used when the PR's recorded `headRefOid` is stuck behind the
+ * live branch tip (a child squash-merge moved the branch but GitHub missed the
+ * head-sync), which makes `mergePullRequest` reject a "Head branch is out of
+ * date" even though every status read says the PR is clean.
+ */
+export async function resyncPrHead(prNumber: number): Promise<boolean> {
+  try {
+    await $`gh pr close ${prNumber}`.quiet();
+    await $`gh pr reopen ${prNumber}`.quiet();
+    return true;
+  } catch {
+    return false;
   }
 }
 

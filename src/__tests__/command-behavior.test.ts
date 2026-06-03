@@ -127,28 +127,50 @@ describe("command dry-run safety", () => {
   });
 });
 
+// Run `fn`, swallowing an intentional `process.exit` so it doesn't kill the
+// test runner. Rethrows any other error.
+async function runExpectingExit(fn: () => Promise<void>): Promise<void> {
+  const origExit = process.exit;
+  process.exit = ((code?: number) => {
+    throw new Error(`__process_exit__${code ?? 0}`);
+  }) as never;
+  try {
+    await fn();
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.startsWith("__process_exit__")) throw err;
+  } finally {
+    process.exit = origExit;
+  }
+}
+
 describe("metadata tracking for display commands", () => {
-  test("log does not overwrite last_branch when current branch is outside the stack", async () => {
+  // The current stack is derived from the branch you're on, never a sticky
+  // stored hint. Standing on a branch that's in no stack (here: `scratch` off
+  // main) means there is NO current stack — `log`/`list` report "not in any
+  // stack" and exit rather than resurfacing a remembered one. They must also
+  // leave the untouched stack's `last_branch` intact.
+
+  test("log reports out-of-stack instead of resurfacing the last stack, leaving last_branch intact", async () => {
     await createLinearStack(tmpDir);
     await createBranch(tmpDir, "scratch", "main");
     await checkout(tmpDir, "scratch");
 
-    await log([]);
+    // Exits via the "not in any stack" path rather than rendering test-stack.
+    await runExpectingExit(() => log([]));
 
+    // Early exit means no write — the stack's last_branch is untouched.
     const meta = await readMetadata(tmpDir);
-    expect(meta.current_stack).toBe("test-stack");
     expect(meta.stacks["test-stack"]!.last_branch).toBe("pr3");
   });
 
-  test("list does not overwrite last_branch when current branch is outside the stack", async () => {
+  test("list reports out-of-stack instead of resurfacing the last stack, leaving last_branch intact", async () => {
     await createLinearStack(tmpDir);
     await createBranch(tmpDir, "scratch", "main");
     await checkout(tmpDir, "scratch");
 
-    await list([]);
+    await runExpectingExit(() => list([]));
 
     const meta = await readMetadata(tmpDir);
-    expect(meta.current_stack).toBe("test-stack");
     expect(meta.stacks["test-stack"]!.last_branch).toBe("pr3");
   });
 });

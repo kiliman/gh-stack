@@ -25,24 +25,22 @@ ALIASES
   const meta = await ensureMetadata();
   const currentBranch = await git.currentBranch();
 
-  // Find which stack contains the current branch
-  const branchStackName = findStackForBranch(meta, currentBranch);
-  let stackName = branchStackName;
-  if (!stackName) stackName = meta.current_stack;
+  // The current stack is whichever stack the checked-out branch belongs to —
+  // never the persisted `current_stack` hint. If this branch is in no stack,
+  // there is no current stack; don't resurface a previously-used one.
+  const stackName = findStackForBranch(meta, currentBranch);
 
   if (!stackName || !meta.stacks[stackName]) {
-    console.log("No active stack found.");
+    console.log("Branch is not in any stack.");
     process.exit(1);
   }
 
   const stack = meta.stacks[stackName]!;
   const ordered = getOrderedBranches(stack);
 
-  // Update tracking
+  // We're on a branch in this stack — record it as current + its last_branch.
   meta.current_stack = stackName;
-  if (branchStackName === stackName) {
-    stack.last_branch = currentBranch;
-  }
+  stack.last_branch = currentBranch;
   await writeMetadata(meta);
 
   // Header

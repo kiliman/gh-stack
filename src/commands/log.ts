@@ -30,14 +30,10 @@ export default async function log(_args: string[]): Promise<void> {
 
   const branch = await git.currentBranch();
 
-  // Find which stack contains the current branch
-  const branchStackName = findStackForBranch(meta, branch);
-  let stackName = branchStackName;
-
-  if (!stackName) {
-    // Fall back to current_stack
-    stackName = meta.current_stack;
-  }
+  // The current stack is whichever stack the checked-out branch belongs to —
+  // never the persisted `current_stack` hint. If this branch is in no stack,
+  // there is no current stack; don't resurface a previously-used one.
+  const stackName = findStackForBranch(meta, branch);
 
   if (!stackName || !meta.stacks[stackName]) {
     p.log.warn(`Branch ${pc.blue(branch)} is not in any stack`);
@@ -52,11 +48,9 @@ export default async function log(_args: string[]): Promise<void> {
 
   const stack = meta.stacks[stackName]!;
 
-  // Update current_stack and last_branch
+  // We're on a branch in this stack — record it as current + its last_branch.
   meta.current_stack = stackName;
-  if (branchStackName === stackName) {
-    stack.last_branch = branch;
-  }
+  stack.last_branch = branch;
   await writeMetadata(meta);
 
   // Header

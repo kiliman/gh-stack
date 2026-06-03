@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.1
+
+### 🐛 Fixes
+- **`merge` no longer auto-selects a random leftover stack as "current"** — when the current stack was merged and archived, `merge` set `current_stack` to `remaining[0]` (the first arbitrary still-active stack) and persisted it. After a merge you're on `main`, so the current stack should be **none** — the current stack is only ever the one containing the branch you're actually on. `merge` now clears `current_stack` to `null` in that case. Relatedly, `stacks --json` no longer falls back to the persisted `current_stack` hint when you're off-stack: its `current_stack` field is now derived purely from the checked-out branch (`findStackForBranch`), so a `git checkout main` without gh-stack's knowledge can't resurface a stale stack to downstream tooling.
+
 ## 0.10.0
 
 ### 🐛 Fixes

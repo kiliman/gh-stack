@@ -10,6 +10,7 @@ import {
 } from "../lib/metadata.ts";
 import { renderStackTree } from "../lib/ui.ts";
 import { gateLegacyMetadata } from "../lib/safety.ts";
+import { detectBranchChain } from "../lib/chain.ts";
 
 export default async function log(_args: string[]): Promise<void> {
   // Check if metadata exists
@@ -36,13 +37,7 @@ export default async function log(_args: string[]): Promise<void> {
   const stackName = findStackForBranch(meta, branch);
 
   if (!stackName || !meta.stacks[stackName]) {
-    p.log.warn(`Branch ${pc.blue(branch)} is not in any stack`);
-    console.log();
-    console.log(`  Add it to a stack with:`);
-    console.log(`    ${pc.green("gh-stack add")}`);
-    console.log();
-    console.log(`  Or create a new stack:`);
-    console.log(`    ${pc.green("gh-stack init")}`);
+    await suggestNextStep(branch);
     process.exit(1);
   }
 
@@ -68,5 +63,60 @@ export default async function log(_args: string[]): Promise<void> {
 
   // Tip
   console.log(pc.dim(`Tip: Switch stacks with 'gh-stack checkout --stack'`));
+  console.log();
+}
+
+/**
+ * The current branch isn't tracked in any stack. Inspect its local ancestry —
+ * the same chain `submit` would self-heal — and point at the lowest-friction
+ * next step: `submit` (which auto-creates the stack and opens PRs) when there's
+ * something to submit, or `init` when we're sitting on trunk.
+ */
+async function suggestNextStep(branch: string): Promise<void> {
+  const trunk = await git.trunkBranch();
+
+  if (branch === trunk || branch === "main" || branch === "master") {
+    p.log.warn(`You're on ${pc.blue(branch)} — not a stack branch`);
+    console.log();
+    console.log(`  Checkout a feature branch, then start a stack with:`);
+    console.log(`    ${pc.green("gh-stack init")}`);
+    console.log();
+    return;
+  }
+
+  // Reconstruct trunk→current the way `submit` does (local branches whose tips
+  // are ancestors of HEAD). [current] alone means it's based right off trunk.
+  let chain: string[] = [branch];
+  try {
+    chain = await detectBranchChain(branch, trunk);
+  } catch {
+    // Fall back to treating it as a single branch off trunk.
+  }
+
+  p.log.warn(`Branch ${pc.blue(branch)} isn't tracked in a stack yet`);
+  console.log();
+
+  if (chain.length > 1) {
+    // Stacked on top of other local branches — show the chain submit would adopt.
+    console.log(`  It's stacked on ${chain.length - 1} other local branch(es):`);
+    console.log();
+    console.log(`  ${pc.dim(trunk)}`);
+    for (let i = 0; i < chain.length; i++) {
+      const b = chain[i]!;
+      const isLast = i === chain.length - 1;
+      const tree = isLast ? "  ┗━" : "  ┣━";
+      const label = b === branch ? pc.yellow(b) + pc.dim(" (current)") : b;
+      console.log(`${tree} ${label}`);
+      if (!isLast) console.log("  ┃");
+    }
+    console.log();
+    console.log(`  Create the stack and open PRs for the whole chain:`);
+  } else {
+    // A single branch based directly on trunk.
+    console.log(`  It's based directly on ${pc.dim(trunk)}.`);
+    console.log();
+    console.log(`  Push it and open a PR — this also starts the stack:`);
+  }
+  console.log(`    ${pc.green("gh-stack submit")}`);
   console.log();
 }

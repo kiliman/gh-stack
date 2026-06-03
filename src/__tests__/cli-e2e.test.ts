@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   checkout,
   cleanup,
+  createBranch,
   createLinearStack,
   createTempRepo,
+  makeCommit,
   readMetadata,
   writeMetadata,
 } from "./helpers.ts";
@@ -78,6 +80,45 @@ describe("CLI entrypoint", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("Unknown command");
+  });
+
+  // `log` (the default command) guidance when the branch isn't tracked.
+  test("log points an untracked branch stacked on another at `submit`, with the chain", async () => {
+    await createLinearStack(tmpDir); // a v3 store exists; this branch is separate
+    await createBranch(tmpDir, "feat-a", "main");
+    await makeCommit(tmpDir, "a.txt", "a\n", "feat-a: work");
+    await createBranch(tmpDir, "feat-b", "feat-a");
+    await makeCommit(tmpDir, "b.txt", "b\n", "feat-b: work");
+    await checkout(tmpDir, "feat-b");
+
+    const result = await runCli(["log"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("isn't tracked in a stack yet");
+    expect(result.stdout).toContain("stacked on 1 other local branch");
+    expect(result.stdout).toContain("feat-a");
+    expect(result.stdout).toContain("gh-stack submit");
+  });
+
+  test("log points an untracked branch off main at `submit`", async () => {
+    await createLinearStack(tmpDir);
+    await createBranch(tmpDir, "solo", "main");
+    await makeCommit(tmpDir, "s.txt", "s\n", "solo: work");
+    await checkout(tmpDir, "solo");
+
+    const result = await runCli(["log"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("isn't tracked in a stack yet");
+    expect(result.stdout).toContain("based directly on main");
+    expect(result.stdout).toContain("gh-stack submit");
+  });
+
+  test("log on main suggests init, not submit", async () => {
+    await createLinearStack(tmpDir); // leaves HEAD on main
+    const result = await runCli(["log"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("not a stack branch");
+    expect(result.stdout).toContain("gh-stack init");
+    expect(result.stdout).not.toContain("gh-stack submit");
   });
 
   test("rejects destructive commands when stack metadata is invalid", async () => {

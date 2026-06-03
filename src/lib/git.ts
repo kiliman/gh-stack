@@ -180,6 +180,16 @@ export async function deleteLocalBranch(branch: string): Promise<boolean> {
 }
 
 /**
+ * Rename a local branch (`git branch -m`). Git moves the whole `branch.<old>`
+ * config section to `branch.<new>`, so gh-stack membership rides along for free.
+ * Returns false if the rename failed (e.g. the new name already exists).
+ */
+export async function renameBranch(oldName: string, newName: string): Promise<boolean> {
+  const { exitCode } = await $`git branch -m ${oldName} ${newName}`.nothrow().quiet();
+  return exitCode === 0;
+}
+
+/**
  * Delete a branch on the remote (origin). Returns false on failure.
  */
 export async function deleteRemoteBranch(branch: string): Promise<boolean> {

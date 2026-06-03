@@ -3,6 +3,7 @@
 ## 0.10.0
 
 ### ✨ Features
+- **`gh-stack rename [<old>] <new>` + auto-reconcile on `git branch -m`** ([#18](https://github.com/kiliman/gh-stack/issues/18)) — first-class branch renaming for the `feature-wip` → `feature-BEE-1234` flow, with **no manual metadata editing**. Each branch now carries a stable id (`branch.<name>.ghstack-id`, stamped on first write). Because `git branch -m` moves a branch's whole config section but the topology JSON is keyed by name, gh-stack matches the moved config back to its stale JSON entry by id (PR number as fallback), re-keys it, and re-points any children — on the *next command*, whether you used `gh-stack rename` or a raw `git branch -m`. Covers tip, mid-stack, pre-submit (no PR yet), and split-stack-base renames.
 - **`gh-stack stacks [--json]`** — a read-only, network-free dump of all stacks and their topology (ordered branches, PR numbers, base). It exists so external tooling can consume `--json` as a stable interface instead of reaching into the `.git/.gh-stack/` store and parsing the on-disk format directly. Shape: `{ current_stack, current_branch, stacks: [{ name, description, base, is_current, branches: [{ branch, parent, pr, description }] }] }`. `--current` narrows to the stack containing the checked-out branch. Distinct from `status --json`, which hits the network for live PR/CI state.
 
 ## 0.9.0

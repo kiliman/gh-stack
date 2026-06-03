@@ -131,6 +131,11 @@ export async function readMetadata(): Promise<StackMetadata | null> {
   if (snapshots.length > 0) meta.snapshots = snapshots;
 
   backfillStackBase(meta);
+  // Catch the name-keyed JSON up to any `git branch -m` since the last write.
+  // In-memory only — the fix persists the next time a command writes metadata
+  // (which also repoints renamed branches' child config). Keeping reads
+  // side-effect-free avoids surprising writes from `status`/`--dry-run`.
+  await reconcileRenames(meta);
   return meta;
 }
 
@@ -169,6 +174,10 @@ function serializeStack(stack: Stack): string {
  */
 export async function writeMetadata(meta: StackMetadata): Promise<void> {
   await ensureDirs();
+
+  // 0. stamp a stable id on any active branch that lacks one, so a later
+  //    `git branch -m` can be recognized even before the branch has a PR.
+  ensureBranchIds(meta);
 
   // 1. current hint
   await Bun.write(await currentFile(), (meta.current_stack ?? "") + "\n");
@@ -237,7 +246,7 @@ async function syncBranchConfig(meta: StackMetadata): Promise<void> {
   const desired = new Map<string, BranchMembership>();
   for (const [stackName, stack] of Object.entries(meta.stacks)) {
     for (const [branchName, b] of Object.entries(stack.branches)) {
-      desired.set(branchName, { stack: stackName, parent: b.parent, pr: b.pr });
+      desired.set(branchName, { stack: stackName, parent: b.parent, pr: b.pr, id: b.id });
     }
   }
 
@@ -245,7 +254,13 @@ async function syncBranchConfig(meta: StackMetadata): Promise<void> {
 
   for (const [branch, m] of desired) {
     const cur = existing.get(branch);
-    if (!cur || cur.stack !== m.stack || cur.parent !== m.parent || cur.pr !== m.pr) {
+    if (
+      !cur ||
+      cur.stack !== m.stack ||
+      cur.parent !== m.parent ||
+      cur.pr !== m.pr ||
+      cur.id !== m.id
+    ) {
       await setBranchMembership(branch, m);
     }
   }
@@ -253,6 +268,100 @@ async function syncBranchConfig(meta: StackMetadata): Promise<void> {
   // Branches that still carry gh-stack config but are no longer active members.
   for (const branch of existing.keys()) {
     if (!desired.has(branch)) await clearBranchMembership(branch);
+  }
+}
+
+/**
+ * Stamp a stable UUID on every active branch that lacks one. Mutates `meta`;
+ * the ids persist via the normal stack-file write and get mirrored into git
+ * config by `syncBranchConfig`. A branch's id is its rename anchor.
+ */
+function ensureBranchIds(meta: StackMetadata): void {
+  for (const stack of Object.values(meta.stacks)) {
+    for (const b of Object.values(stack.branches)) {
+      if (!b.id) b.id = crypto.randomUUID();
+    }
+  }
+}
+
+/**
+ * Reconcile the name-keyed JSON after a branch was renamed with `git branch -m`.
+ *
+ * Git moves a branch's entire `branch.<name>` config section on rename, so the
+ * membership config is rename-proof and authoritative for identity; only the
+ * JSON (keyed by branch name) drifts. For each branch the config currently knows
+ * by name N, if the JSON has no entry under N but does have one — in the same
+ * stack — matching N's stable id (or, for legacy/pre-id branches, its PR
+ * number), that entry was renamed: re-key it to N and repoint anything that
+ * referenced the old name.
+ *
+ * Mutates `meta` in place; returns true if anything changed. The change persists
+ * on the next `writeMetadata`, which also repoints the renamed branch's child
+ * `ghstack-parent` config (git rewrites section names, not string values).
+ */
+async function reconcileRenames(meta: StackMetadata): Promise<boolean> {
+  const config = await allBranchMemberships();
+  if (config.size === 0) return false;
+
+  let changed = false;
+  for (const [currentName, m] of config) {
+    if (!m.stack) continue;
+    const stack = meta.stacks[m.stack];
+    if (!stack) continue;
+    if (stack.branches[currentName]) continue; // JSON already keyed correctly
+
+    const oldKey = findStaleKey(stack, m);
+    if (!oldKey || oldKey === currentName) continue;
+
+    renameBranchKey(meta, m.stack, oldKey, currentName);
+    changed = true;
+  }
+  return changed;
+}
+
+/** Find a stack's branch entry by stable id (preferred) or PR number (fallback). */
+function findStaleKey(stack: Stack, m: BranchMembership): string | null {
+  if (m.id) {
+    for (const [name, b] of Object.entries(stack.branches)) {
+      if (b.id === m.id) return name;
+    }
+  }
+  if (m.pr != null) {
+    for (const [name, b] of Object.entries(stack.branches)) {
+      if (b.pr === m.pr) return name;
+    }
+  }
+  return null;
+}
+
+/**
+ * Re-key a branch from `oldKey` to `newKey` and repoint every reference to the
+ * old name: the stack's `last_branch`, and any branch's `parent` or stack's
+ * `base` (across active AND archived stacks — a split stack roots on a branch
+ * that belongs to its parent stack).
+ */
+function renameBranchKey(
+  meta: StackMetadata,
+  stackName: string,
+  oldKey: string,
+  newKey: string,
+): void {
+  const stack = meta.stacks[stackName];
+  if (!stack) return;
+  const entry = stack.branches[oldKey];
+  if (!entry) return;
+
+  stack.branches[newKey] = entry;
+  delete stack.branches[oldKey];
+  if (stack.last_branch === oldKey) stack.last_branch = newKey;
+
+  for (const group of [meta.stacks, meta.archive ?? {}]) {
+    for (const s of Object.values(group)) {
+      if (s.base === oldKey) s.base = newKey;
+      for (const b of Object.values(s.branches)) {
+        if (b.parent === oldKey) b.parent = newKey;
+      }
+    }
   }
 }
 

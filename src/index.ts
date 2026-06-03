@@ -73,6 +73,10 @@ switch (command) {
     await (await import("./commands/split.ts")).default(commandArgs);
     break;
 
+  case "rename":
+    await (await import("./commands/rename.ts")).default(commandArgs);
+    break;
+
   case "checkout":
   case "co":
     await (await import("./commands/checkout.ts")).default(commandArgs);
@@ -183,6 +187,7 @@ ${bold("STACK MANAGEMENT")}
   ${green("sync")}           Sync base with main + restack all
   ${green("merge")}          Local squash-merge top-down
   ${green("split")}          Cut a stack into two at a branch
+  ${green("rename")}         Rename a tracked branch (keeps metadata in sync)
   ${green("delete")}         Remove a branch from the stack
 
 ${bold("INFO & MAINTENANCE")}

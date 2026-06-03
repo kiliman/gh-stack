@@ -173,6 +173,19 @@ split [<branch>] [--name <name>]
     tip. Once the original stack merges, re-root the new stack with
     `gh-stack restack --onto main`.
 
+rename [<old-name>] <new-name>
+    Rename a tracked branch (runs `git branch -m`) and re-key the stack
+    topology so it stays tracked, re-parenting any children that pointed
+    at the old name. With one argument, renames the current branch. Built
+    for the throwaway-branch → ticketed-PR flow (`feature-wip` →
+    `feature-BEE-1234`) without hand-editing metadata.
+
+    You don't strictly need this command: gh-stack also auto-reconciles
+    after a plain `git branch -m` (the per-branch git config is rename-
+    proof, so the next gh-stack command heals the name-keyed topology).
+    Renaming a branch that already has a PR is local-only — the GitHub PR
+    still tracks the old remote branch.
+
 delete [<branch>] [-k|--keep-branch] [--no-remote]
     Remove a branch from the stack and re-parent its children, then
     delete the underlying local git branch (and the remote branch if
@@ -307,6 +320,7 @@ deleting a branch updates/cleans it automatically:
 branch.<name>.ghstack-stack   <stack>
 branch.<name>.ghstack-parent  <parent-branch>
 branch.<name>.ghstack-pr      <number>
+branch.<name>.ghstack-id      <uuid>   stable identity (survives rename)
 ```
 
 The two representations cross-check each other; `gh-stack doctor` reconciles
@@ -318,6 +332,12 @@ any drift. Why this shape:
 - **No `current_stack` drift** — the stack you're on is derivable from the
   branch's own config, so a written pointer can't contradict reality.
 - **No all-or-nothing blast radius** — one bad write can't corrupt other stacks.
+- **Renames heal themselves** — `git branch -m old new` moves the whole
+  `branch.<old>` config section to `branch.<new>` (id and all), but the JSON is
+  keyed by name and goes stale. On the next command, gh-stack matches the moved
+  config to its stale JSON entry by `ghstack-id` (or PR number for older
+  branches), re-keys it, and re-points any children. So `gh-stack rename` — or
+  even a raw `git branch -m` — never needs manual metadata surgery.
 
 #### Migrating from v2
 

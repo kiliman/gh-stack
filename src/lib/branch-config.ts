@@ -6,6 +6,7 @@
 //   branch.<name>.ghstack-stack   <stack>
 //   branch.<name>.ghstack-parent  <parent-branch>
 //   branch.<name>.ghstack-pr      <number>
+//   branch.<name>.ghstack-id      <uuid>  (stable identity; survives rename)
 //
 // Why config and not JSON: git maintains the `branch.<name>` section for us.
 //   • `git branch -m old new`  → the section moves      → rename tracking free
@@ -23,12 +24,14 @@ export interface BranchMembership {
   stack?: string;
   parent?: string;
   pr?: number;
+  id?: string;
 }
 
 const KEY_PREFIX = "ghstack-";
 const STACK_KEY = "ghstack-stack";
 const PARENT_KEY = "ghstack-parent";
 const PR_KEY = "ghstack-pr";
+const ID_KEY = "ghstack-id";
 
 function configKey(branch: string, key: string): string {
   return `branch.${branch}.${key}`;
@@ -46,6 +49,7 @@ export async function setBranchMembership(
   await setOrUnset(branch, STACK_KEY, membership.stack);
   await setOrUnset(branch, PARENT_KEY, membership.parent);
   await setOrUnset(branch, PR_KEY, membership.pr != null ? String(membership.pr) : undefined);
+  await setOrUnset(branch, ID_KEY, membership.id);
 }
 
 async function setOrUnset(branch: string, key: string, value: string | undefined): Promise<void> {
@@ -78,6 +82,7 @@ export async function clearBranchMembership(branch: string): Promise<void> {
   await unsetKey(branch, STACK_KEY);
   await unsetKey(branch, PARENT_KEY);
   await unsetKey(branch, PR_KEY);
+  await unsetKey(branch, ID_KEY);
 }
 
 /**
@@ -115,6 +120,7 @@ export async function allBranchMemberships(): Promise<Map<string, BranchMembersh
     const m = out.get(branch) ?? {};
     if (field === STACK_KEY) m.stack = value;
     else if (field === PARENT_KEY) m.parent = value;
+    else if (field === ID_KEY) m.id = value;
     else if (field === PR_KEY) {
       const n = Number(value);
       if (Number.isFinite(n)) m.pr = n;

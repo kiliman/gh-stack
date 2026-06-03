@@ -31,6 +31,13 @@ export interface Branch {
   pr?: number; // GitHub PR number
   description?: string; // Human-readable label
 
+  // Stable per-branch identity (UUID), stamped on first write and mirrored into
+  // git config as `branch.<name>.ghstack-id`. Because `git branch -m` moves the
+  // whole config section but the JSON is keyed by name, this id is what lets us
+  // recognize a renamed branch and re-key its (now-stale) JSON entry — even
+  // before it has a PR number to match on. See metadata.ts `reconcileRenames`.
+  id?: string;
+
   // ── submit caches (v0.9.0, issue #16) ──
   // Let `submit` skip redundant network calls when nothing relevant changed.
   prTitle?: string; // last-known GitHub PR title, for rendering the stack viz without a fetch

@@ -84,11 +84,7 @@ async function squashMergeWithRetry(
     // Is the PR's head stuck behind the live branch tip? If so, the merge will
     // fail forever until GitHub re-reads the branch — nudge it via close/reopen
     // rather than burning the backoff budget polling a status that never moves.
-    const liveSha = await getBranchRefSha(branch);
-    if (liveSha && state?.headRefOid && state.headRefOid !== liveSha) {
-      s.message(`PR #${prNumber}: head out of sync with ${pc.yellow(branch)} — nudging GitHub...`);
-      await resyncPrHead(prNumber);
-      await waitForHeadSync(prNumber, liveSha, s);
+    if (await ensureFreshHead(prNumber, branch, s)) {
       await waitForMergeable(prNumber, s);
       continue; // retry the merge with a freshly-synced head
     }
@@ -124,6 +120,29 @@ async function waitForHeadSync(
     await Bun.sleep(RETRY_DELAY_MS);
   }
   return false;
+}
+
+/**
+ * Heal a stuck PR head pointer. If the PR's recorded head has fallen behind the
+ * live branch ref (GitHub missed the head-sync after a child squash landed on
+ * this branch), force a re-read via close/reopen and wait for the head to catch
+ * up. Returns true if a nudge was performed; false (a no-op) when the heads
+ * already match, the PR is already merged, or the live ref can't be resolved.
+ */
+async function ensureFreshHead(
+  prNumber: number,
+  branch: string,
+  s: ReturnType<typeof p.spinner>,
+): Promise<boolean> {
+  const liveSha = await getBranchRefSha(branch);
+  const state = await getPrMergeState(prNumber);
+  if (!liveSha || !state?.headRefOid || state.state === "MERGED") return false;
+  if (state.headRefOid === liveSha) return false;
+
+  s.message(`PR #${prNumber}: head out of sync with ${pc.yellow(branch)} — nudging GitHub...`);
+  await resyncPrHead(prNumber);
+  await waitForHeadSync(prNumber, liveSha, s);
+  return true;
 }
 
 /**
@@ -441,25 +460,38 @@ OPTIONS
 
   const autoSpinner = p.spinner();
 
-  // Wait for base PR to be ready (may need time after last intermediate merge)
+  // Wait for base PR to be ready (may need time after last intermediate merge).
+  // The last intermediate merge moved this branch, so — like the cascade — the
+  // base PR's head can be stuck behind the live ref; heal it before enabling
+  // auto-merge, then once more if GitHub still rejects the first attempt.
   autoSpinner.start(`Waiting for PR #${basePr} to be ready...`);
+  await ensureFreshHead(basePr!, baseBranch, autoSpinner);
   await waitForMergeable(basePr!, autoSpinner);
 
   autoSpinner.message(`Enabling auto-merge for PR #${basePr}...`);
 
-  try {
+  const enableAutoMerge = async (): Promise<{ ok: boolean; stderr: string }> => {
     const ghArgs = ["pr", "merge", String(basePr), "--squash", "--auto"];
     if (deleteFlag) ghArgs.push("--delete-branch");
+    const proc = Bun.spawn(["gh", ...ghArgs], { stdout: "pipe", stderr: "pipe" });
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    return { ok: exitCode === 0, stderr: stderr.trim() };
+  };
 
-    const proc = Bun.spawn(["gh", ...ghArgs], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    await proc.exited;
+  let auto = await enableAutoMerge();
+  if (!auto.ok && isTransientMergeError(auto.stderr)) {
+    // Same stale-head artifact as the cascade — re-sync and try once more.
+    await ensureFreshHead(basePr!, baseBranch, autoSpinner);
+    await waitForMergeable(basePr!, autoSpinner);
+    auto = await enableAutoMerge();
+  }
 
+  if (auto.ok) {
     autoSpinner.stop(`Auto-merge enabled for PR #${basePr} — will merge into main when CI passes`);
-  } catch {
+  } else {
     autoSpinner.stop(pc.yellow(`Could not enable auto-merge for PR #${basePr}`));
+    if (auto.stderr) p.log.error(auto.stderr);
     p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${basePr} --squash --auto`)}`);
   }
 

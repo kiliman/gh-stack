@@ -8,6 +8,9 @@
   - **`log` / `list` / `stacks --json`** stop falling back to the stored hint; off-stack they report no current stack instead of rendering a previously-used one.
   - **`split <branch>` / `delete <branch>`** now resolve their target stack from the **branch argument** (which names its stack unambiguously) rather than from "current," so they operate on the right stack from anywhere — not only while standing on it. Interactive mode (no branch given) still uses the current stack.
 
+### ✨ Features
+- **`log` (the default command) now points you at the next step when the branch isn't tracked yet.** Instead of a dead-end "not in any stack" message (which also suggested a nonexistent `gh-stack add`), it inspects the branch's local ancestry — the same chain `submit` self-heals — and recommends the lowest-friction action: if you're **stacked on other local branches**, it draws the detected chain and tells you `gh-stack submit` will create the stack and open PRs for the whole chain; if you're **based directly on trunk**, `gh-stack submit` pushes it and opens a PR (starting the stack); if you're **on trunk**, it points at `gh-stack init`.
+
 ## 0.10.0
 
 ### 🐛 Fixes

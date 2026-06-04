@@ -152,8 +152,12 @@ export async function readMetadata(): Promise<StackMetadata | null> {
  *   1. The branch's git config (`branch.<name>.ghstack-stack`) — rename-proof
  *      membership — *if* the named stack is active and still lists the branch.
  *   2. Otherwise scan the assembled active stacks for the branch by name.
- *   3. Otherwise (branch in no stack, or HEAD detached) there is no current
- *      stack → null.
+ *   3. Otherwise walk up the branch's ancestry: a new branch built on top of a
+ *      stack belongs to that stack (until submitted), so the nearest *tracked*
+ *      ancestor's stack is the current one. Only tracked branches are probed,
+ *      so this stays cheap even with many local branches.
+ *   4. Otherwise (ancestry reaches trunk with nothing tracked, or HEAD
+ *      detached) there is no current stack → null.
  *
  * The resolved value is also written back to the `current` pointer file when it
  * drifts, so a stale hint left by a prior session, a merge, or a plain
@@ -177,8 +181,12 @@ async function reconcileCurrentStack(meta: StackMetadata): Promise<void> {
     if (configStack && meta.stacks[configStack]?.branches[branch]) {
       resolved = configStack;
     } else {
-      // 2. Fall back to scanning the active stacks.
+      // 2. Fall back to scanning the active stacks for direct membership.
       resolved = findStackForBranch(meta, branch);
+    }
+    // 3. Untracked branch — inherit the stack of its nearest tracked ancestor.
+    if (!resolved) {
+      resolved = await nearestTrackedAncestorStack(meta, branch);
     }
   }
 
@@ -186,6 +194,32 @@ async function reconcileCurrentStack(meta: StackMetadata): Promise<void> {
     meta.current_stack = resolved;
     await Bun.write(await currentFile(), (resolved ?? "") + "\n");
   }
+}
+
+/**
+ * Walk up `branch`'s ancestry and return the stack of the nearest branch that's
+ * already a tracked member of an active stack — i.e. the stack this branch sits
+ * on top of. Probes only tracked branches (small N), picking the closest one by
+ * commit distance, so a chain that spans two stacks resolves to the nearer one.
+ * Returns null when no tracked branch is an ancestor (the branch traces back to
+ * trunk without crossing a stack).
+ */
+export async function nearestTrackedAncestorStack(
+  meta: StackMetadata,
+  branch: string,
+): Promise<string | null> {
+  let best: { stack: string; distance: number } | null = null;
+  for (const [stackName, stack] of Object.entries(meta.stacks)) {
+    for (const member of Object.keys(stack.branches)) {
+      if (member === branch) continue;
+      if (!(await git.isAncestor(member, branch))) continue;
+      const distance = await git.commitCount(member, branch);
+      if (distance > 0 && (!best || distance < best.distance)) {
+        best = { stack: stackName, distance };
+      }
+    }
+  }
+  return best?.stack ?? null;
 }
 
 /**

@@ -11,6 +11,7 @@ import {
 import { renderStackTree } from "../lib/ui.ts";
 import { gateLegacyMetadata } from "../lib/safety.ts";
 import { detectBranchChain } from "../lib/chain.ts";
+import type { StackMetadata } from "../types.ts";
 
 export default async function log(_args: string[]): Promise<void> {
   // Check if metadata exists
@@ -37,7 +38,7 @@ export default async function log(_args: string[]): Promise<void> {
   const stackName = findStackForBranch(meta, branch);
 
   if (!stackName || !meta.stacks[stackName]) {
-    await suggestNextStep(branch);
+    await suggestNextStep(meta, branch);
     process.exit(1);
   }
 
@@ -67,12 +68,15 @@ export default async function log(_args: string[]): Promise<void> {
 }
 
 /**
- * The current branch isn't tracked in any stack. Inspect its local ancestry —
+ * The current branch isn't a tracked stack member. Inspect its local ancestry —
  * the same chain `submit` would self-heal — and point at the lowest-friction
- * next step: `submit` (which auto-creates the stack and opens PRs) when there's
- * something to submit, or `init` when we're sitting on trunk.
+ * next step:
+ *   - sits on top of an existing stack  → `submit` to ADD it to that stack;
+ *   - stacked on untracked branches only → `submit` to CREATE a new stack;
+ *   - based directly on trunk            → `submit` to push + open a PR;
+ *   - on trunk                           → `init`.
  */
-async function suggestNextStep(branch: string): Promise<void> {
+async function suggestNextStep(meta: StackMetadata, branch: string): Promise<void> {
   const trunk = await git.trunkBranch();
 
   if (branch === trunk || branch === "main" || branch === "master") {
@@ -93,11 +97,43 @@ async function suggestNextStep(branch: string): Promise<void> {
     // Fall back to treating it as a single branch off trunk.
   }
 
+  // Is this chain sitting on top of an existing tracked stack? Find the nearest
+  // ancestor in the chain that's already a stack member.
+  let attachStack: string | null = null;
+  for (let i = chain.length - 2; i >= 0; i--) {
+    const owner = findStackForBranch(meta, chain[i]!);
+    if (owner) {
+      attachStack = owner;
+      break;
+    }
+  }
+
   p.log.warn(`Branch ${pc.blue(branch)} isn't tracked in a stack yet`);
   console.log();
 
+  if (attachStack) {
+    // Extends an existing stack — submit ADDS the untracked tail to it.
+    console.log(`  It sits on top of stack ${pc.yellow(attachStack)}:`);
+    console.log();
+    console.log(`  ${pc.dim(trunk)}`);
+    for (let i = 0; i < chain.length; i++) {
+      const b = chain[i]!;
+      const isLast = i === chain.length - 1;
+      const tree = isLast ? "  ┗━" : "  ┣━";
+      const label = b === branch ? pc.yellow(b) + pc.dim(" (current)") : b;
+      const tag = findStackForBranch(meta, b) ? pc.dim(" (in stack)") : pc.green(" +");
+      console.log(`${tree} ${label}${tag}`);
+      if (!isLast) console.log("  ┃");
+    }
+    console.log();
+    console.log(`  Add it to the stack:`);
+    console.log(`    ${pc.green("gh-stack submit")}`);
+    console.log();
+    return;
+  }
+
   if (chain.length > 1) {
-    // Stacked on top of other local branches — show the chain submit would adopt.
+    // Stacked on untracked branches only — submit CREATES a new stack.
     console.log(`  It's stacked on ${chain.length - 1} other local branch(es):`);
     console.log();
     console.log(`  ${pc.dim(trunk)}`);

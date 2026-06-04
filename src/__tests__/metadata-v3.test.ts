@@ -4,7 +4,14 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { $ } from "bun";
 import * as fs from "node:fs/promises";
 import type { StackMetadata } from "../types.ts";
-import { createTempRepo, createLinearStack, checkout, cleanup } from "./helpers.ts";
+import {
+  createTempRepo,
+  createLinearStack,
+  createBranch,
+  makeCommit,
+  checkout,
+  cleanup,
+} from "./helpers.ts";
 import { readMetadata, writeMetadata, v3Exists, initMetadata } from "../lib/metadata.ts";
 import {
   setBranchMembership,
@@ -137,6 +144,18 @@ describe("current stack derivation", () => {
     // Forge a hint that disagrees with where we're standing.
     await Bun.write(currentFilePath(), "some-other-stack\n");
 
+    const meta = await readMetadata();
+    expect(meta!.current_stack).toBe("test-stack");
+    expect((await Bun.file(currentFilePath()).text()).trim()).toBe("test-stack");
+  });
+
+  test("an untracked branch built on top of a stack inherits it as current", async () => {
+    await createLinearStack(tmpDir); // test-stack: pr1 → pr2 → pr3
+    await createBranch(tmpDir, "pr4-wip", "pr3");
+    await makeCommit(tmpDir, "wip.txt", "wip\n", "pr4: wip");
+    await checkout(tmpDir, "pr4-wip");
+
+    // pr4-wip isn't a member, but it sits on pr3 — walk up to test-stack.
     const meta = await readMetadata();
     expect(meta!.current_stack).toBe("test-stack");
     expect((await Bun.file(currentFilePath()).text()).trim()).toBe("test-stack");

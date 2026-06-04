@@ -11,7 +11,6 @@ import {
   metadataExists,
   legacyMetadataExists,
   getOrderedBranches,
-  findStackForBranch,
   stackBase,
 } from "../lib/metadata.ts";
 
@@ -72,7 +71,10 @@ metadata. Use --json as a stable interface so scripts don't parse the
     // Detached HEAD or not on a branch — fine, just no "current" context.
   }
 
-  const currentStackName = currentBranch ? findStackForBranch(meta, currentBranch) : null;
+  // readMetadata already resolved the current stack authoritatively: the
+  // branch's own stack, or — for a new branch built on top of one — the nearest
+  // tracked ancestor's stack, or null. Trust it rather than re-deriving.
+  const currentStackName = meta.current_stack;
 
   const entries = Object.entries(meta.stacks)
     .filter(([name]) => !currentOnly || name === currentStackName)
@@ -99,9 +101,6 @@ metadata. Use --json as a stable interface so scripts don't parse the
     console.log(
       JSON.stringify(
         {
-          // Derived purely from the branch you're on — never the persisted
-          // hint, which can be stale (e.g. you `git checkout main` without
-          // gh-stack knowing). On/off a stacked branch is the only signal.
           current_stack: currentStackName,
           current_branch: currentBranch,
           stacks: entries,

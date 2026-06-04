@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.1
+## 0.11.0
 
 ### 🐛 Fixes
 - **The current stack is now derived from the branch you're on — never a stale stored hint — and self-heals on every command.** The invariant: a stack is "current" only while you're on a branch that belongs to it; stand on `main` or any branch in no stack and there is **no** current stack. This is now enforced in one place — `readMetadata` resolves `current_stack` on every read (branch git config → scan active stacks → else none) and rewrites the on-disk `current` pointer when it drifts. A stale hint left by a prior session, a `merge`, or a plain `git checkout` clears itself on the next command rather than resurfacing a stack you'd already left. Knock-on changes:

@@ -163,11 +163,13 @@ merge [--dry-run] [-d|--delete-branch] [--collapse]
                 `gh-stack merge` (without --collapse) to finish.
 
 split [<branch>] [--name <name>]
-    Cut the current stack into two at <branch>. The cut branch and every
-    branch above it move into a NEW stack whose base is the cut branch's
-    parent (which stays in the original stack). Purely a metadata
-    operation — no git branches are moved or rebased. Interactive
-    selector if no branch is given; you can't split at the stack's root.
+    Cut a stack into two at <branch>. The cut branch and every branch
+    above it move into a NEW stack whose base is the cut branch's parent
+    (which stays in the original stack). The target stack is the one
+    containing <branch>, so this works from anywhere — not only while
+    standing on it. Purely a metadata operation — no git branches are
+    moved or rebased. Interactive selector (current stack) if no branch
+    is given; you can't split at the stack's root.
 
     Use it when a long chain is in review and can't merge yet, but new
     work is piling on top: split at the first "new work" branch so the
@@ -189,9 +191,11 @@ rename [<old-name>] <new-name>
     still tracks the old remote branch.
 
 delete [<branch>] [-k|--keep-branch] [--no-remote]
-    Remove a branch from the stack and re-parent its children, then
+    Remove a branch from its stack and re-parent its children, then
     delete the underlying local git branch (and the remote branch if
-    it was pushed). Interactive selector if no branch specified.
+    it was pushed). The <branch> argument names its own stack, so this
+    works from anywhere. Interactive selector (current stack) if none
+    specified.
     --keep-branch leaves the git branches untouched (metadata only);
     --no-remote deletes the local branch but keeps the remote.
 ```
@@ -202,6 +206,11 @@ delete [<branch>] [-k|--keep-branch] [--no-remote]
 log
     Display the current stack as a tree with branch numbers,
     PR info, and descriptions. This is the default command.
+
+    If the current branch isn't tracked yet, log inspects its ancestry
+    and points at the next step: if it sits on top of an existing stack,
+    `gh-stack submit` to add it; if it's stacked on untracked branches,
+    submit to create the stack and open PRs; if it's on trunk, `init`.
 
 update-prs [--force]
     Refresh the "📚 Stacked on" visualization block in every PR
@@ -299,7 +308,7 @@ per-stack files plus git-native branch config, rather than a single JSON blob:
 
 ```
 .git/.gh-stack/
-  current                      hint: last-active stack name
+  current                      derived stack of the current branch (self-heals on read)
   active/<stack>.json          topology of a live stack (ordered branches, base, description)
   archived/<stack>.json        merged/closed stacks
   deleted/<stack>.json         tombstones (recoverable)
@@ -337,8 +346,10 @@ any drift. Why this shape:
 - **A stack can't silently vanish** — lifecycle transitions are file moves
   (`active/ → archived/ → deleted/`), and a stale stack file is tombstoned, never
   just unlinked.
-- **No `current_stack` drift** — the stack you're on is derivable from the
-  branch's own config, so a written pointer can't contradict reality.
+- **No `current_stack` drift** — the stack you're on is derived from the branch
+  you've checked out (its own membership, or the nearest tracked ancestor for a
+  new branch stacked on top), re-resolved and self-healed on every read, so a
+  written pointer can never contradict reality.
 - **No all-or-nothing blast radius** — one bad write can't corrupt other stacks.
 - **Renames heal themselves** — `git branch -m old new` moves the whole
   `branch.<old>` config section to `branch.<new>` (id and all), but the JSON is

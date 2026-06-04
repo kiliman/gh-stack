@@ -13,7 +13,7 @@ import { isAutoYes } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
 import { getPrNumber } from "../lib/github.ts";
 import { resolveOrCreateStack } from "../lib/chain.ts";
-import { refreshStackViz, branchToTitle } from "./update-prs.ts";
+import { reconcilePrTitles, refreshStackViz, branchToTitle } from "./update-prs.ts";
 
 const HELP = `
 gh-stack submit — Push branches and create/update PRs
@@ -353,14 +353,17 @@ export default async function submit(args: string[]): Promise<void> {
     return;
   }
 
-  // ── Phase 2: Refresh the stack visualization (renders locally, PATCHes only
-  // the PRs whose block actually changed; see issue #16). ──
-  p.log.info(pc.cyan("Updating stack visualization..."));
+  // ── Phase 2: Reconcile PR titles (stack position) then refresh the stack
+  // visualization. Titles first so the viz renders the numbered titles. Both
+  // render locally and only hit the network for PRs that actually changed
+  // (see issue #16), so a no-op re-submit is free. ──
+  p.log.info(pc.cyan("Updating PR titles & stack visualization..."));
+  const titles = await reconcilePrTitles(stack, ordered);
   const viz = await refreshStackViz(meta, stack, ordered);
 
   // One persist for everything we cached this run (discovered PRs, base edits,
-  // backfilled titles, viz hashes).
-  if (metadataChanged || viz.dirty) {
+  // backfilled/renumbered titles, viz hashes).
+  if (metadataChanged || titles.dirty || viz.dirty) {
     await writeMetadata(meta);
   }
 
@@ -368,7 +371,7 @@ export default async function submit(args: string[]): Promise<void> {
   console.log();
   p.outro(
     pc.green(
-      `Done! Pushed ${pushed} branch(es), created ${created} PR(s), updated ${viz.updated} description(s)` +
+      `Done! Pushed ${pushed} branch(es), created ${created} PR(s), updated ${viz.updated} description(s), ${titles.updated} title(s)` +
         (viz.unchanged > 0 ? `, ${viz.unchanged} unchanged` : ""),
     ),
   );

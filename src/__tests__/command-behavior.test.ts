@@ -16,7 +16,7 @@ import merge from "../commands/merge.ts";
 import submit from "../commands/submit.ts";
 import log from "../commands/log.ts";
 import list from "../commands/list.ts";
-import { buildStackViz } from "../commands/update-prs.ts";
+import { buildStackViz, numberedTitle, stripSeqSuffix } from "../commands/update-prs.ts";
 import { STACK_SYNC_TAG_GLOB } from "../lib/git.ts";
 import { getCurrentBranch, getSha } from "./helpers.ts";
 
@@ -200,18 +200,19 @@ describe("buildStackViz", () => {
     expect(viz).not.toContain("beehiiv/swarm");
   });
 
-  test("numbers each branch by its stack position and omits review emoji", () => {
+  test("shows titles without a position prefix (position lives in the title) and omits review emoji", () => {
     const viz = buildStackViz(
       [
-        { branch: "pr1", prNumber: 123, prTitle: "Backend models", prUrl: null },
-        { branch: "pr2", prNumber: 124, prTitle: "Frontend UI", prUrl: null },
+        { branch: "pr1", prNumber: 123, prTitle: "Backend models (1/2)", prUrl: null },
+        { branch: "pr2", prNumber: 124, prTitle: "Frontend UI (2/2)", prUrl: null },
       ],
       1,
     );
 
-    // 1-based stack index prefixes each line.
-    expect(viz).toContain("1. #123 Backend models");
-    expect(viz).toContain("2. #124 Frontend UI 👈");
+    // No leading "N." — the stack position is carried by the title's (N/M).
+    expect(viz).toContain("#123 Backend models (1/2)");
+    expect(viz).toContain("#124 Frontend UI (2/2) 👈");
+    expect(viz).not.toMatch(/\b1\.\s+#123/);
     // Review/CI status is intentionally not rendered (tracked out-of-band).
     expect(viz).not.toContain("✅");
     expect(viz).not.toContain("⏳");
@@ -274,6 +275,43 @@ describe("buildStackViz", () => {
     // PR1's block (targetIndex 0) must differ once a new tip joins the stack,
     // so its cached hash misses and it gets the updated tree.
     expect(buildStackViz(after, 0)).not.toBe(buildStackViz(before, 0));
-    expect(buildStackViz(after, 0)).toContain("3. #3 Three");
+    expect(buildStackViz(after, 0)).toContain("#3 Three");
+  });
+});
+
+describe("PR title stack numbering", () => {
+  test("appends (position/total) for multi-PR stacks", () => {
+    expect(numberedTitle("feat: do work", 1, 3)).toBe("feat: do work (1/3)");
+    expect(numberedTitle("feat: do work", 3, 3)).toBe("feat: do work (3/3)");
+  });
+
+  test("no suffix for a single-PR stack", () => {
+    expect(numberedTitle("feat: solo", 1, 1)).toBe("feat: solo");
+  });
+
+  test("is idempotent — re-applying replaces, never doubles", () => {
+    const once = numberedTitle("feat: x", 2, 4);
+    expect(once).toBe("feat: x (2/4)");
+    expect(numberedTitle(once, 2, 4)).toBe("feat: x (2/4)");
+  });
+
+  test("renumbers when position/total changes", () => {
+    expect(numberedTitle("feat: x (2/4)", 3, 5)).toBe("feat: x (3/5)");
+  });
+
+  test("dropping back to a single PR strips the suffix", () => {
+    expect(numberedTitle("feat: x (2/4)", 1, 1)).toBe("feat: x");
+  });
+
+  test("preserves bracketed ticket tags — only the paren suffix is managed", () => {
+    expect(numberedTitle("feat(paid-subs): tiers list [BEE-20531]", 1, 4)).toBe(
+      "feat(paid-subs): tiers list [BEE-20531] (1/4)",
+    );
+    expect(stripSeqSuffix("feat: x [BEE-1] (2/4)")).toBe("feat: x [BEE-1]");
+  });
+
+  test("stripSeqSuffix ignores non-position parens", () => {
+    expect(stripSeqSuffix("feat: x")).toBe("feat: x");
+    expect(stripSeqSuffix("feat: add (wip) support")).toBe("feat: add (wip) support");
   });
 });

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0
+
+### ✨ Features
+- **Stack position in PR titles** — `submit` now suffixes each PR title with its stack position as `(N/M)` (e.g. `feat(paid-subs): tier detail page [BEE-20550] (2/4)`), so the order is visible in a bare "needs your review" list where only titles show — not just inside the description's viz block. Parentheses (not brackets) avoid colliding with `[BEE-1234]` ticket tags. It's **self-healing and idempotent**: adding or reordering a branch renumbers the whole stack on the next `submit`, a no-op re-submit makes zero edits, and only the `(N/M)` part is managed — your title text and ticket tags are preserved. Single-PR stacks get no suffix. Existing stacks are backfilled automatically (a one-time title fetch), and `gh-stack update-prs` reconciles titles too. (Thanks to Merritt for the request.)
+- Since the position now lives in the title, the `### 📚 Stacked on` description block **drops its redundant `1.`/`2.` prefix** — the tree just shows the (now-numbered) titles. Local views (`log`, `ls`, `stacks`) keep their numbering.
+
 ## 0.11.0
 
 ### 🐛 Fixes

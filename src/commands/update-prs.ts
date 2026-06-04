@@ -16,8 +16,15 @@ import {
   writeMetadata,
 } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
-import { getPrInfo, getPrBody, updatePrBody, getRepoNwo, prUrlFor } from "../lib/github.ts";
-import type { StackMetadata, Stack } from "../types.ts";
+import {
+  getPrInfo,
+  getPrBody,
+  updatePrBody,
+  updatePrTitle,
+  getRepoNwo,
+  prUrlFor,
+} from "../lib/github.ts";
+import type { StackMetadata, Stack, Branch } from "../types.ts";
 
 /** The ref a stack is rooted on, for rendering the base node of the viz. */
 export interface BaseRef {
@@ -101,6 +108,66 @@ function mergeViz(body: string, viz: string): string {
   const idx = base.indexOf("### 📚 Stacked on");
   if (idx !== -1) base = base.slice(0, idx).trimEnd();
   return base ? `${base}\n\n${viz}` : viz;
+}
+
+// ── PR-title stack numbering ──
+//
+// The stack position lives in the PR title as a ` (N/M)` suffix so reviewers
+// can see order from a bare "needs review" list (parens, not brackets, to avoid
+// colliding with `[BEE-1234]` ticket tags). The cached `prTitle` tracks exactly
+// what's on GitHub; we recover the base title by stripping the suffix and
+// re-applying the current position, so reordering/adding a branch renumbers the
+// whole stack and a no-op re-submit touches nothing.
+
+/** Matches a trailing ` (N/M)` stack-position suffix, e.g. " (2/4)". */
+const SEQ_SUFFIX = /\s*\(\d+\/\d+\)\s*$/;
+
+/** Strip a trailing ` (N/M)` suffix to recover the base PR title. */
+export function stripSeqSuffix(title: string): string {
+  return title.replace(SEQ_SUFFIX, "").trimEnd();
+}
+
+/** The title a branch at `position` of `total` should have. Idempotent. */
+export function numberedTitle(title: string, position: number, total: number): string {
+  const base = stripSeqSuffix(title);
+  return total >= 2 ? `${base} (${position}/${total})` : base;
+}
+
+export interface TitleResult {
+  updated: number; // PR titles we edited on GitHub
+  dirty: boolean; // metadata mutated (cached prTitle changed) — caller persists
+}
+
+/**
+ * Reconcile every PR title in the stack to carry its `(N/M)` stack position.
+ * Backfills any missing cached titles first (so we never clobber a real GitHub
+ * title with a branch-name guess), renders the desired title from the cached
+ * one, and only calls `gh pr edit --title` when it actually changed — a no-op
+ * re-submit makes zero edits, while adding/reordering a branch renumbers the
+ * whole stack. Run this BEFORE refreshStackViz so the viz shows numbered titles.
+ */
+export async function reconcilePrTitles(stack: Stack, ordered: string[]): Promise<TitleResult> {
+  const dirtyBackfill = await backfillTitles(stack, ordered);
+  const total = ordered.length;
+
+  const plans: { pr: number; desired: string; bm: Branch }[] = [];
+  for (let i = 0; i < ordered.length; i++) {
+    const bm = stack.branches[ordered[i]!]!;
+    // Need a known base title — never guess from the branch name for an
+    // existing PR (backfill couldn't fetch it → skip rather than clobber).
+    if (bm.pr == null || !bm.prTitle) continue;
+    const desired = numberedTitle(bm.prTitle, i + 1, total);
+    if (desired !== bm.prTitle) plans.push({ pr: bm.pr, desired, bm });
+  }
+
+  const oks = await mapLimit(plans, 8, async (plan) => {
+    const ok = await updatePrTitle(plan.pr, plan.desired);
+    if (ok) plan.bm.prTitle = plan.desired;
+    return ok;
+  });
+
+  const updated = oks.filter(Boolean).length;
+  return { updated, dirty: dirtyBackfill || updated > 0 };
 }
 
 export interface VizResult {
@@ -192,16 +259,17 @@ PRs whose rendered block is unchanged are skipped; --force rewrites all.
   console.log();
 
   const s = p.spinner();
-  s.start("Updating PR descriptions...");
+  s.start("Updating PR titles & descriptions...");
+  const titles = await reconcilePrTitles(stack, ordered);
   const result = await refreshStackViz(meta, stack, ordered, { force });
   s.stop("Done");
 
-  if (result.dirty) await writeMetadata(meta);
+  if (titles.dirty || result.dirty) await writeMetadata(meta);
 
   console.log();
   p.outro(
     pc.green(
-      `Updated ${result.updated} PR(s)` +
+      `Updated ${result.updated} description(s), ${titles.updated} title(s)` +
         (result.unchanged > 0 ? `, ${result.unchanged} unchanged` : "") +
         (result.skipped > 0 ? `, ${result.skipped} without PRs` : ""),
     ),
@@ -249,9 +317,9 @@ export function buildStackViz(
     // Tree character
     const tree = isLast ? "┗━" : "┣━";
 
-    // Leading `N.` is the branch's 1-based position in the stack — makes it
-    // easy to tell which PR is #6 in a 12-PR stack at a glance.
-    lines.push(`${tree} ${i + 1}. ${prLink} ${info.prTitle}${marker}`);
+    // No leading `N.` — the stack position now lives in the PR title itself as
+    // a `(N/M)` suffix (see reconcilePrTitles), so the tree just shows titles.
+    lines.push(`${tree} ${prLink} ${info.prTitle}${marker}`);
 
     if (!isLast) {
       lines.push("┃");

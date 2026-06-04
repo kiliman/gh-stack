@@ -137,6 +137,18 @@ export async function updatePrBody(prNumber: number, body: string): Promise<bool
 }
 
 /**
+ * Update a PR's title.
+ */
+export async function updatePrTitle(prNumber: number, title: string): Promise<boolean> {
+  try {
+    await $`gh pr edit ${prNumber} --title ${title}`.quiet();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Get PR body text.
  */
 export async function getPrBody(prNumber: number): Promise<string | null> {

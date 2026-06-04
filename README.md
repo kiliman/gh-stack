@@ -85,8 +85,9 @@ create <branch-name> [--description <desc>]
 
 submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--dry-run]
     Push all downstack branches to GitHub, create PRs for branches
-    that don't have them, and update all PR descriptions with stack
-    visualization. Idempotent — safe to run repeatedly.
+    that don't have them, number each PR title with its stack position
+    `(N/M)`, and update all PR descriptions with stack visualization.
+    Idempotent — safe to run repeatedly.
 
     Self-healing: if the current branch isn't tracked in a stack yet,
     submit auto-detects the chain from trunk → current, registers (or
@@ -279,19 +280,36 @@ gh-stack solves this by snapshotting every branch's tip **before** any destructi
 
 Snapshots also power `gh-stack undo`, so the same data structure does double duty.
 
+### Stack Position in PR Titles
+
+`submit` keeps each PR's **title** suffixed with its stack position as `(N/M)`,
+so you can see the order from a bare "needs your review" list — where only
+titles show, not descriptions — and review bottom-up:
+
+```
+feat(paid-subs): tiers overview list [BEE-20531] (1/4)
+feat(paid-subs): tier detail page [BEE-20550] (2/4)
+feat(paid-subs): tier create wizard [BEE-20579] (3/4)
+feat(paid-subs): advanced settings step [BEE-20587] (4/4)
+```
+
+Parentheses (not brackets) avoid colliding with `[BEE-1234]` ticket tags. It's
+self-healing and idempotent: re-running `submit` after adding or reordering a
+branch renumbers the whole stack, and a no-op re-submit changes nothing. The
+position is the only managed part of the title — your text (and ticket tags)
+are preserved. Single-PR stacks get no suffix.
+
 ### Stack Visualization
 
-`submit` automatically adds a stack section to all PR descriptions, with each
-branch numbered by its position in the stack (handy for spotting "which one is
-PR 6 of 12"):
+`submit` also adds a stack section to every PR description:
 
 ```
 ### 📚 Stacked on
 ⚫ main
 ┃
-┣━ 1. #123 Backend models
+┣━ #123 feat: backend models (1/2)
 ┃
-┗━ 2. #124 Frontend UI 👈
+┗━ #124 feat: frontend UI (2/2) 👈
 ```
 
 The block is rendered entirely from local metadata plus one repo-identity

@@ -9,7 +9,12 @@
   - **`split <branch>` / `delete <branch>`** now resolve their target stack from the **branch argument** (which names its stack unambiguously) rather than from "current," so they operate on the right stack from anywhere — not only while standing on it. Interactive mode (no branch given) still uses the current stack.
 
 ### ✨ Features
-- **`log` (the default command) now points you at the next step when the branch isn't tracked yet.** Instead of a dead-end "not in any stack" message (which also suggested a nonexistent `gh-stack add`), it inspects the branch's local ancestry — the same chain `submit` self-heals — and recommends the lowest-friction action: if you're **stacked on other local branches**, it draws the detected chain and tells you `gh-stack submit` will create the stack and open PRs for the whole chain; if you're **based directly on trunk**, `gh-stack submit` pushes it and opens a PR (starting the stack); if you're **on trunk**, it points at `gh-stack init`.
+- **The current stack now follows the parent chain — a new branch built on top of a stack belongs to that stack.** Current-stack resolution gains an ancestry step: branch's own membership → scan active stacks → **nearest tracked ancestor's stack** → none. So a fresh, unsubmitted branch stacked on top of an existing stack is understood as part of it (you're extending it, not seeding a new one), and `stacks --json` reports that stack as `current_stack`. The walk probes only tracked branches, so the common path (you're on a tracked branch) stays instant.
+- **`log` (the default command) now points you at the next step when the branch isn't tracked yet.** Instead of a dead-end "not in any stack" message (which also suggested a nonexistent `gh-stack add`), it inspects the branch's local ancestry — the same chain `submit` self-heals — and recommends the lowest-friction action:
+  - **sits on top of an existing stack** → draws the chain (marking which branches are already in the stack vs. new) and tells you `gh-stack submit` will **add** the branch to that stack;
+  - **stacked on untracked branches only** → `gh-stack submit` will **create** the stack and open PRs for the whole chain;
+  - **based directly on trunk** → `gh-stack submit` pushes it and opens a PR (starting the stack);
+  - **on trunk** → `gh-stack init`.
 
 ## 0.10.0
 

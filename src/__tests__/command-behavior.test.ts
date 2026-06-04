@@ -16,7 +16,12 @@ import merge from "../commands/merge.ts";
 import submit from "../commands/submit.ts";
 import log from "../commands/log.ts";
 import list from "../commands/list.ts";
-import { buildStackViz, numberedTitle, stripSeqSuffix } from "../commands/update-prs.ts";
+import {
+  buildStackViz,
+  numberedTitle,
+  stripSeqSuffix,
+  planTitleEdits,
+} from "../commands/update-prs.ts";
 import { STACK_SYNC_TAG_GLOB } from "../lib/git.ts";
 import { getCurrentBranch, getSha } from "./helpers.ts";
 
@@ -313,5 +318,54 @@ describe("PR title stack numbering", () => {
   test("stripSeqSuffix ignores non-position parens", () => {
     expect(stripSeqSuffix("feat: x")).toBe("feat: x");
     expect(stripSeqSuffix("feat: add (wip) support")).toBe("feat: add (wip) support");
+  });
+});
+
+describe("planTitleEdits", () => {
+  test("numbers cached titles by position, skips branches without a PR or title", () => {
+    const edits = planTitleEdits([
+      { pr: 1, prTitle: "feat: a" },
+      { pr: null, prTitle: "feat: b" }, // no PR → skip
+      { pr: 3, prTitle: undefined }, // no known title → skip (never guess)
+    ]);
+    expect(edits).toEqual([{ item: { pr: 1, prTitle: "feat: a" }, desired: "feat: a (1/3)" }]);
+  });
+
+  test("skips a PR whose title is already correctly numbered (no-op re-submit)", () => {
+    const edits = planTitleEdits([
+      { pr: 1, prTitle: "feat: a (1/2)" },
+      { pr: 2, prTitle: "feat: b (2/2)" },
+    ]);
+    expect(edits).toEqual([]);
+  });
+
+  test("an override sets a new base title and still gets numbered", () => {
+    const edits = planTitleEdits([
+      { pr: 1, prTitle: "feat: a (1/2)" }, // already correct → no edit
+      { pr: 2, prTitle: "feat: b (2/2)", override: "feat: brand new" },
+    ]);
+    expect(edits).toEqual([
+      {
+        item: { pr: 2, prTitle: "feat: b (2/2)", override: "feat: brand new" },
+        desired: "feat: brand new (2/2)",
+      },
+    ]);
+  });
+
+  test("override pushes even on a single-PR stack (no suffix to diff against)", () => {
+    const edits = planTitleEdits([
+      { pr: 9, prTitle: "feat: old title", override: "feat: new title" },
+    ]);
+    expect(edits).toEqual([
+      {
+        item: { pr: 9, prTitle: "feat: old title", override: "feat: new title" },
+        desired: "feat: new title",
+      },
+    ]);
+  });
+
+  test("override matching the current title is a no-op", () => {
+    const edits = planTitleEdits([{ pr: 9, prTitle: "feat: same", override: "feat: same" }]);
+    expect(edits).toEqual([]);
   });
 });

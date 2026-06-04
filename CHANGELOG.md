@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.0
+
+### ✨ Features
+- **`submit -t` / `-b` / `--body-file` now update an existing PR, not just new ones** — set the title or body for the branch you're on and `submit` applies it in place if the PR already exists. The title keeps its `(N/M)` stack position; the body is replaced with the `📚 Stacked on` block **re-merged in**. This makes `submit` the one tool to update a PR's title/description without `gh pr edit --body` clobbering the stack visualization — handy for agents/scripts that regenerate descriptions. Scoped to the current branch, idempotent (a no-op re-run changes nothing), and the local cache stays in sync. Run it whenever you want.
+
 ## 0.12.0
 
 ### ✨ Features

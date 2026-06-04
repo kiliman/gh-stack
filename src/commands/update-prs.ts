@@ -24,7 +24,7 @@ import {
   getRepoNwo,
   prUrlFor,
 } from "../lib/github.ts";
-import type { StackMetadata, Stack, Branch } from "../types.ts";
+import type { StackMetadata, Stack } from "../types.ts";
 
 /** The ref a stack is rooted on, for rendering the base node of the viz. */
 export interface BaseRef {
@@ -139,30 +139,57 @@ export interface TitleResult {
 }
 
 /**
+ * Decide which PR titles need editing and to what. Pure (no network) so it's
+ * unit-testable. `items` must be the whole stack in order — the index drives
+ * the `(N/M)` position. The base title is an explicit `override` (from
+ * `submit -t`) when given, else the cached `prTitle`; a branch with neither a
+ * PR nor a known base is skipped (never guess from the branch name). An edit is
+ * emitted only when the desired title differs from what's cached/on GitHub.
+ */
+export function planTitleEdits<
+  T extends { pr?: number | null; prTitle?: string; override?: string },
+>(items: T[]): { item: T; desired: string }[] {
+  const total = items.length;
+  const edits: { item: T; desired: string }[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]!;
+    if (it.pr == null) continue;
+    const base = it.override ?? it.prTitle;
+    if (!base) continue;
+    const desired = numberedTitle(base, i + 1, total);
+    if (desired !== it.prTitle) edits.push({ item: it, desired });
+  }
+  return edits;
+}
+
+/**
  * Reconcile every PR title in the stack to carry its `(N/M)` stack position.
  * Backfills any missing cached titles first (so we never clobber a real GitHub
- * title with a branch-name guess), renders the desired title from the cached
- * one, and only calls `gh pr edit --title` when it actually changed — a no-op
- * re-submit makes zero edits, while adding/reordering a branch renumbers the
- * whole stack. Run this BEFORE refreshStackViz so the viz shows numbered titles.
+ * title with a branch-name guess), then edits only the titles that actually
+ * changed — a no-op re-submit makes zero edits, while adding/reordering a
+ * branch renumbers the whole stack. Run BEFORE refreshStackViz so the viz shows
+ * numbered titles.
+ *
+ * `titleOverrides` (branch → new base title) lets `submit -t` set the current
+ * branch's title; the override is renumbered like any other title and the
+ * cache is kept in sync.
  */
-export async function reconcilePrTitles(stack: Stack, ordered: string[]): Promise<TitleResult> {
+export async function reconcilePrTitles(
+  stack: Stack,
+  ordered: string[],
+  opts: { titleOverrides?: Record<string, string> } = {},
+): Promise<TitleResult> {
   const dirtyBackfill = await backfillTitles(stack, ordered);
-  const total = ordered.length;
+  const overrides = opts.titleOverrides ?? {};
 
-  const plans: { pr: number; desired: string; bm: Branch }[] = [];
-  for (let i = 0; i < ordered.length; i++) {
-    const bm = stack.branches[ordered[i]!]!;
-    // Need a known base title — never guess from the branch name for an
-    // existing PR (backfill couldn't fetch it → skip rather than clobber).
-    if (bm.pr == null || !bm.prTitle) continue;
-    const desired = numberedTitle(bm.prTitle, i + 1, total);
-    if (desired !== bm.prTitle) plans.push({ pr: bm.pr, desired, bm });
-  }
+  const items = ordered.map((name) => {
+    const bm = stack.branches[name]!;
+    return { pr: bm.pr, prTitle: bm.prTitle, override: overrides[name], bm };
+  });
 
-  const oks = await mapLimit(plans, 8, async (plan) => {
-    const ok = await updatePrTitle(plan.pr, plan.desired);
-    if (ok) plan.bm.prTitle = plan.desired;
+  const oks = await mapLimit(planTitleEdits(items), 8, async ({ item, desired }) => {
+    const ok = await updatePrTitle(item.pr!, desired);
+    if (ok) item.bm.prTitle = desired;
     return ok;
   });
 
@@ -181,14 +208,20 @@ export interface VizResult {
  * Refresh the stack visualization across a stack's PRs. Renders every block
  * locally, then PATCHes only the PRs whose block actually changed (unless
  * `force`), running the surviving PATCHes concurrently.
+ *
+ * `bodyOverrides` (branch → new description) lets `submit -b` replace a PR's
+ * body: the override is used as the base instead of the current GitHub body,
+ * the managed `📚 Stacked on` block is re-merged into it, and the PR is updated
+ * even if the viz block itself didn't change.
  */
 export async function refreshStackViz(
   meta: StackMetadata,
   stack: Stack,
   ordered: string[],
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; bodyOverrides?: Record<string, string> } = {},
 ): Promise<VizResult> {
   const force = opts.force ?? false;
+  const bodyOverrides = opts.bodyOverrides ?? {};
   const nwo = await getRepoNwo();
 
   let dirty = await backfillTitles(stack, ordered);
@@ -204,7 +237,9 @@ export async function refreshStackViz(
       const viz = buildStackViz(branchInfos, i, baseRef);
       const hash = vizHash(viz);
       const bm = stack.branches[info.branch]!;
-      return { info, viz, hash, bm, needsUpdate: force || bm.vizHash !== hash };
+      // A body override forces the PATCH even when the viz block is unchanged.
+      const overridden = bodyOverrides[info.branch] != null;
+      return { info, viz, hash, bm, needsUpdate: force || overridden || bm.vizHash !== hash };
     });
 
   const toUpdate = plans.filter((plan) => plan.needsUpdate);
@@ -212,7 +247,10 @@ export async function refreshStackViz(
   const skipped = branchInfos.length - plans.length;
 
   const oks = await mapLimit(toUpdate, 8, async (plan) => {
-    const body = await getPrBody(plan.info.prNumber!);
+    // `submit -b` replaces the body; otherwise keep the PR's current body and
+    // just re-merge the viz block into it.
+    const override = bodyOverrides[plan.info.branch];
+    const body = override ?? (await getPrBody(plan.info.prNumber!));
     if (body === null) return false;
     const ok = await updatePrBody(plan.info.prNumber!, mergeViz(body, plan.viz));
     if (ok) plan.bm.vizHash = plan.hash;

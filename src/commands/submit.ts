@@ -33,10 +33,15 @@ chain. You never need to run \`gh-stack init\` first.
 OPTIONS
   -d, --draft          Create new PRs as drafts
   -n, --no-edit        Don't prompt for PR titles (auto-generate from branch name)
-  -t, --title <title>  PR title for new PRs (skips prompt)
-  -b, --body <body>    PR body/description for new PRs
+  -t, --title <title>  Set the PR title (current branch) — creates or updates
+  -b, --body <body>    Set the PR body (current branch) — creates or updates
       --body-file <f>  Read PR body from a file
       --dry-run        Show what would happen without doing anything
+
+Updating an existing PR: -t / -b also update the PR for the branch you're on
+if it already exists — the title keeps its (N/M) stack position, and the body
+is replaced with the "Stacked on" block re-merged in. Use this instead of
+gh pr edit so the stack visualization is never clobbered.
 
 EXAMPLES
   gh-stack submit                              # Push + create PRs interactively
@@ -357,9 +362,17 @@ export default async function submit(args: string[]): Promise<void> {
   // visualization. Titles first so the viz renders the numbered titles. Both
   // render locally and only hit the network for PRs that actually changed
   // (see issue #16), so a no-op re-submit is free. ──
+  // `-t`/`-b` (and `--body-file`) update the PR for the branch you're on, even
+  // if it already exists — title is renumbered, body is replaced with the viz
+  // block re-merged. This makes `submit` the one tool to update a PR without
+  // `gh pr edit` clobbering the `📚 Stacked on` block.
   p.log.info(pc.cyan("Updating PR titles & stack visualization..."));
-  const titles = await reconcilePrTitles(stack, ordered);
-  const viz = await refreshStackViz(meta, stack, ordered);
+  const titles = await reconcilePrTitles(stack, ordered, {
+    titleOverrides: titleFlag ? { [branch]: titleFlag } : undefined,
+  });
+  const viz = await refreshStackViz(meta, stack, ordered, {
+    bodyOverrides: bodyFlag ? { [branch]: bodyFlag } : undefined,
+  });
 
   // One persist for everything we cached this run (discovered PRs, base edits,
   // backfilled/renumbered titles, viz hashes).

@@ -96,9 +96,14 @@ submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file
     from the top of a bare chain of local branches converges to the
     expected end state (stack registered, branches pushed, PRs created).
 
-    --title/-t and --body/-b provide PR details directly (skips prompts).
-    --body-file reads body from a file. In --yes mode without --title,
-    auto-generates PR titles from branch names.
+    --title/-t and --body/-b set the title/body for the branch you're on.
+    They work whether the PR is new OR already exists — on an existing PR
+    they update it in place: the title keeps its (N/M) stack position and
+    the body is replaced with the "📚 Stacked on" block re-merged in. Use
+    this instead of `gh pr edit` (which would wipe the stack viz block) to
+    let an agent or script regenerate a PR's title/description safely.
+    --body-file reads the body from a file. In --yes mode without --title,
+    titles are auto-generated from branch names.
 ```
 
 ### Stack Navigation

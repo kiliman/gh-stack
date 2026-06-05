@@ -185,7 +185,7 @@ ${bold("STACK NAVIGATION")}
 ${bold("STACK MANAGEMENT")}
   ${green("restack")}        Rebase children onto updated parents
   ${green("sync")}           Sync base with main + restack all
-  ${green("merge")}          Local squash-merge top-down
+  ${green("merge")}          Squash-merge via GitHub (top-down, or --approved bottom-up)
   ${green("split")}          Cut a stack into two at a branch
   ${green("rename")}         Rename a tracked branch (keeps metadata in sync)
   ${green("delete")}         Remove a branch from the stack

@@ -6,13 +6,15 @@ import * as git from "../lib/git.ts";
 import {
   findStackForBranch,
   getOrderedBranches,
+  removeBranchFromStack,
   stackBase,
   writeMetadata,
 } from "../lib/metadata.ts";
-import { ensureMetadata, ensureValidStack } from "../lib/safety.ts";
+import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
-import { getBranchRefSha, getPrMergeState, resyncPrHead } from "../lib/github.ts";
+import { getBranchRefSha, getPrInfo, getPrMergeState, resyncPrHead } from "../lib/github.ts";
 import { confirmAction } from "../lib/ui.ts";
+import { planMerges, advanceNewBottom, type BranchReview } from "../lib/advance.ts";
 
 const MAX_RETRIES = 12;
 const RETRY_DELAY_MS = 5000;
@@ -175,6 +177,7 @@ export default async function merge(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const deleteFlag = args.includes("--delete-branch") || args.includes("-d");
   const collapse = args.includes("--collapse") || args.includes("--stop-at-base");
+  const approved = args.includes("--approved");
 
   if (args.includes("--help")) {
     console.log(`
@@ -182,9 +185,23 @@ gh-stack merge — Squash-merge stack via GitHub
 
 USAGE
   gh-stack merge [--dry-run] [-d|--delete-branch] [--collapse]
+  gh-stack merge --approved [--dry-run] [-d|--delete-branch]
 
-Squash-merges the stack from top to bottom via GitHub:
-  PR3 → squash into PR2, PR2 → squash into PR1, PR1 → auto-merge into main.
+DEFAULT (top-down collapse)
+  Squash-merges the stack from top to bottom via GitHub:
+    PR3 → squash into PR2, PR2 → squash into PR1, PR1 → auto-merge into main.
+  The whole stack lands on main as a single squash commit.
+
+--approved (bottom-up, merge what's ready)
+  Merges approved PRs from the BOTTOM of the stack up, each as its own
+  squash commit on main, and leaves the unreviewed tail as a clean stack
+  re-rooted on main. Stops at the first PR that isn't approved. For the
+  "merge PRs as they get reviewed, keep stacking the rest" workflow.
+
+  For each approved bottom PR it: squash-merges to main, re-roots the next
+  branch onto main (replaying only its own commits — no replay of the
+  squashed work), pushes it, and repoints its PR base to main. A PR already
+  merged outside gh-stack is detected and advanced past, not re-merged.
 
 All merges happen on GitHub, so PRs show as "Merged", Linear tickets
 close automatically, and all GitHub Actions/webhooks fire normally.
@@ -195,8 +212,11 @@ spurious "Head branch is out of date" (a stale PR head pointer after a
 child squash) by re-syncing the branch and retrying — only a genuine
 conflict or failing required check is reported as a hard failure.
 
+A snapshot is taken first; ${pc.green("gh-stack undo")} restores the prior state.
+
 OPTIONS
   -d, --delete-branch  Delete remote branches after merging
+      --approved       Merge approved PRs bottom-up; leave the rest as PRs
       --dry-run        Show what would happen without doing anything
       --collapse       Stop after collapsing the stack into the base PR;
                        do NOT merge base PR into main. Lets you review the
@@ -204,6 +224,11 @@ OPTIONS
                        (without --collapse) to finish the job.
       --stop-at-base   Alias for --collapse
 `);
+    return;
+  }
+
+  if (approved) {
+    await mergeApproved(deleteFlag, dryRun);
     return;
   }
 
@@ -521,4 +546,263 @@ OPTIONS
   await writeMetadata(meta);
 
   p.outro(pc.green("Stack merge complete! Stack archived."));
+}
+
+/**
+ * `gh-stack merge --approved` — merge approved PRs from the bottom of the stack
+ * up, each as its own squash commit on main, advancing the rest of the stack
+ * onto main as it goes. Stops at the first PR that isn't approved, leaving the
+ * unreviewed tail as a clean stack re-rooted on main.
+ *
+ * The cascade is interleaved by necessity: each PR must be rebased off the
+ * just-merged commits and pushed before the next one can merge cleanly, so we
+ * merge → advance → merge → advance one branch at a time (see ./lib/advance.ts
+ * for the re-root mechanics and fork-point resolution).
+ */
+async function mergeApproved(deleteFlag: boolean, dryRun: boolean): Promise<void> {
+  // We rebase the surviving branches, so the same pre-flight guards as restack.
+  if (await git.isRebaseInProgress()) {
+    p.cancel(
+      `Git rebase already in progress.\n\n  Finish or abort it first:\n    ${pc.green("git rebase --continue")}\n    ${pc.red("git rebase --abort")}`,
+    );
+    process.exit(1);
+  }
+  if (!dryRun) await ensureCleanWorkingTree();
+
+  const meta = await ensureMetadata();
+  const currentBranch = await git.currentBranch();
+  const stackName = findStackForBranch(meta, currentBranch);
+  if (!stackName) {
+    p.cancel(`Branch ${pc.blue(currentBranch)} not found in any stack`);
+    process.exit(1);
+  }
+
+  const stack = meta.stacks[stackName]!;
+  await ensureValidStack(meta, stackName);
+  const ordered = getOrderedBranches(stack);
+  if (ordered.length === 0) {
+    p.cancel("No branches in this stack");
+    process.exit(1);
+  }
+
+  // Like top-down merge: a split stack rooted off another stack can't drain to
+  // main until it's re-rooted. Require a trunk base.
+  const base = stackBase(stack);
+  if (base !== "main" && base !== "master") {
+    p.cancel(
+      `${pc.yellow(stackName)} is based on ${pc.yellow(base)}, not main — can't merge yet.\n\n` +
+        `  Merge (or finish) the parent stack first, then re-root onto main:\n` +
+        `    ${pc.green("gh-stack restack --onto main")}`,
+    );
+    process.exit(1);
+  }
+  const trunk = base;
+  const targetRef = `origin/${trunk}`;
+
+  p.intro(pc.cyan("Merge Approved (bottom-up, via GitHub)"));
+  p.log.info(`Stack: ${pc.yellow(stackName)}`);
+
+  // Gather each branch's PR review state, bottom-up.
+  const reviewSpinner = p.spinner();
+  reviewSpinner.start("Checking PR review status...");
+  const reviews: BranchReview[] = [];
+  for (const branch of ordered) {
+    const pr = stack.branches[branch]?.pr ?? null;
+    let prState: string | null = null;
+    let reviewDecision: string | null = null;
+    if (pr != null) {
+      const info = await getPrInfo(pr);
+      prState = info?.state ?? null;
+      reviewDecision = info?.reviewDecision ?? null;
+    }
+    reviews.push({ branch, pr, prState, reviewDecision });
+  }
+  reviewSpinner.stop("Review status checked");
+
+  const plan = planMerges(reviews, { approveAndMerge: true });
+
+  // Show the plan.
+  console.log();
+  console.log(`  ${pc.bold("Plan:")}`);
+  for (const step of plan.steps) {
+    const label =
+      step.action === "advance-only"
+        ? pc.dim("already merged — advance past")
+        : `${pc.green("squash-merge")} → ${pc.green(trunk)}`;
+    console.log(`    ${pc.yellow(step.branch)}${step.pr ? ` (#${step.pr})` : ""} → ${label}`);
+  }
+  if (plan.stop) {
+    console.log(
+      `    ${pc.dim("⏹")} stop at ${pc.yellow(plan.stop.branch)} ${pc.dim(`(${plan.stop.reason}) — left as a stack on ${trunk}`)}`,
+    );
+  }
+  console.log();
+
+  const mergeSteps = plan.steps.filter((s) => s.action === "merge");
+  if (mergeSteps.length === 0 && !plan.steps.some((s) => s.action === "advance-only")) {
+    p.outro(
+      plan.stop
+        ? pc.yellow(`Nothing approved to merge — bottom PR is ${plan.stop.reason}.`)
+        : pc.yellow("Nothing to merge."),
+    );
+    return;
+  }
+
+  if (dryRun) {
+    p.outro(pc.yellow("[DRY RUN] No changes made"));
+    return;
+  }
+
+  const confirmed = await confirmAction(
+    `Merge ${mergeSteps.length} approved PR(s) bottom-up into ${trunk} and re-root the rest?`,
+  );
+  if (!confirmed) {
+    p.cancel("Cancelled");
+    process.exit(0);
+  }
+
+  // Snapshot first — this records every branch's pre-merge tip, which both the
+  // fork-point resolver and `gh-stack undo` rely on.
+  await takeSnapshot(meta, stackName, "merge-approved");
+  // Keep a copy of the original topology to archive if the stack fully drains.
+  const originalStack = structuredClone(stack);
+
+  await $`git fetch origin ${trunk}`.quiet();
+
+  for (let i = 0; i < plan.steps.length; i++) {
+    const step = plan.steps[i]!;
+    const mergedBranch = step.branch;
+    const child = ordered[i + 1] ?? null;
+    const childPr = child ? (stack.branches[child]?.pr ?? null) : null;
+
+    console.log();
+    console.log(pc.cyan("━".repeat(40)));
+    console.log(
+      `${pc.blue(step.action === "merge" ? "Merge:" : "Advance:")} ${pc.yellow(mergedBranch)}${step.pr ? ` (#${step.pr})` : ""} → ${pc.green(trunk)}`,
+    );
+    console.log(pc.cyan("━".repeat(40)));
+
+    if (step.action === "merge") {
+      const prNum = step.pr!;
+      // Never stand on the branch we're about to merge (especially with
+      // --delete-branch, which removes the local branch too).
+      if ((await git.currentBranch().catch(() => "")) === mergedBranch) {
+        await git.checkout(trunk).catch(() => {});
+      }
+
+      const s = p.spinner();
+      s.start(`Checking PR #${prNum} is ready to merge...`);
+      await ensureFreshHead(prNum, mergedBranch, s);
+      const ready = await waitForMergeable(prNum, s);
+      if (!ready) {
+        s.stop(pc.red(`PR #${prNum} is not mergeable`));
+        p.log.info("Check the PR on GitHub for merge conflicts or required checks.");
+        p.log.info("Re-run with --approved to continue from where you left off.");
+        process.exit(2);
+      }
+
+      s.message(`Squash-merging PR #${prNum} into ${trunk}...`);
+      const result = await squashMergeWithRetry(prNum, mergedBranch, deleteFlag, s);
+      if (result.ok) {
+        s.stop(`Merged PR #${prNum} into ${pc.green(trunk)}`);
+      } else {
+        s.stop(pc.red(`Failed to merge PR #${prNum}`));
+        p.log.error(result.stderr);
+        p.log.info(
+          result.genuine
+            ? "Real conflict or failing required check — resolve it on GitHub."
+            : "GitHub's mergeability recompute didn't settle (transient lag).",
+        );
+        p.log.info("Re-run with --approved to continue from where you left off.");
+        process.exit(2);
+      }
+    } else {
+      p.log.info(`PR #${step.pr} already merged — advancing the stack past it.`);
+    }
+
+    if (child) {
+      const res = await advanceNewBottom({
+        meta,
+        stackName,
+        mergedBranch,
+        child,
+        childPr,
+        targetRef,
+        recordedBase: trunk,
+      });
+      if (!res.ok) {
+        console.log();
+        if (res.reason === "conflict") {
+          p.log.error(`Rebase conflict re-rooting ${pc.yellow(child)} onto ${trunk}.`);
+          console.log(`  Resolve the conflict, then:`);
+          console.log(`    ${pc.green("git rebase --continue")}`);
+          console.log(
+            `    ${pc.green("gh-stack restack")}   ${pc.dim("(restacks the rest of the tail)")}`,
+          );
+          console.log();
+          console.log(
+            pc.dim(`  The merged PR(s) below ${child} are done; only the re-root needs finishing.`),
+          );
+        } else {
+          p.log.error(
+            `Could not determine a safe rebase base for ${pc.yellow(child)} (${res.reason}).`,
+          );
+          console.log(
+            `  Re-root it manually:\n    ${pc.green(`git rebase --onto ${targetRef} <merged-tip> ${child}`)}`,
+          );
+        }
+        process.exit(2);
+      }
+    } else {
+      // The merged branch was the top — nothing rides above it. Just drop it.
+      await removeBranchFromStack(meta, stackName, mergedBranch);
+    }
+  }
+
+  // Did the whole stack drain, or is there a tail to restack?
+  const survivingStack = meta.stacks[stackName];
+  const remaining = survivingStack ? getOrderedBranches(survivingStack) : [];
+
+  if (remaining.length === 0) {
+    // Fully drained — archive the original topology and land on the trunk.
+    console.log();
+    const pullSpinner = p.spinner();
+    pullSpinner.start("Syncing local trunk...");
+    try {
+      await git.checkout(trunk);
+      await $`git pull origin ${trunk}`.quiet();
+      pullSpinner.stop("Local trunk synced");
+    } catch {
+      pullSpinner.stop(pc.dim(`Could not sync ${trunk} — run git pull manually`));
+    }
+
+    if (!meta.archive) meta.archive = {};
+    meta.archive[stackName] = originalStack;
+    delete meta.stacks[stackName];
+    if (meta.current_stack === stackName) meta.current_stack = null;
+    await writeMetadata(meta);
+
+    p.outro(pc.green("All approved PRs merged — stack drained & archived."));
+    return;
+  }
+
+  // Restack the surviving tail onto the newly re-rooted bottom. The new bottom
+  // is itself already rebased onto main; restack skips it (base branch) and
+  // propagates onto its children using the snapshot taken above.
+  console.log();
+  p.log.info(
+    `Restacking ${remaining.length} remaining branch(es) onto ${pc.yellow(remaining[0]!)}...`,
+  );
+  const newBottom = remaining[0]!;
+  if (await git.localBranchExists(newBottom)) {
+    await git.checkout(newBottom);
+    const { default: restack } = await import("./restack.ts");
+    await restack([]);
+  }
+
+  p.outro(
+    pc.green(
+      `Merged ${mergeSteps.length} approved PR(s); ${remaining.length} branch(es) left as a stack on ${trunk}.`,
+    ),
+  );
 }

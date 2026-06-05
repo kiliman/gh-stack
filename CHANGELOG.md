@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0
+
+### ✨ Features
+- **`merge --approved` — merge approved PRs bottom-up, keep stacking the rest.** For the "merge PRs as they get reviewed, leave the rest as PRs" workflow. Walks the stack from the bottom: for each approved PR it squash-merges to main as its own commit, then re-roots the next branch onto main — replaying **only that branch's own commits** (via `git rebase --onto`, never the just-squashed work), pushing it, and repointing its PR base to main. Stops at the first PR that isn't approved, leaving the unreviewed tail as a clean stack on main. A PR already merged outside gh-stack is detected and advanced past, not re-merged. Snapshots first, so `gh-stack undo` restores the prior state. (Thanks to Benjamin for the request, born of actual usage.)
+- **`sync` now catches up when a bottom PR was merged outside gh-stack.** If the bottom PR(s) already landed on main via the GitHub web UI, the stack metadata still lists them — and a plain rebase onto main would replay their now-squashed commits and conflict. `sync` detects this and advances past the merged bottom(s), re-rooting the survivor onto main with `--onto` before the normal restack. Embodies the "do the right thing — detect drift and fix it, never wedge the stack" principle. (#20)
+
 ## 0.13.0
 
 ### ✨ Features

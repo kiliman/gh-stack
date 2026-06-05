@@ -154,12 +154,19 @@ sync [--dry-run]
     Fetch main, rebase the base branch onto main, then restack all
     children. Snapshots every branch's pre-sync tip so children can be
     correctly rebased even though their parent's history was rewritten.
+    If the bottom PR(s) already merged on main outside gh-stack (e.g.
+    the GitHub web UI), sync detects this and advances the stack past
+    them — re-rooting the survivor onto main with `--onto` so only its
+    own commits replay — instead of replaying the now-squashed commits
+    and conflicting.
 
 merge [--dry-run] [-d|--delete-branch] [--collapse]
-    Squash-merge the stack top-down via GitHub (PR3 → PR2 → PR1),
-    then enables auto-merge for the base PR into main. All merges
-    happen on GitHub so PRs show as "Merged", Linear tickets close
-    automatically, and GitHub Actions fire normally. Skips already-
+merge --approved [--dry-run] [-d|--delete-branch]
+    Default (top-down collapse): squash-merge the stack top-down via
+    GitHub (PR3 → PR2 → PR1), then enables auto-merge for the base PR
+    into main. The whole stack lands on main as a single squash commit.
+    All merges happen on GitHub so PRs show as "Merged", Linear tickets
+    close automatically, and GitHub Actions fire normally. Skips already-
     merged PRs (safe to re-run). Waits for GitHub between merges, and
     self-heals its spurious "Head branch is out of date" (a stale PR
     head pointer after a child squash) by re-syncing and retrying.
@@ -167,6 +174,16 @@ merge [--dry-run] [-d|--delete-branch] [--collapse]
                 leaves the base PR open against main so you can
                 review the cumulative diff on GitHub. Re-run
                 `gh-stack merge` (without --collapse) to finish.
+
+    --approved (bottom-up, merge what's ready): merge approved PRs from
+    the BOTTOM up, each as its own squash commit on main, and leave the
+    unreviewed tail as a clean stack re-rooted on main. Stops at the
+    first PR that isn't approved. For each approved bottom PR it squash-
+    merges to main, re-roots the next branch onto main (replaying only
+    its own commits), pushes it, and repoints its PR base to main. A PR
+    already merged outside gh-stack is detected and advanced past, not
+    re-merged. For the "merge PRs as they get reviewed, keep stacking
+    the rest" workflow.
 
 split [<branch>] [--name <name>]
     Cut a stack into two at <branch>. The cut branch and every branch
@@ -418,8 +435,11 @@ gh-stack top         # jump to tip
 # Check status
 gh-stack status
 
-# When PRs are approved, merge the stack
+# When the whole stack is approved, merge it down as one squash commit
 gh-stack merge       # squash-merges down, pushes, enables auto-merge
+
+# Or: merge PRs as they get approved, bottom-up, keep stacking the rest
+gh-stack merge --approved   # merges approved bottom PRs, re-roots the tail on main
 
 # Or: collapse first to review the cumulative diff before shipping
 gh-stack merge --collapse   # squash-merges PRn..PR2 into PR1, stops there

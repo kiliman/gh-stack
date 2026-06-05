@@ -149,7 +149,21 @@ export async function updatePrTitle(prNumber: number, title: string): Promise<bo
 }
 
 /**
- * Get PR body text.
+ * Repoint a PR's base branch on GitHub (`gh pr edit --base <base>`). Used when a
+ * stack advances past a merged bottom: the new bottom PR must retarget `main`.
+ * Returns false on failure.
+ */
+export async function setPrBase(prNumber: number, base: string): Promise<boolean> {
+  try {
+    await $`gh pr edit ${prNumber} --base ${base}`.quiet();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get body text for a PR.
  */
 export async function getPrBody(prNumber: number): Promise<string | null> {
   try {

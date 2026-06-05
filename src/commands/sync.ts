@@ -1,16 +1,22 @@
 // gh-stack sync — Fetch main, rebase base branch onto main, then restack all
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
+import { $ } from "bun";
 import * as git from "../lib/git.ts";
 import {
   findStackForBranch,
   getOrderedBranches,
+  removeBranchFromStack,
   saveRestackState,
   stackBase,
+  writeMetadata,
 } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
+import { getPrInfo } from "../lib/github.ts";
+import { planMerges, advanceNewBottom, type BranchReview } from "../lib/advance.ts";
+import type { StackMetadata } from "../types.ts";
 
 export default async function sync(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
@@ -50,9 +56,9 @@ with the base branch included.
     process.exit(1);
   }
 
-  const stack = meta.stacks[stackName]!;
+  let stack = meta.stacks[stackName]!;
   await ensureValidStack(meta, stackName);
-  const ordered = getOrderedBranches(stack);
+  let ordered = getOrderedBranches(stack);
 
   if (ordered.length === 0) {
     p.cancel("No branches in this stack");
@@ -64,8 +70,6 @@ with the base branch included.
   // Find the root branch (whose parent is the stack's base)
   const base = stackBase(stack);
   const baseIsTrunk = base === "main" || base === "master";
-  const baseBranch = ordered[0]!;
-  const baseParent = stack.branches[baseBranch]?.parent;
 
   // sync only makes sense for trunk-rooted stacks — it fetches main and
   // rebases onto it. A split stack is rooted on a branch in another stack, so
@@ -79,6 +83,31 @@ with the base branch included.
     );
     process.exit(1);
   }
+
+  // Catch up to reality first: if the bottom PR(s) already landed on the trunk
+  // outside gh-stack (e.g. the GitHub web UI), the stack metadata still lists
+  // them. A plain rebase onto main would then replay their now-squashed commits
+  // and conflict — so advance past them (re-rooting the survivor onto main with
+  // `--onto`) before the normal sync runs. (#20)
+  const advance = await advanceMergedBottoms(meta, stackName, base, dryRun);
+  if (advance.drained) {
+    p.outro(pc.green("Bottom PR(s) already merged — stack fully drained & archived."));
+    return;
+  }
+  if (dryRun && advance.detected) {
+    // The advance plan was printed above; the normal rebase plan below would be
+    // misleading (it'd show replaying the merged commits), so stop here.
+    p.outro(pc.green("Sync dry run complete"));
+    return;
+  }
+  if (advance.advanced) {
+    // Topology changed — re-derive the root from the freshly-updated metadata.
+    stack = meta.stacks[stackName]!;
+    ordered = getOrderedBranches(stack);
+  }
+
+  const baseBranch = ordered[0]!;
+  const baseParent = stack.branches[baseBranch]?.parent;
 
   if (baseParent !== base) {
     p.cancel(`Root branch ${pc.yellow(baseBranch)} doesn't have ${base} as parent`);
@@ -189,6 +218,129 @@ with the base branch included.
     await git.checkout(children[0]!);
     await restack(dryRun ? ["--dry-run"] : []);
   }
+}
+
+/** Result of the merged-bottom catch-up pass. */
+interface AdvanceOutcome {
+  /** A merged bottom PR was found (and reported). */
+  detected: boolean;
+  /** The stack metadata + branches were actually advanced (not in dry-run). */
+  advanced: boolean;
+  /** The whole stack drained (every branch was already merged) and was archived. */
+  drained: boolean;
+}
+
+/**
+ * Detect bottom PR(s) that already merged on the trunk outside gh-stack and
+ * advance the stack past them — re-rooting the survivor onto the trunk with
+ * `--onto` so only its own commits replay (never the squashed work). Shares the
+ * planner and re-root mechanics with `merge --approved` (see ./lib/advance.ts).
+ *
+ * Returns what happened so the caller can re-derive the root or short-circuit.
+ * In dry-run it reports and makes no changes.
+ */
+async function advanceMergedBottoms(
+  meta: StackMetadata,
+  stackName: string,
+  trunk: string,
+  dryRun: boolean,
+): Promise<AdvanceOutcome> {
+  const stack = meta.stacks[stackName]!;
+  const ordered = getOrderedBranches(stack);
+
+  // Walk bottom-up gathering PR state; stop at the first branch that isn't a
+  // merged PR (only contiguous merged bottoms can be advanced past).
+  const reviews: BranchReview[] = [];
+  for (const branch of ordered) {
+    const pr = stack.branches[branch]?.pr ?? null;
+    let prState: string | null = null;
+    if (pr != null) {
+      const info = await getPrInfo(pr);
+      prState = info?.state ?? null;
+    }
+    reviews.push({ branch, pr, prState, reviewDecision: null });
+    if (prState !== "MERGED") break;
+  }
+
+  const plan = planMerges(reviews, { approveAndMerge: false });
+  if (plan.steps.length === 0) {
+    return { detected: false, advanced: false, drained: false };
+  }
+
+  p.log.warn(`${plan.steps.length} bottom PR(s) already merged on ${trunk} outside gh-stack:`);
+  for (const step of plan.steps) {
+    console.log(`  ${pc.dim("✓")} ${pc.yellow(step.branch)}${step.pr ? ` (#${step.pr})` : ""}`);
+  }
+  console.log(
+    `  ${pc.dim(`Advancing past them (re-rooting onto ${trunk}) instead of replaying squashed commits.`)}`,
+  );
+  console.log();
+
+  if (dryRun) {
+    p.log.warn("[DRY RUN] Would advance the stack past the merged bottom PR(s)");
+    return { detected: true, advanced: false, drained: false };
+  }
+
+  const targetRef = `origin/${trunk}`;
+  await $`git fetch origin ${trunk}`.quiet();
+  await takeSnapshot(meta, stackName, "sync-advance");
+  const originalStack = structuredClone(stack);
+
+  for (let i = 0; i < plan.steps.length; i++) {
+    const mergedBranch = plan.steps[i]!.branch;
+    const child = ordered[i + 1] ?? null;
+    const childPr = child ? (stack.branches[child]?.pr ?? null) : null;
+
+    if (child) {
+      const res = await advanceNewBottom({
+        meta,
+        stackName,
+        mergedBranch,
+        child,
+        childPr,
+        targetRef,
+        recordedBase: trunk,
+      });
+      if (!res.ok) {
+        console.log();
+        if (res.reason === "conflict") {
+          p.log.error(`Rebase conflict re-rooting ${pc.yellow(child)} onto ${trunk}.`);
+          console.log(`  Resolve it, then finish the restack:`);
+          console.log(`    ${pc.green("git rebase --continue")}`);
+          console.log(`    ${pc.green("gh-stack restack")}`);
+        } else {
+          p.log.error(
+            `Could not determine a safe rebase base for ${pc.yellow(child)} (${res.reason}).`,
+          );
+          console.log(
+            `  Re-root manually:\n    ${pc.green(`git rebase --onto ${targetRef} <merged-tip> ${child}`)}`,
+          );
+        }
+        process.exit(2);
+      }
+    } else {
+      await removeBranchFromStack(meta, stackName, mergedBranch);
+    }
+  }
+
+  // Whole stack drained? Archive the original topology and land on the trunk.
+  const surviving = meta.stacks[stackName];
+  if (!surviving || getOrderedBranches(surviving).length === 0) {
+    try {
+      await git.checkout(trunk);
+      await $`git pull origin ${trunk}`.quiet();
+    } catch {
+      // best-effort local sync
+    }
+    if (!meta.archive) meta.archive = {};
+    meta.archive[stackName] = originalStack;
+    delete meta.stacks[stackName];
+    if (meta.current_stack === stackName) meta.current_stack = null;
+    await writeMetadata(meta);
+    return { detected: true, advanced: true, drained: true };
+  }
+
+  return { detected: true, advanced: true, drained: false };
 }
 
 async function promptForcePush(branch: string): Promise<void> {

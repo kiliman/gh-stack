@@ -23,6 +23,7 @@ import {
   planTitleEdits,
 } from "../commands/update-prs.ts";
 import { STACK_SYNC_TAG_GLOB } from "../lib/git.ts";
+import { planMerges, type BranchReview } from "../lib/advance.ts";
 import { getCurrentBranch, getSha } from "./helpers.ts";
 
 let tmpDir: string;
@@ -108,6 +109,24 @@ describe("command dry-run safety", () => {
     const meta = await readMetadata(tmpDir);
     expect(meta.archive).toBeUndefined();
     expect(meta.stacks["test-stack"]).toBeDefined();
+  });
+
+  test("merge --approved --dry-run does not change refs or metadata", async () => {
+    const { shas } = await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr1");
+
+    // No `gh` PRs exist in the temp repo, so review status is unknown and the
+    // planner stops at the bottom — but the key invariant is that dry-run
+    // touches nothing regardless of what the plan would be.
+    await merge(["--approved", "--dry-run"]);
+
+    const meta = await readMetadata(tmpDir);
+    expect(meta.snapshots).toBeUndefined();
+    expect(meta.archive).toBeUndefined();
+    expect(meta.stacks["test-stack"]).toBeDefined();
+    expect(await getSha(tmpDir, "pr1")).toBe(shas.pr1!);
+    expect(await getSha(tmpDir, "pr2")).toBe(shas.pr2!);
+    expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
   });
 
   test("submit --dry-run self-heals a bare chain without writing metadata", async () => {
@@ -367,5 +386,94 @@ describe("planTitleEdits", () => {
   test("override matching the current title is a no-op", () => {
     const edits = planTitleEdits([{ pr: 9, prTitle: "feat: same", override: "feat: same" }]);
     expect(edits).toEqual([]);
+  });
+});
+
+// Concise BranchReview builder (bottom-up order is the caller's responsibility).
+const r = (
+  branch: string,
+  pr: number | null,
+  prState: string | null,
+  reviewDecision: string | null = null,
+): BranchReview => ({ branch, pr, prState, reviewDecision });
+
+describe("planMerges", () => {
+  describe("approved mode (merge --approved)", () => {
+    test("merges contiguous approved PRs from the bottom, stops at first unapproved", () => {
+      const plan = planMerges(
+        [
+          r("a", 1, "OPEN", "APPROVED"),
+          r("b", 2, "OPEN", "APPROVED"),
+          r("c", 3, "OPEN", "REVIEW_REQUIRED"),
+          r("d", 4, "OPEN", "APPROVED"), // approved but blocked behind c
+        ],
+        { approveAndMerge: true },
+      );
+      expect(plan.steps).toEqual([
+        { branch: "a", pr: 1, action: "merge" },
+        { branch: "b", pr: 2, action: "merge" },
+      ]);
+      expect(plan.stop).toEqual({ branch: "c", reason: "not approved yet" });
+    });
+
+    test("an already-merged bottom is advanced past, then approved ones merge", () => {
+      const plan = planMerges(
+        [r("a", 1, "MERGED", null), r("b", 2, "OPEN", "APPROVED"), r("c", 3, "OPEN", "PENDING")],
+        { approveAndMerge: true },
+      );
+      expect(plan.steps).toEqual([
+        { branch: "a", pr: 1, action: "advance-only" },
+        { branch: "b", pr: 2, action: "merge" },
+      ]);
+      expect(plan.stop).toEqual({ branch: "c", reason: "not approved yet" });
+    });
+
+    test("stops at a branch with no PR yet", () => {
+      const plan = planMerges([r("a", 1, "OPEN", "APPROVED"), r("b", null, null, null)], {
+        approveAndMerge: true,
+      });
+      expect(plan.steps).toEqual([{ branch: "a", pr: 1, action: "merge" }]);
+      expect(plan.stop).toEqual({ branch: "b", reason: "no PR yet — run gh-stack submit" });
+    });
+
+    test("changes-requested stops with a specific reason", () => {
+      const plan = planMerges([r("a", 1, "OPEN", "CHANGES_REQUESTED")], {
+        approveAndMerge: true,
+      });
+      expect(plan.steps).toEqual([]);
+      expect(plan.stop).toEqual({ branch: "a", reason: "changes requested" });
+    });
+
+    test("a fully-approved stack drains entirely (no stop)", () => {
+      const plan = planMerges([r("a", 1, "OPEN", "APPROVED"), r("b", 2, "OPEN", "APPROVED")], {
+        approveAndMerge: true,
+      });
+      expect(plan.steps.map((s) => s.action)).toEqual(["merge", "merge"]);
+      expect(plan.stop).toBeNull();
+    });
+  });
+
+  describe("sync mode (advance past merged only)", () => {
+    test("advances past leading merged PRs and stops at the first unmerged", () => {
+      const plan = planMerges(
+        [
+          r("a", 1, "MERGED", null),
+          r("b", 2, "MERGED", null),
+          r("c", 3, "OPEN", "APPROVED"), // approved, but sync never merges it
+        ],
+        { approveAndMerge: false },
+      );
+      expect(plan.steps).toEqual([
+        { branch: "a", pr: 1, action: "advance-only" },
+        { branch: "b", pr: 2, action: "advance-only" },
+      ]);
+      expect(plan.stop).toEqual({ branch: "c", reason: "not merged yet" });
+    });
+
+    test("no merged bottom → nothing to advance", () => {
+      const plan = planMerges([r("a", 1, "OPEN", "APPROVED")], { approveAndMerge: false });
+      expect(plan.steps).toEqual([]);
+      expect(plan.stop).toEqual({ branch: "a", reason: "not merged yet" });
+    });
   });
 });

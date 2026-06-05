@@ -169,7 +169,11 @@ merge --approved [--dry-run] [-d|--delete-branch]
     close automatically, and GitHub Actions fire normally. Skips already-
     merged PRs (safe to re-run). Waits for GitHub between merges, and
     self-heals its spurious "Head branch is out of date" (a stale PR
-    head pointer after a child squash) by re-syncing and retrying.
+    head pointer after a child squash) by re-syncing and retrying. Before
+    handing the base PR to auto-merge it confirms the PR is mergeable: a
+    real conflict with main stops the merge (the stack is left intact —
+    resolve with `gh-stack sync`, then re-run), while merely waiting on
+    pending checks is fine (auto-merge gates on them).
     --collapse  Stop after collapsing the stack into the base PR;
                 leaves the base PR open against main so you can
                 review the cumulative diff on GitHub. Re-run

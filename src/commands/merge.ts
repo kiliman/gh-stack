@@ -147,9 +147,44 @@ async function ensureFreshHead(
   return true;
 }
 
+/** A PR's merge readiness, distilled from GitHub's `state` / `mergeable` /
+ *  `mergeStateStatus` triple into the decision the merge flow actually needs. */
+export type MergeVerdict = "merged" | "closed" | "conflict" | "ready" | "blocked" | "pending";
+
 /**
- * Wait for a PR to become mergeable after a previous merge lands.
- * GitHub needs time to process the new commit on the target branch.
+ * Classify a PR's merge state. The crucial distinction is **conflict vs.
+ * blocked**: a `CONFLICTING`/`DIRTY` PR can never merge until someone resolves
+ * the conflict (so auto-merge would silently never fire — see the base-PR path),
+ * whereas a `BLOCKED` PR (required check still running/failing) is merely not
+ * ready *yet* and is a legitimate target for `--auto`.
+ *
+ *   merged   — already merged
+ *   closed   — closed without merging
+ *   conflict — mergeable=CONFLICTING or mergeStateStatus=DIRTY (won't self-resolve)
+ *   pending  — GitHub still computing mergeability (UNKNOWN)
+ *   blocked  — mergeable but gated on required checks/reviews
+ *   ready    — mergeable and clean (CLEAN/HAS_HOOKS/UNSTABLE/BEHIND)
+ */
+export function classifyMergeState(state: {
+  state: string;
+  mergeable: string;
+  mergeStateStatus: string;
+}): MergeVerdict {
+  if (state.state === "MERGED") return "merged";
+  if (state.state === "CLOSED") return "closed";
+  if (state.mergeable === "CONFLICTING" || state.mergeStateStatus === "DIRTY") return "conflict";
+  // Mergeability not computed yet — caller should keep polling.
+  if (state.mergeable === "UNKNOWN" || state.mergeStateStatus === "UNKNOWN") return "pending";
+  if (state.mergeStateStatus === "BLOCKED") return "blocked";
+  return "ready";
+}
+
+/**
+ * Wait for a PR to become cleanly mergeable after a previous merge lands.
+ * GitHub needs time to process the new commit on the target branch. Returns
+ * false fast on a definitive conflict (waiting can't help) and on a closed PR;
+ * keeps polling only while GitHub is still computing or the PR is blocked on
+ * pending checks.
  */
 async function waitForMergeable(
   prNumber: number,
@@ -159,18 +194,39 @@ async function waitForMergeable(
     const state = await getPrMergeState(prNumber);
     if (!state) return false;
 
-    if (state.state === "MERGED") return true; // Already merged
-    if (state.state === "CLOSED") return false;
-
-    // "CLEAN", "HAS_HOOKS", "UNSTABLE" are all mergeable states
-    if (state.mergeable === "MERGEABLE" && state.mergeStateStatus !== "BLOCKED") {
-      return true;
-    }
+    const verdict = classifyMergeState(state);
+    if (verdict === "merged" || verdict === "ready") return true;
+    if (verdict === "conflict" || verdict === "closed") return false; // waiting won't help
 
     spinner.message(`Waiting for PR #${prNumber} to be ready... (${attempt}/${MAX_RETRIES})`);
     await Bun.sleep(RETRY_DELAY_MS);
   }
   return false;
+}
+
+/**
+ * Poll until GitHub has *computed* a PR's mergeability, then return the verdict.
+ * Unlike `waitForMergeable` this does NOT keep waiting on a `blocked` PR —
+ * blocked-on-pending-checks is a fine target for auto-merge, so the base-PR
+ * path wants to know that and proceed rather than burn the poll budget. Only a
+ * still-`pending` (UNKNOWN) state is polled; returns `pending` if it never
+ * settles within the budget.
+ */
+async function pollMergeVerdict(
+  prNumber: number,
+  spinner: ReturnType<typeof p.spinner>,
+): Promise<MergeVerdict> {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const state = await getPrMergeState(prNumber);
+    if (!state) return "pending";
+
+    const verdict = classifyMergeState(state);
+    if (verdict !== "pending") return verdict;
+
+    spinner.message(`Checking PR #${prNumber} mergeability... (${attempt}/${MAX_RETRIES})`);
+    await Bun.sleep(RETRY_DELAY_MS);
+  }
+  return "pending";
 }
 
 export default async function merge(args: string[]): Promise<void> {
@@ -485,15 +541,50 @@ OPTIONS
 
   const autoSpinner = p.spinner();
 
-  // Wait for base PR to be ready (may need time after last intermediate merge).
-  // The last intermediate merge moved this branch, so — like the cascade — the
-  // base PR's head can be stuck behind the live ref; heal it before enabling
-  // auto-merge, then once more if GitHub still rejects the first attempt.
-  autoSpinner.start(`Waiting for PR #${basePr} to be ready...`);
+  // Confirm the base PR can ACTUALLY merge before handing off to auto-merge.
+  // A conflicting PR silently accepts `--auto` but never fires — so enabling
+  // auto-merge and archiving on a conflict reports a false success and leaves
+  // an un-mergeable PR stranded. Heal a possibly-stale PR head first (the last
+  // intermediate merge moved this branch), then poll until GitHub finishes
+  // computing mergeability and classify the result.
+  autoSpinner.start(`Checking PR #${basePr} is mergeable...`);
   await ensureFreshHead(basePr!, baseBranch, autoSpinner);
-  await waitForMergeable(basePr!, autoSpinner);
+  const verdict = await pollMergeVerdict(basePr!, autoSpinner);
 
-  autoSpinner.message(`Enabling auto-merge for PR #${basePr}...`);
+  // Conflict / closed / never-settled → STOP. Do not enable auto-merge, do not
+  // archive: leave the stack intact so a re-run finishes it after resolution.
+  if (verdict === "conflict" || verdict === "closed" || verdict === "pending") {
+    autoSpinner.stop(
+      pc.red(
+        verdict === "conflict"
+          ? `PR #${basePr} has merge conflicts with main`
+          : verdict === "closed"
+            ? `PR #${basePr} is closed — not merging`
+            : `Could not confirm PR #${basePr} is mergeable`,
+      ),
+    );
+    console.log();
+    if (verdict === "conflict") {
+      p.log.error(
+        `${pc.yellow(baseBranch)} conflicts with ${pc.green("main")} — auto-merge would never fire.`,
+      );
+      p.log.info("Resolve the conflict, then finish the merge:");
+      console.log(
+        `    ${pc.green("gh-stack sync")}     ${pc.dim("# rebase the base onto main & resolve conflicts")}`,
+      );
+      console.log(
+        `    ${pc.green("gh-stack merge")}    ${pc.dim("# finishes base PR → main + archives")}`,
+      );
+    } else if (verdict === "pending") {
+      p.log.warn(
+        "GitHub didn't settle the merge state in time (transient lag, not necessarily a conflict).",
+      );
+      p.log.info(`Verify the PR on GitHub, then re-run ${pc.green("gh-stack merge")} to finish.`);
+    }
+    console.log();
+    p.log.info(pc.dim("Stack NOT archived — your stack metadata is intact. Re-run to finish."));
+    process.exit(2);
+  }
 
   const enableAutoMerge = async (): Promise<{ ok: boolean; stderr: string }> => {
     const ghArgs = ["pr", "merge", String(basePr), "--squash", "--auto"];
@@ -504,20 +595,29 @@ OPTIONS
     return { ok: exitCode === 0, stderr: stderr.trim() };
   };
 
-  let auto = await enableAutoMerge();
-  if (!auto.ok && isTransientMergeError(auto.stderr)) {
-    // Same stale-head artifact as the cascade — re-sync and try once more.
-    await ensureFreshHead(basePr!, baseBranch, autoSpinner);
-    await waitForMergeable(basePr!, autoSpinner);
-    auto = await enableAutoMerge();
-  }
-
-  if (auto.ok) {
-    autoSpinner.stop(`Auto-merge enabled for PR #${basePr} — will merge into main when CI passes`);
+  // verdict is "merged", "ready", or "blocked" (pending checks). All are safe to
+  // archive: the PR is either already merged or will merge once checks pass.
+  if (verdict === "merged") {
+    autoSpinner.stop(`PR #${basePr} already merged into main`);
   } else {
-    autoSpinner.stop(pc.yellow(`Could not enable auto-merge for PR #${basePr}`));
-    if (auto.stderr) p.log.error(auto.stderr);
-    p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${basePr} --squash --auto`)}`);
+    autoSpinner.message(`Enabling auto-merge for PR #${basePr}...`);
+    let auto = await enableAutoMerge();
+    if (!auto.ok && isTransientMergeError(auto.stderr)) {
+      // Same stale-head artifact as the cascade — re-sync and try once more.
+      await ensureFreshHead(basePr!, baseBranch, autoSpinner);
+      await pollMergeVerdict(basePr!, autoSpinner);
+      auto = await enableAutoMerge();
+    }
+
+    if (auto.ok) {
+      autoSpinner.stop(
+        `Auto-merge enabled for PR #${basePr} — will merge into main when CI passes`,
+      );
+    } else {
+      autoSpinner.stop(pc.yellow(`Could not enable auto-merge for PR #${basePr}`));
+      if (auto.stderr) p.log.error(auto.stderr);
+      p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${basePr} --squash --auto`)}`);
+    }
   }
 
   // Update local main and clean up

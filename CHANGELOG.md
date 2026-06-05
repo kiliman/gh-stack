@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.1
+
+### 🐛 Fixes
+- **`merge` no longer archives a stack whose base PR has merge conflicts.** The base PR → main step waited for the PR to become mergeable but **ignored the result** — so a base PR that conflicts with main (GitHub: "This branch has conflicts that must be resolved") would silently accept `--auto` (which then never fires), and the stack was archived as if shipped. `merge` now checks the base PR's mergeability **before** enabling auto-merge and distinguishes a real **conflict** (hard stop — leaves the stack intact, points you at `gh-stack sync` to resolve) from being merely **blocked on pending checks** (fine to hand off to auto-merge). A closed or never-settled base PR also stops instead of archiving. The intermediate cascade now fails fast on a definitive conflict instead of polling for ~60s first.
+
 ## 0.14.0
 
 ### ✨ Features

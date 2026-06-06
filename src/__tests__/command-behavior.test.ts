@@ -129,6 +129,36 @@ describe("command dry-run safety", () => {
     expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
   });
 
+  test("submit --restack --dry-run previews both phases and mutates nothing", async () => {
+    const { shas } = await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr1"); // downstack: pr2/pr3 sit above
+
+    // submit (dry-run) + restack (dry-run) chained — no pushes, no gh, no snapshot.
+    await submit(["--restack", "--dry-run"]);
+
+    const meta = await readMetadata(tmpDir);
+    expect(meta.snapshots).toBeUndefined(); // restack dry-run must not snapshot
+    expect(await getCurrentBranch(tmpDir)).toBe("pr1");
+    expect(await getSha(tmpDir, "pr1")).toBe(shas.pr1!);
+    expect(await getSha(tmpDir, "pr2")).toBe(shas.pr2!);
+    expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
+
+    const tags = (await $`git tag -l ${STACK_SYNC_TAG_GLOB}`.text()).trim();
+    expect(tags).toBe("");
+  });
+
+  test("submit --restack from the top of the stack is a clean no-op (nothing above)", async () => {
+    const { shas } = await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr3"); // top — no descendants to restack
+
+    // Must not throw or mutate; the restack step is skipped with a note.
+    await submit(["--restack", "--dry-run"]);
+
+    const meta = await readMetadata(tmpDir);
+    expect(meta.snapshots).toBeUndefined();
+    expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
+  });
+
   test("submit --dry-run self-heals a bare chain without writing metadata", async () => {
     // Bare local chain main → a → b → c, no metadata, no remotes
     await createBranch(tmpDir, "a", "main");

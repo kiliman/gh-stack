@@ -83,11 +83,18 @@ create <branch-name> [--description <desc>]
     Create a new git branch off the current branch and add it to
     the stack. The current branch must already be tracked.
 
-submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--dry-run]
+submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--restack] [--dry-run]
     Push all downstack branches to GitHub, create PRs for branches
     that don't have them, number each PR title with its stack position
     `(N/M)`, and update all PR descriptions with stack visualization.
     Idempotent — safe to run repeatedly.
+
+    --restack: after submitting, restack the branches above the current
+    one onto it. submit covers DOWNSTACK (trunk → current); restack covers
+    UPSTACK (the children), so together they sync the whole stack from
+    wherever you're standing. The everyday loop: drop downstack, fix an
+    issue, commit, then `submit --restack` to push the fix and propagate
+    it up in one command. Skips cleanly when nothing sits above you.
 
     Self-healing: if the current branch isn't tracked in a stack yet,
     submit auto-detects the chain from trunk → current, registers (or

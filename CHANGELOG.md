@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.15.0
+
+### ✨ Features
+- **`submit --restack` — push and propagate in one command.** The everyday loop is: drop downstack, fix an issue, commit, `submit`, then `restack` to carry the fix up to the children. `submit --restack` chains them. It fits how the two commands already divide the stack: `submit` owns **downstack** (push + PRs from trunk up to the current branch), `restack` owns **upstack** (rebase the children onto the current branch), so together they sync the whole stack from wherever you're standing. Honors `--dry-run` (previews both phases) and `--yes`, and skips cleanly with a note when nothing sits above the current branch.
+
 ## 0.14.1
 
 ### 🐛 Fixes

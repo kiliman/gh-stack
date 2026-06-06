@@ -4,13 +4,14 @@ import pc from "picocolors";
 import { $ } from "bun";
 import * as git from "../lib/git.ts";
 import {
+  buildRebaseChain,
   findStackForBranch,
   getOrderedBranches,
   readMetadata,
   writeMetadata,
 } from "../lib/metadata.ts";
 import { isAutoYes } from "../lib/ui.ts";
-import type { StackMetadata } from "../types.ts";
+import type { Stack, StackMetadata } from "../types.ts";
 import { getPrNumber } from "../lib/github.ts";
 import { resolveOrCreateStack } from "../lib/chain.ts";
 import { reconcilePrTitles, refreshStackViz, branchToTitle } from "./update-prs.ts";
@@ -36,6 +37,8 @@ OPTIONS
   -t, --title <title>  Set the PR title (current branch) — creates or updates
   -b, --body <body>    Set the PR body (current branch) — creates or updates
       --body-file <f>  Read PR body from a file
+      --restack        After submitting, restack the branches above the current
+                       one onto it (propagate a downstack fix up to children)
       --dry-run        Show what would happen without doing anything
 
 Updating an existing PR: -t / -b also update the PR for the branch you're on
@@ -43,10 +46,17 @@ if it already exists — the title keeps its (N/M) stack position, and the body
 is replaced with the "Stacked on" block re-merged in. Use this instead of
 gh pr edit so the stack visualization is never clobbered.
 
+Restack after submit (--restack): submit covers DOWNSTACK (trunk → current);
+restack covers UPSTACK (the children above current). Together they sync the
+whole stack from wherever you're standing. The common loop: drop downstack,
+fix an issue, commit, then \`submit --restack\` to push the fix and propagate
+it up — one command instead of two. Skips cleanly if nothing sits above you.
+
 EXAMPLES
   gh-stack submit                              # Push + create PRs interactively
   gh-stack submit -n                           # Push + create PRs with auto-titles
   gh-stack submit -t "My PR" -b "Description"  # Explicit title and body
+  gh-stack submit --restack                    # Submit, then restack children onto it
   gh-stack submit --draft                      # Create new PRs as drafts
   gh-stack submit --dry-run                    # Preview what would happen
 `;
@@ -90,6 +100,7 @@ export default async function submit(args: string[]): Promise<void> {
 
   const draftFlag = args.includes("--draft") || args.includes("-d");
   const dryRun = args.includes("--dry-run");
+  const restackFlag = args.includes("--restack");
 
   // Parse value flags
   let titleFlag: string | undefined;
@@ -355,6 +366,7 @@ export default async function submit(args: string[]): Promise<void> {
         `Dry run complete: would push ${scope.length}, create ${created}, update ${existing} PR(s)`,
       ),
     );
+    if (restackFlag) await maybeRestack(stack, branch, true);
     return;
   }
 
@@ -388,4 +400,28 @@ export default async function submit(args: string[]): Promise<void> {
         (viz.unchanged > 0 ? `, ${viz.unchanged} unchanged` : ""),
     ),
   );
+
+  // ── --restack: propagate a downstack fix up to the children ──
+  // submit owns DOWNSTACK (trunk → current); restack owns UPSTACK (the branches
+  // above current). Running both from one branch syncs the whole stack.
+  if (restackFlag) await maybeRestack(stack, branch, false);
+}
+
+/**
+ * Chain into `restack` from the current branch after a submit, so a downstack
+ * fix propagates up to its children in one command. No-op (with a friendly
+ * note) when nothing sits above the current branch — there's nothing to rebase.
+ */
+async function maybeRestack(stack: Stack, branch: string, dryRun: boolean): Promise<void> {
+  // buildRebaseChain returns the current branch + all its descendants; a length
+  // of 1 means it's the top of its line, so there's nothing above to restack.
+  if (buildRebaseChain(stack, branch).length <= 1) {
+    console.log();
+    p.log.info(pc.dim(`--restack: nothing sits above ${pc.yellow(branch)} — nothing to restack.`));
+    return;
+  }
+
+  console.log();
+  const { default: restack } = await import("./restack.ts");
+  await restack(dryRun ? ["--dry-run"] : []);
 }

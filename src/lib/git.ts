@@ -39,6 +39,14 @@ export async function gitDir(): Promise<string> {
 }
 
 /**
+ * Get the absolute path to the repository's working-tree root.
+ */
+export async function repoRoot(): Promise<string> {
+  const result = await $`git rev-parse --show-toplevel`.text();
+  return result.trim();
+}
+
+/**
  * Check if working tree is clean (no uncommitted changes).
  * Refreshes the index first to avoid false positives from stale stat info.
  */

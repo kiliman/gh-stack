@@ -46,8 +46,12 @@ if (parsed.plain) {
   setPlain(true);
 }
 
-// Ensure we're in a git repo for all commands
-await ensureGitRepo();
+// Ensure we're in a git repo for all commands — except `learn`, which just
+// emits/installs the agent skill and is useful outside any repo (e.g. an agent
+// onboarding before cloning, or `learn --skill --global`).
+if (command !== "learn") {
+  await ensureGitRepo();
+}
 
 // Route to subcommand — strip global flags from command args
 const commandArgs = parsed.commandArgs;
@@ -143,6 +147,10 @@ switch (command) {
     await (await import("./commands/bottom.ts")).default(commandArgs);
     break;
 
+  case "learn":
+    await (await import("./commands/learn.ts")).default(commandArgs);
+    break;
+
   case "--help":
   case "help":
     printHelp();
@@ -196,6 +204,7 @@ ${bold("INFO & MAINTENANCE")}
   ${green("archive")}        Manage archived stacks
   ${green("update-prs")}     Refresh stack visualization in PR descriptions
   ${green("doctor")}         Migrate & repair stack metadata
+  ${green("learn")}          Print the agent skill (--skill installs it)
 
 ${bold("GLOBAL OPTIONS")}
   --yes, -y        Skip confirmations ${dim("(for agents/CI)")}

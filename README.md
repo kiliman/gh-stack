@@ -278,6 +278,19 @@ doctor
     Migrate old (v2) metadata to the v3 layout, reconcile git branch
     config against the topology files, and flag stacks whose base
     stack appears already-merged into main. Safe to run repeatedly.
+
+learn [--skill] [--harness <name>] [--global] [--force]
+    Teach a coding agent how to drive gh-stack. By default prints the
+    canonical skill (Markdown, stamped with the running version) to
+    stdout — the text is compiled into the binary, so it never drifts
+    out of sync with the installed version. --skill installs it as a
+    skill file instead, choosing the path from the harness:
+      Claude Code  <root>/.claude/skills/using-gh-stack/SKILL.md
+      Codex        <root>/.codex/skills/using-gh-stack/SKILL.md
+      Cursor       <root>/.cursor/skills/using-gh-stack/SKILL.md
+    --harness  claude | codex | cursor (skips the interactive prompt)
+    --global   Install under ~/.<harness>/ instead of the project root
+    --force    Overwrite an existing skill file without confirming
 ```
 
 ## Global Options
@@ -460,7 +473,16 @@ gh-stack merge              # finishes base PR → main + archives the stack
 
 ## Agent/CI Usage
 
-gh-stack is designed to be used by AI agents and CI pipelines:
+gh-stack is designed to be used by AI agents and CI pipelines. The fastest way
+to onboard an agent is `gh-stack learn` — it prints a version-matched skill (or
+installs one with `--skill`) so the agent learns the current commands, flags,
+and gotchas straight from the binary:
+
+```bash
+# Teach an agent the current API (always in sync with the installed version)
+gh-stack learn                              # print the skill to stdout
+gh-stack learn --skill --harness claude     # install it for Claude Code
+```
 
 ```bash
 # Non-interactive mode — all prompts auto-resolved

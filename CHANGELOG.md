@@ -5,6 +5,9 @@
 ### ✨ Features
 - **`gh-stack learn` — onboard a coding agent straight from the binary.** A hand-maintained skill drifts out of date with every release; this ships the skill _inside_ gh-stack so it's always in lockstep with the installed version. `gh-stack learn` prints the canonical, version-stamped skill (Markdown) to stdout — pipe it, read it, or redirect it. `gh-stack learn --skill` installs it as a skill file, picking the path from the target harness: Claude Code (`.claude/skills/using-gh-stack/SKILL.md`), Codex (`.codex/...`), or Cursor (`.cursor/...`). Defaults to the project root (resolved to the git worktree root, so it works from any subdirectory) and confirms before overwriting. `--harness <claude|codex|cursor>` skips the prompt, `--global` installs under `~/.<harness>/`, and `--force`/`--yes` overwrite unattended. Every copy is stamped with the version it came from and can be refreshed with `gh-stack learn --skill`. (#22 — thanks to Benjamin for the suggestion.)
 
+### 🐛 Fixes
+- **`restack`/`submit --restack` no longer reports a false "un-pushed refs" + non-zero exit after a successful force-push.** The post-restack sync verification (added in #12) read each branch's remote sha from the local remote-tracking ref (`rev-parse origin/<branch>`), which a force-push can leave stale even though the push landed — so a fully-successful run could end with `✗ … local <new> origin <old>`, `Restack finished with un-pushed refs`, and exit 1, breaking `set -e`/`GH_STACK_YES=1` automation. The verification now reads the **authoritative** remote state via a single `git ls-remote` (`git.remoteHeads`), so a landed push is recognized regardless of the tracking ref, while a genuinely un-pushed or missing ref is still reported and still exits non-zero (no #12 regression). (#23)
+
 ## 0.15.0
 
 ### ✨ Features

@@ -158,6 +158,29 @@ export async function pushStackedBranch(branch: string): Promise<boolean> {
 }
 
 /**
+ * Read the actual tip sha of every branch on origin in a single `ls-remote`
+ * call. This queries the remote directly, so it is **authoritative** — unlike
+ * `rev-parse origin/<branch>`, which reads the local remote-tracking ref that a
+ * force-push can leave stale (a fresh fetch would correct it). Use this when a
+ * correct answer about the remote's real state matters (e.g. the post-restack
+ * sync verification — #23). Returns a map of branch name → sha.
+ */
+export async function remoteHeads(): Promise<Map<string, string>> {
+  const heads = new Map<string, string>();
+  const { exitCode, stdout } = await $`git ls-remote --heads origin`.nothrow().quiet();
+  if (exitCode !== 0) return heads;
+  const prefix = "refs/heads/";
+  for (const line of stdout.toString().split("\n")) {
+    const tab = line.indexOf("\t");
+    if (tab === -1) continue;
+    const sha = line.slice(0, tab).trim();
+    const ref = line.slice(tab + 1).trim();
+    if (sha && ref.startsWith(prefix)) heads.set(ref.slice(prefix.length), sha);
+  }
+  return heads;
+}
+
+/**
  * Check if a branch exists on the remote.
  */
 export async function remoteBranchExists(branch: string): Promise<boolean> {

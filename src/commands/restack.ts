@@ -132,24 +132,32 @@ ALIASES
  * For each branch, compare its local tip against origin. Returns the ones that
  * differ (or whose remote ref is missing), so restack can report exactly which
  * refs didn't land instead of falsely claiming success. (#12)
+ *
+ * The remote sha comes from a single authoritative `git ls-remote` (see
+ * git.remoteHeads), NOT from `rev-parse origin/<branch>`. A force-push can leave
+ * the local remote-tracking ref stale even though the push landed, which made
+ * this pass report a false "un-pushed ref" and exit non-zero after a fully
+ * successful run (#23). Reading the real remote state makes the signal
+ * trustworthy in both directions: a genuinely un-pushed ref is still caught.
  */
-async function findStaleRefs(
+export async function findStaleRefs(
   branches: string[],
 ): Promise<{ branch: string; local: string; remote: string }[]> {
   const stale: { branch: string; local: string; remote: string }[] = [];
   const seen = new Set<string>();
+  const remoteHeads = await git.remoteHeads();
   for (const branch of branches) {
     if (seen.has(branch) || branch === "main" || branch === "master") continue;
     seen.add(branch);
     if (!(await git.localBranchExists(branch))) continue;
     const local = await git.revParse(branch);
-    if (!(await git.remoteBranchExists(branch))) {
+    const remote = remoteHeads.get(branch);
+    if (!remote) {
       stale.push({ branch, local, remote: "(missing)" });
       continue;
     }
-    const remote = await git.revParse(`origin/${branch}`).catch(() => "");
     if (remote !== local) {
-      stale.push({ branch, local, remote: remote ? remote.slice(0, 8) : "(unknown)" });
+      stale.push({ branch, local, remote: remote.slice(0, 8) });
     }
   }
   return stale;

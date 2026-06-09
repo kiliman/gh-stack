@@ -8,7 +8,7 @@ import {
   getChildren,
   writeMetadata,
 } from "../lib/metadata.ts";
-import { ensureMetadata } from "../lib/safety.ts";
+import { ensureMetadata, checkoutOrExit } from "../lib/safety.ts";
 
 export default async function top(args: string[]): Promise<void> {
   if (args.includes("--help")) {
@@ -68,7 +68,7 @@ Prompts if there are multiple leaf branches.
     return;
   }
 
-  await git.checkout(target);
+  await checkoutOrExit(target);
 
   // Update tracking
   stack.last_branch = target;

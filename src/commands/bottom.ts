@@ -3,7 +3,7 @@ import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, getOrderedBranches, writeMetadata } from "../lib/metadata.ts";
-import { ensureMetadata } from "../lib/safety.ts";
+import { ensureMetadata, checkoutOrExit } from "../lib/safety.ts";
 
 export default async function bottom(args: string[]): Promise<void> {
   if (args.includes("--help")) {
@@ -43,7 +43,7 @@ Switches to the bottom-most branch of the current stack
     return;
   }
 
-  await git.checkout(target);
+  await checkoutOrExit(target);
 
   // Update tracking
   stack.last_branch = target;

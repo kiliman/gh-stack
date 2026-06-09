@@ -3,7 +3,7 @@ import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { findStackForBranch, stackBase, writeMetadata } from "../lib/metadata.ts";
-import { ensureMetadata } from "../lib/safety.ts";
+import { ensureMetadata, checkoutOrExit } from "../lib/safety.ts";
 
 export default async function down(args: string[]): Promise<void> {
   if (args.includes("--help")) {
@@ -64,7 +64,7 @@ OPTIONS
     moved++;
   }
 
-  await git.checkout(currentBranch);
+  await checkoutOrExit(currentBranch);
 
   // Update tracking
   stack.last_branch = currentBranch;

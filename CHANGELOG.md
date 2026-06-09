@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.16.1
+
+### 🐛 Fixes
+- **Stack/branch navigation no longer dumps a raw exception when a switch is refused.** Switching with uncommitted changes that the target branch would overwrite — e.g. `gh-stack co --stack`, or `up`/`down`/`top`/`bottom` — let git's failure bubble up as a Bun `ShellError` stack trace instead of a readable message. These commands now render a clean "local changes would be overwritten — commit or stash them first" message (listing the offending files) and exit 1. It does **not** pre-block on a merely-dirty tree: git carries non-conflicting WIP across a switch, and stack navigation should too, so we let git decide and only intervene on a real refusal. Also fixes a partial-state bug where `co --stack` persisted the new `current_stack` _before_ attempting the checkout, leaving metadata pointing at a stack you never switched to when the checkout was refused.
+
 ## 0.16.0
 
 ### ✨ Features

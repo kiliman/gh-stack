@@ -3,7 +3,7 @@ import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { writeMetadata, getOrderedBranches, findStackForBranch } from "../lib/metadata.ts";
-import { ensureMetadata } from "../lib/safety.ts";
+import { ensureMetadata, checkoutOrExit } from "../lib/safety.ts";
 import { selectBranch, selectStack } from "../lib/ui.ts";
 
 export default async function checkout(args: string[]): Promise<void> {
@@ -45,19 +45,20 @@ TIP
       process.exit(0);
     }
 
-    // Update current_stack
-    meta.current_stack = stackName;
-    await writeMetadata(meta);
-
-    // Checkout last branch in stack
+    // Checkout the stack's last branch FIRST — only persist current_stack once
+    // the switch actually lands, so a refused checkout (e.g. dirty tree) leaves
+    // metadata pointing at the stack we're still on rather than the target.
     const stack = meta.stacks[stackName]!;
     const lastBranch = stack.last_branch;
 
     if (lastBranch && lastBranch !== currentBranch) {
       p.log.info(`Switching to stack ${pc.yellow(stackName)}`);
       p.log.info(`Checking out ${pc.yellow(lastBranch)}`);
-      await git.checkout(lastBranch);
+      await checkoutOrExit(lastBranch);
     }
+
+    meta.current_stack = stackName;
+    await writeMetadata(meta);
 
     p.outro(pc.green(`Switched to stack ${pc.yellow(stackName)}`));
   } else {
@@ -105,7 +106,7 @@ TIP
     }
 
     p.log.info(`Switching to ${pc.yellow(targetBranch)}`);
-    await git.checkout(targetBranch);
+    await checkoutOrExit(targetBranch);
 
     // Update last_branch
     stack.last_branch = targetBranch;

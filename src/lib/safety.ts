@@ -116,6 +116,37 @@ export async function ensureCleanWorkingTree(): Promise<void> {
 }
 
 /**
+ * Switch branches for a user-facing navigation command, rendering a clean
+ * message (and exiting 1) when git refuses — most commonly because local
+ * changes would be overwritten. Avoids leaking a raw ShellError stack trace.
+ *
+ * Note: this deliberately does NOT pre-check for a clean tree. git happily
+ * carries uncommitted changes across a switch when they don't conflict with the
+ * target branch, and stack navigation often wants to bring WIP along — so we
+ * let git decide and only intervene on an actual refusal.
+ */
+export async function checkoutOrExit(branch: string): Promise<void> {
+  const { ok, stderr } = await git.tryCheckout(branch);
+  if (ok) return;
+
+  if (stderr.includes("would be overwritten by checkout")) {
+    const files = stderr
+      .split("\n")
+      .filter((line) => line.startsWith("\t"))
+      .map((line) => `    ${pc.yellow(line.trim())}`)
+      .join("\n");
+    p.cancel(
+      `Can't switch to ${pc.yellow(branch)} — local changes would be overwritten:\n\n${files}\n\n  Commit or stash them first:\n    ${pc.green("git stash")} ${pc.dim("(or git commit)")}`,
+    );
+  } else {
+    p.cancel(
+      `Can't switch to ${pc.yellow(branch)}:\n\n  ${stderr.trim() || "git checkout failed"}`,
+    );
+  }
+  process.exit(1);
+}
+
+/**
  * Ensure we're not on main.
  */
 export async function ensureNotOnMain(): Promise<void> {

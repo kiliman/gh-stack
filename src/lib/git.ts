@@ -86,10 +86,23 @@ export async function isRebaseInProgress(): Promise<boolean> {
 }
 
 /**
- * Checkout a branch.
+ * Checkout a branch. Throws a raw ShellError on failure — only use this where a
+ * failure is unexpected (e.g. after ensureCleanWorkingTree). For user-facing
+ * branch switching, prefer tryCheckout so a dirty-tree refusal can be rendered
+ * as a clean message instead of a stack trace.
  */
 export async function checkout(branch: string): Promise<void> {
   await $`git checkout ${branch}`.quiet();
+}
+
+/**
+ * Attempt to checkout a branch without throwing. Returns whether it succeeded
+ * and git's stderr (which carries the "local changes would be overwritten"
+ * message and the offending file list when a dirty tree blocks the switch).
+ */
+export async function tryCheckout(branch: string): Promise<{ ok: boolean; stderr: string }> {
+  const { exitCode, stderr } = await $`git checkout ${branch}`.quiet().nothrow();
+  return { ok: exitCode === 0, stderr: stderr.toString() };
 }
 
 /**

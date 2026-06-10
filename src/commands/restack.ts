@@ -109,7 +109,7 @@ ALIASES
   // origin. Fail loudly (listing the stale ones) rather than reporting success
   // when a push didn't take. (#12)
   if (!dryRun) {
-    const stale = await findStaleRefs(touched);
+    const stale = await findStaleRefs(touched, meta);
     if (stale.length > 0) {
       console.log();
       p.log.error("Some branch refs are NOT in sync with origin:");
@@ -139,9 +139,15 @@ ALIASES
  * this pass report a false "un-pushed ref" and exit non-zero after a fully
  * successful run (#23). Reading the real remote state makes the signal
  * trustworthy in both directions: a genuinely un-pushed ref is still caught.
+ *
+ * A branch absent from origin is only flagged when it has a PR (it was
+ * published and should be there). A local-only branch with no PR is
+ * intentionally absent — restack/sync don't publish it — so it's not a stale
+ * ref and must not fail the run. (#24)
  */
 export async function findStaleRefs(
   branches: string[],
+  meta: StackMetadata,
 ): Promise<{ branch: string; local: string; remote: string }[]> {
   const stale: { branch: string; local: string; remote: string }[] = [];
   const seen = new Set<string>();
@@ -153,7 +159,10 @@ export async function findStaleRefs(
     const local = await git.revParse(branch);
     const remote = remoteHeads.get(branch);
     if (!remote) {
-      stale.push({ branch, local, remote: "(missing)" });
+      // Missing from origin is only a problem for a published branch.
+      if (branchHasPr(meta, branch)) {
+        stale.push({ branch, local, remote: "(missing)" });
+      }
       continue;
     }
     if (remote !== local) {
@@ -209,7 +218,7 @@ async function handleResume(
   await clearRestackState();
 
   // Prompt to push the resumed branch
-  await pushBranchRef(expectedBranch);
+  await pushBranchRef(meta, expectedBranch);
 
   // Continue with remaining branches in chain
   const stackName = state.stack_name;
@@ -297,7 +306,7 @@ async function handleFreshRestack(
       for (const baseBranch of baseBranches) {
         if (await git.localBranchExists(baseBranch)) {
           touched.push(baseBranch);
-          await pushBranchRef(baseBranch);
+          await pushBranchRef(meta, baseBranch);
         }
       }
     }
@@ -441,7 +450,7 @@ async function handleReroot(
 
   rebasedBranches.push(root);
   touched.push(root);
-  await pushBranchRef(root);
+  await pushBranchRef(meta, root);
 
   // Restack the children onto the moved root.
   const children = ordered.slice(1);
@@ -487,7 +496,7 @@ async function processChain(
       p.log.success("Already up to date with parent");
       if (!dryRun) {
         touched.push(branch);
-        await pushBranchRef(branch);
+        await pushBranchRef(meta, branch);
       }
       continue;
     }
@@ -585,7 +594,7 @@ async function processChain(
 
       // Push immediately (don't batch) so an interrupt can't leave later
       // branches un-pushed.
-      await pushBranchRef(branch);
+      await pushBranchRef(meta, branch);
     } else {
       // Conflict!
       console.log();
@@ -611,11 +620,36 @@ async function processChain(
  * differs from origin OR the remote branch doesn't exist yet (so a branch
  * that was never pushed still lands). No-op when already in sync. (#12)
  */
-async function pushBranchRef(branch: string): Promise<void> {
+/**
+ * Whether a branch has been published — it has a PR recorded in metadata.
+ * restack/sync keep published branches' remotes in sync after a rebase, but must
+ * NOT create a remote for an unpublished, local-only branch — publishing is
+ * `submit`'s job, not a side effect of restacking. (#24)
+ */
+function branchHasPr(meta: StackMetadata, branch: string): boolean {
+  const stackName = findStackForBranch(meta, branch);
+  if (!stackName) return false;
+  return meta.stacks[stackName]?.branches[branch]?.pr != null;
+}
+
+async function pushBranchRef(meta: StackMetadata, branch: string): Promise<void> {
   if (branch === "main" || branch === "master") return;
 
   const localSha = await git.revParse(branch);
   const hasRemote = await git.remoteBranchExists(branch);
+
+  // Don't publish an unsubmitted branch. A local-only branch (no remote AND no
+  // PR) is intentionally not on origin — restack/sync rebase it locally but
+  // leave pushing to `submit`. Skip with a note rather than creating its remote
+  // (the #24 surprise: `--yes` silently published a WIP tip). A branch that
+  // already has a remote or a PR still gets pushed below to stay in sync.
+  if (!hasRemote && !branchHasPr(meta, branch)) {
+    p.log.info(
+      `Skipping push of ${pc.yellow(branch)} — local-only (not submitted). Run ${pc.green("gh-stack submit")} to open its PR.`,
+    );
+    return;
+  }
+
   const remoteSha = hasRemote ? await git.revParse(`origin/${branch}`).catch(() => null) : null;
 
   if (hasRemote && remoteSha === localSha) return; // already in sync — nothing to do

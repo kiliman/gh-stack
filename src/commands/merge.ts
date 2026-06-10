@@ -455,19 +455,20 @@ OPTIONS
   }
   console.log();
 
-  if (dryRun) {
-    p.outro(pc.yellow("[DRY RUN] No changes made"));
-    return;
-  }
-
   // Every PR in the collapse RANGE must have a number (tail branches aren't
-  // being merged now, so a local-only tip there is fine).
+  // being merged now, so a local-only tip there is fine). Validate before the
+  // dry-run exit so previews surface the same blocker as a real merge.
   const missingPrs = rangeOrdered.filter((b) => !stack.branches[b]?.pr);
   if (missingPrs.length > 0) {
     p.cancel(
       `Missing PR numbers for: ${missingPrs.join(", ")}\n\n  Run ${pc.green("gh-stack submit")} first to create PRs.`,
     );
     process.exit(1);
+  }
+
+  if (dryRun) {
+    p.outro(pc.yellow("[DRY RUN] No changes made"));
+    return;
   }
 
   const confirmed = await confirmAction(

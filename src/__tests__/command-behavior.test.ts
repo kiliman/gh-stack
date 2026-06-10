@@ -9,6 +9,7 @@ import {
   makeCommit,
   metadataExists,
   readMetadata,
+  writeMetadata,
 } from "./helpers.ts";
 import restack from "../commands/restack.ts";
 import sync from "../commands/sync.ts";
@@ -93,6 +94,25 @@ describe("command dry-run safety", () => {
     expect(meta.archive).toBeUndefined();
     // Stack must remain in stacks (not archived) — that's the whole point of collapse
     expect(meta.stacks["test-stack"]).toBeDefined();
+    expect(await getCurrentBranch(tmpDir)).toBe("pr3");
+    expect(await getSha(tmpDir, "pr1")).toBe(shas.pr1!);
+    expect(await getSha(tmpDir, "pr2")).toBe(shas.pr2!);
+    expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
+  });
+
+  test("merge --collapse --dry-run reports branches missing PRs", async () => {
+    const { shas } = await createLinearStack(tmpDir);
+    const meta = await readMetadata(tmpDir);
+    delete meta.stacks["test-stack"]!.branches.pr3!.pr;
+    await writeMetadata(tmpDir, meta);
+    await checkout(tmpDir, "pr3");
+
+    const exitCode = await runExpectingExit(() => merge(["--collapse", "--dry-run"]));
+
+    expect(exitCode).toBe(1);
+    const after = await readMetadata(tmpDir);
+    expect(after.snapshots).toBeUndefined();
+    expect(after.archive).toBeUndefined();
     expect(await getCurrentBranch(tmpDir)).toBe("pr3");
     expect(await getSha(tmpDir, "pr1")).toBe(shas.pr1!);
     expect(await getSha(tmpDir, "pr2")).toBe(shas.pr2!);
@@ -198,19 +218,24 @@ describe("command dry-run safety", () => {
 });
 
 // Run `fn`, swallowing an intentional `process.exit` so it doesn't kill the
-// test runner. Rethrows any other error.
-async function runExpectingExit(fn: () => Promise<void>): Promise<void> {
+// test runner. Returns the exit code (undefined if `fn` never exited).
+// Rethrows any other error.
+async function runExpectingExit(fn: () => Promise<void>): Promise<number | undefined> {
   const origExit = process.exit;
+  let exitCode: number | undefined;
   process.exit = ((code?: number) => {
-    throw new Error(`__process_exit__${code ?? 0}`);
+    exitCode = code ?? 0;
+    throw new Error("__process_exit__");
   }) as never;
   try {
     await fn();
   } catch (err) {
-    if (!(err instanceof Error) || !err.message.startsWith("__process_exit__")) throw err;
+    if (!(err instanceof Error) || err.message !== "__process_exit__") throw err;
   } finally {
     process.exit = origExit;
   }
+
+  return exitCode;
 }
 
 describe("metadata tracking for display commands", () => {

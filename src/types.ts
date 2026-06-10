@@ -50,6 +50,13 @@ export interface Snapshot {
   operation: string; // "restack" | "merge" | "sync" | "remove"
   branches: Record<string, string>; // branch name -> commit SHA
   stack?: string; // owning stack (v3: drives per-stack retention + file naming)
+  // For a stack with a non-main base: the base branch and its tip at snapshot
+  // time. Recorded separately from `branches` (which `undo` force-resets) so a
+  // dependent stack can re-root onto main after its base branch is deleted by a
+  // squash-merge — without that recorded boundary the reroot would replay the
+  // already-merged commits and conflict (issue #13).
+  baseBranch?: string;
+  baseTip?: string;
 }
 
 // Resume state for restack --resume

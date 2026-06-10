@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.1
+
+### 🐛 Fixes
+- **`restack --onto` no longer replays already-merged commits when re-rooting a stack whose base was squash-merged.** When a dependent stack (non-main base — stacked on top of another stack) is re-rooted onto main after its parent stack merges, the root must be rebased from the **old base branch's tip** so only the stack's own commits replay. If that base branch had been deleted by the merge, `handleReroot` fell back to `merge-base(root, main)` — which, because the parent landed as a **squash**, points *before* the merged prefix and replays all of it onto main, colliding with its own squashed result (a self-inflicted conflict storm). Now the re-root boundary is recovered from a snapshot that recorded the base tip (snapshots persist the non-main base branch's tip for exactly this), and when the boundary genuinely can't be determined the command **refuses with a manual `git rebase --onto` recipe instead of launching a doomed rebase** — never leaving the tree worse off. (Part of #13; the optional `doctor` preflight for a base carrying already-merged commits remains.)
+
 ## 0.17.0
 
 ### ⚠️ Breaking

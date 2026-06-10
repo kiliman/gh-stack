@@ -15,7 +15,7 @@ import {
   writeMetadata,
 } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
-import { takeSnapshot, findPreRewriteSha } from "../lib/snapshot.ts";
+import { takeSnapshot, findPreRewriteSha, findRecordedBaseTip } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
 
@@ -345,6 +345,36 @@ async function handleFreshRestack(
  * the new base (the now-merged parent commits are dropped). Children then
  * restack onto the moved root via the normal chain logic.
  */
+// Resolve the boundary commit for re-rooting a stack's root off its old base:
+// the tip of the old base branch that the root was built on. Returns null when
+// it can't be determined safely, so the caller refuses rather than replaying
+// already-merged commits (issue #13).
+async function resolveRerootBoundary(
+  meta: StackMetadata,
+  oldBase: string,
+  root: string,
+): Promise<{ sha: string | null; source: string }> {
+  // 1. The live base branch tip — but only if the root still sits on it. If the
+  //    base was rewritten after the root forked, its current tip isn't the
+  //    boundary; fall through to the recorded tip.
+  if (await git.localBranchExists(oldBase)) {
+    const tip = await git.revParse(oldBase);
+    if (tip && (await git.isAncestor(tip, root))) {
+      return { sha: tip, source: "old-base branch tip" };
+    }
+  }
+
+  // 2. The tip recorded in a snapshot — survives the base branch being deleted
+  //    or rewritten by a squash-merge of the parent stack.
+  const recorded = await findRecordedBaseTip(meta, oldBase, root);
+  if (recorded) {
+    return { sha: recorded, source: "snapshot (old base branch gone/rewritten)" };
+  }
+
+  // 3. Unknown — refuse rather than replay merged commits.
+  return { sha: null, source: "" };
+}
+
 async function handleReroot(
   meta: StackMetadata,
   newBase: string,
@@ -383,20 +413,25 @@ async function handleReroot(
   }
 
   // The rebase base = the tip the root was built on (the old base branch).
-  // Prefer the live branch tip; fall back to merge-base if it's already gone.
-  let oldBaseTip: string | null = null;
-  let oldBaseSource = "old-base branch tip";
-  if (await git.localBranchExists(oldBase)) {
-    oldBaseTip = await git.revParse(oldBase);
-  } else {
-    oldBaseTip = await git.mergeBase(root, newBase);
-    oldBaseSource = "merge-base (old base branch is gone — verify the result)";
-  }
+  // Getting this right matters: rebasing from the wrong boundary replays the
+  // old base's commits onto the new base, and when the old base was a
+  // squash-merged parent stack those commits collide with their own squashed
+  // result on main — a self-inflicted conflict storm (issue #13). So we never
+  // guess with merge-base; we refuse instead.
+  const { sha: oldBaseTip, source: oldBaseSource } = await resolveRerootBoundary(
+    meta,
+    oldBase,
+    root,
+  );
 
   if (!oldBaseTip) {
     p.cancel(
-      `Could not determine the old base for ${pc.yellow(root)}.\n\n  Re-root manually with: ${pc.green(
-        `git rebase --onto ${newBase} <old-base> ${root}`,
+      `Can't safely re-root ${pc.yellow(stackName)}: its old base ${pc.yellow(
+        oldBase,
+      )} is gone (or was rewritten) and no snapshot recorded where ${pc.yellow(
+        root,
+      )} forked off it.\n\n  Rebasing from the merge-base would replay already-merged commits and conflict.\n  Re-root manually once you know the old base tip:\n    ${pc.green(
+        `git rebase --onto ${newBase} <old-base-tip> ${root}`,
       )}`,
     );
     process.exit(1);

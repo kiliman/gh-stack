@@ -7,7 +7,7 @@
 // stack's only record while a busy sibling stack churned (see issue #13).
 import type { StackMetadata, Snapshot } from "../types.ts";
 import * as git from "./git.ts";
-import { getOrderedBranches } from "./metadata.ts";
+import { getOrderedBranches, stackBase } from "./metadata.ts";
 import { snapshotsDir } from "./paths.ts";
 import { mkdir, readdir, unlink } from "node:fs/promises";
 
@@ -81,6 +81,48 @@ export async function findPreRewriteSha(
     }
 
     return recorded;
+  }
+
+  return null;
+}
+
+/**
+ * Find the recorded tip of a stack's (non-main) base branch — the boundary a
+ * re-root needs to replay only the dependent stack's own commits.
+ *
+ * Walks snapshots newest-first for one whose recorded `baseBranch` matches and
+ * whose recorded `baseTip` is still an ancestor of `rootBranch` (the dependent
+ * stack's root). That tip is exactly where the root forked off the base, so
+ * `git rebase --onto <new-base> <baseTip> <root>` drops the already-merged
+ * prefix instead of replaying it.
+ *
+ * Unlike `findPreRewriteSha`, this does NOT require the base branch to still
+ * exist locally — that's the whole point: after a squash-merge deletes the base
+ * branch, its tip survives only in these snapshots. The ancestor-of-root check
+ * rejects stale candidates (an older base tip the root no longer sits on).
+ *
+ * Returns null if no snapshot recorded this base, or none is still an ancestor
+ * of the root (in which case the caller must refuse rather than guess).
+ */
+export async function findRecordedBaseTip(
+  meta: StackMetadata,
+  baseBranch: string,
+  rootBranch: string,
+): Promise<string | null> {
+  if (!meta.snapshots || meta.snapshots.length === 0) return null;
+
+  let rootTip: string;
+  try {
+    rootTip = await git.revParse(rootBranch);
+  } catch {
+    return null;
+  }
+
+  // Walk newest → oldest; first base tip that the root still sits on wins.
+  for (let i = meta.snapshots.length - 1; i >= 0; i--) {
+    const snap = meta.snapshots[i]!;
+    if (snap.baseBranch !== baseBranch || !snap.baseTip) continue;
+    if (await git.isAncestor(snap.baseTip, rootTip)) return snap.baseTip;
   }
 
   return null;
@@ -160,6 +202,20 @@ export async function takeSnapshot(
     branches,
     stack: stackName,
   };
+
+  // For a non-main base (a stack stacked on top of another stack), record the
+  // base branch's tip too — kept out of `branches` so `undo` won't reset a
+  // branch that belongs to the parent stack. This is the boundary a later
+  // re-root needs if the base branch is deleted by a squash-merge (issue #13).
+  const base = stackBase(stack);
+  if (base !== "main" && base !== "master") {
+    try {
+      snapshot.baseTip = await git.revParse(base);
+      snapshot.baseBranch = base;
+    } catch {
+      // Base branch already gone locally — nothing to record.
+    }
+  }
 
   await writeSnapshotFile(snapshot);
 

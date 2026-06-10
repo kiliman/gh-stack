@@ -379,11 +379,6 @@ OPTIONS
   }
   console.log();
 
-  if (dryRun) {
-    p.outro(pc.yellow("[DRY RUN] No changes made"));
-    return;
-  }
-
   // Check all PRs in stack have PR numbers
   const missingPrs = ordered.filter((b) => !stack.branches[b]?.pr);
   if (missingPrs.length > 0) {
@@ -391,6 +386,11 @@ OPTIONS
       `Missing PR numbers for: ${missingPrs.join(", ")}\n\n  Run ${pc.green("gh-stack submit")} first to create PRs.`,
     );
     process.exit(1);
+  }
+
+  if (dryRun) {
+    p.outro(pc.yellow("[DRY RUN] No changes made"));
+    return;
   }
 
   const confirmed = await confirmAction(

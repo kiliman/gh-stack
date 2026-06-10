@@ -348,7 +348,9 @@ async function handleReroot(
   const stackName = findStackForBranch(meta, currentBranch);
 
   if (!stackName) {
-    p.cancel(`Branch ${pc.blue(currentBranch)} is not in any stack.`);
+    p.cancel(
+      `Branch ${pc.blue(currentBranch)} is not in any stack.\n\n  Track it first (no push/PR):\n    ${pc.green("gh-stack add")}`,
+    );
     process.exit(1);
   }
 

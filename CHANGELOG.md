@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.16.1
+## 0.17.0
+
+### ✨ Features
+- **`gh-stack add` — track an existing local branch in a stack without pushing or opening a PR.** Closes the catch-22 where a local WIP tip (created with `git checkout -b`, not yet submitted) couldn't be `sync`'d or `restack`'d because it wasn't in any stack — and the only way into a stack was `submit`, which publishes. `add` registers the current branch (or a named one) by walking local ancestry: if it sits on top of an existing stack it's adopted in with its parent auto-detected; otherwise a new stack is created from the chain. Network-free — nothing is pushed, no PR is opened (that's still `submit`'s job; `submit` continues to auto-track too). `sync`/`restack` now point an untracked branch at `gh-stack add` instead of dead-ending. (#25)
 
 ### 🐛 Fixes
 - **Stack/branch navigation no longer dumps a raw exception when a switch is refused.** Switching with uncommitted changes that the target branch would overwrite — e.g. `gh-stack co --stack`, or `up`/`down`/`top`/`bottom` — let git's failure bubble up as a Bun `ShellError` stack trace instead of a readable message. These commands now render a clean "local changes would be overwritten — commit or stash them first" message (listing the offending files) and exit 1. It does **not** pre-block on a merely-dirty tree: git carries non-conflicting WIP across a switch, and stack navigation should too, so we let git decide and only intervene on a real refusal. Also fixes a partial-state bug where `co --stack` persisted the new `current_stack` _before_ attempting the checkout, leaving metadata pointing at a stack you never switched to when the checkout was refused.

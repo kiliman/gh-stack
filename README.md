@@ -83,6 +83,18 @@ create <branch-name> [--description <desc>]
     Create a new git branch off the current branch and add it to
     the stack. The current branch must already be tracked.
 
+add [branch]
+    Track an EXISTING local branch (default: the current branch) in a
+    stack — without pushing or opening a PR. Walks local ancestry: if the
+    branch sits on top of an existing stack it's adopted into it (parent
+    auto-detected); otherwise a new stack is created from the chain.
+
+    Use this for a WIP branch you've created with `git checkout -b` but
+    aren't ready to submit. It fills the gap between creating a branch and
+    `submit`: until a branch is tracked, `sync`/`restack`/navigation don't
+    know about it, and `add` is how you track it without publishing. (When
+    you do run `submit`, it auto-tracks too — `add` is the no-push path.)
+
 submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--restack] [--dry-run]
     Push all downstack branches to GitHub, create PRs for branches
     that don't have them, number each PR title with its stack position

@@ -599,14 +599,21 @@ describe("CLI routing with new command names", () => {
     expect(result.stdout).toContain("gh-stack checkout");
   });
 
+  test("add --help shows usage", async () => {
+    const result = await runCli(["add", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("gh-stack add");
+    expect(result.stdout).toContain("no push, no PR");
+  });
+
   test("old command names are no longer recognized", async () => {
     const showResult = await runCli(["show"]);
     expect(showResult.exitCode).toBe(1);
     expect(showResult.stderr).toContain("Unknown command");
 
-    const addResult = await runCli(["add"]);
-    expect(addResult.exitCode).toBe(1);
-    expect(addResult.stderr).toContain("Unknown command");
+    // NOTE: `add` is intentionally NOT here — it was reintroduced as a distinct
+    // command (track an existing local branch in a stack, no push/PR), separate
+    // from `create` (which makes a new branch). See add.ts / add.test.ts.
 
     const removeResult = await runCli(["remove"]);
     expect(removeResult.exitCode).toBe(1);

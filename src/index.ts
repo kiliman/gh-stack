@@ -69,6 +69,10 @@ switch (command) {
     await (await import("./commands/create.ts")).default(commandArgs);
     break;
 
+  case "add":
+    await (await import("./commands/add.ts")).default(commandArgs);
+    break;
+
   case "delete":
     await (await import("./commands/delete.ts")).default(commandArgs);
     break;
@@ -178,6 +182,7 @@ ${bold("TERMS")}
 ${bold("CORE WORKFLOW")}
   ${green("init")}           Create a new stack from the current branch
   ${green("create")}         Create a new branch and add to the stack
+  ${green("add")}            Track the current local branch in a stack ${dim("(no push/PR)")}
   ${green("submit")}         Push branches and create/update PRs
   ${green("log")}            Display current stack tree ${dim("(default)")}
 

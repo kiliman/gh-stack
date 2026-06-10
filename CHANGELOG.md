@@ -2,7 +2,12 @@
 
 ## 0.17.0
 
+### ⚠️ Breaking
+- **`merge --approved` is now top-down, not bottom-up.** It used to merge approved PRs one-at-a-time from the bottom, each as its own squash commit on main (an outlier that ran CI per PR and behaved unlike the regular top-down `merge`). It now **collapses the contiguous-from-base approved run into a single squash commit on main** — approval is taken contiguously from the base, so an unapproved PR4 caps the run at PR3 even if PR5 is approved. The unapproved tail is left in place; after the base PR lands, `gh-stack sync` re-roots it onto main (no CI blocking). The old "merge each approved PR as its own commit" behavior is replaced by `merge --base` (below). If you scripted `merge --approved` expecting per-PR commits, switch to running `merge --base` repeatedly.
+
 ### ✨ Features
+- **`merge --base` — land just the bottom PR.** Squash-merges only the bottom PR into main as its own commit, then re-roots the next branch onto main (replaying just its own commits, via the fork-point-correct `advance.ts` machinery). One PR per run — run it again for the next. Approval is enforced by GitHub branch protection, not gh-stack; a base PR already merged outside gh-stack is detected and advanced past. (#26)
+- **`merge --approved` collapses the approved run into one commit** (see Breaking). Solves the "CI takes 10 min per PR on a big stack" pain — the approved portion lands as a single commit/CI run on main, the rest stays stacked. `--collapse --approved` now reads coherently too (both top-down): collapse the approved run into the base PR and stop before main. (#26)
 - **`gh-stack add` — track an existing local branch in a stack without pushing or opening a PR.** Closes the catch-22 where a local WIP tip (created with `git checkout -b`, not yet submitted) couldn't be `sync`'d or `restack`'d because it wasn't in any stack — and the only way into a stack was `submit`, which publishes. `add` registers the current branch (or a named one) by walking local ancestry: if it sits on top of an existing stack it's adopted in with its parent auto-detected; otherwise a new stack is created from the chain. Network-free — nothing is pushed, no PR is opened (that's still `submit`'s job; `submit` continues to auto-track too). `sync`/`restack` now point an untracked branch at `gh-stack add` instead of dead-ending. (#25)
 
 ### 🐛 Fixes

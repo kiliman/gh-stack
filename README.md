@@ -180,9 +180,10 @@ sync [--dry-run]
     and conflicting.
 
 merge [--dry-run] [-d|--delete-branch] [--collapse]
-merge --approved [--dry-run] [-d|--delete-branch]
-    Default (top-down collapse): squash-merge the stack top-down via
-    GitHub (PR3 → PR2 → PR1), then enables auto-merge for the base PR
+merge --approved [--collapse] [--dry-run] [-d|--delete-branch]
+merge --base [--dry-run] [-d|--delete-branch]
+    Default (top-down collapse): squash-merge the whole stack top-down
+    via GitHub (PR3 → PR2 → PR1), then enables auto-merge for the base PR
     into main. The whole stack lands on main as a single squash commit.
     All merges happen on GitHub so PRs show as "Merged", Linear tickets
     close automatically, and GitHub Actions fire normally. Skips already-
@@ -193,20 +194,25 @@ merge --approved [--dry-run] [-d|--delete-branch]
     real conflict with main stops the merge (the stack is left intact —
     resolve with `gh-stack sync`, then re-run), while merely waiting on
     pending checks is fine (auto-merge gates on them).
-    --collapse  Stop after collapsing the stack into the base PR;
-                leaves the base PR open against main so you can
-                review the cumulative diff on GitHub. Re-run
-                `gh-stack merge` (without --collapse) to finish.
 
-    --approved (bottom-up, merge what's ready): merge approved PRs from
-    the BOTTOM up, each as its own squash commit on main, and leave the
-    unreviewed tail as a clean stack re-rooted on main. Stops at the
-    first PR that isn't approved. For each approved bottom PR it squash-
-    merges to main, re-roots the next branch onto main (replaying only
-    its own commits), pushes it, and repoints its PR base to main. A PR
-    already merged outside gh-stack is detected and advanced past, not
-    re-merged. For the "merge PRs as they get reviewed, keep stacking
-    the rest" workflow.
+    --approved  Collapse only the approved run. Walks approval from the
+                BASE up and stops at the first PR that isn't approved
+                (contiguous — an unapproved PR4 caps the run at PR3 even
+                if PR5 is approved). Collapses base..highest-approved into
+                a single squash commit on main and leaves the unapproved
+                tail in place; after the base PR lands, run `gh-stack sync`
+                to re-root the tail onto main. All approved ⇒ same as a
+                full merge.
+    --base      Squash-merge ONLY the bottom PR into main as its own
+                commit, then re-root the next branch onto main (replaying
+                just its own commits). One PR per run — run it again to
+                land the next. Approval is enforced by GitHub branch
+                protection, not gh-stack. A base PR already merged outside
+                gh-stack is detected and advanced past.
+    --collapse  With the default or --approved, stop after collapsing into
+                the base PR WITHOUT merging it to main, so you can review
+                the cumulative diff on GitHub. Re-run `gh-stack merge` to
+                finish. Alias: --stop-at-base.
 
 split [<branch>] [--name <name>]
     Cut a stack into two at <branch>. The cut branch and every branch
@@ -474,8 +480,12 @@ gh-stack status
 # When the whole stack is approved, merge it down as one squash commit
 gh-stack merge       # squash-merges down, pushes, enables auto-merge
 
-# Or: merge PRs as they get approved, bottom-up, keep stacking the rest
-gh-stack merge --approved   # merges approved bottom PRs, re-roots the tail on main
+# Or: only the approved part is ready — collapse the approved run into one
+# commit and leave the rest stacked (re-root the tail later with `sync`)
+gh-stack merge --approved   # collapses base..highest-approved → main, keeps the tail
+
+# Or: land just the bottom PR, one at a time
+gh-stack merge --base       # merges the bottom PR → main, re-roots the next
 
 # Or: collapse first to review the cumulative diff before shipping
 gh-stack merge --collapse   # squash-merges PRn..PR2 into PR1, stops there

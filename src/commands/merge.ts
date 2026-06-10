@@ -14,7 +14,12 @@ import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { getBranchRefSha, getPrInfo, getPrMergeState, resyncPrHead } from "../lib/github.ts";
 import { confirmAction } from "../lib/ui.ts";
-import { planMerges, advanceNewBottom, type BranchReview } from "../lib/advance.ts";
+import {
+  planMerges,
+  advanceNewBottom,
+  type BranchReview,
+  type MergeAction,
+} from "../lib/advance.ts";
 
 const MAX_RETRIES = 12;
 const RETRY_DELAY_MS = 5000;
@@ -234,57 +239,63 @@ export default async function merge(args: string[]): Promise<void> {
   const deleteFlag = args.includes("--delete-branch") || args.includes("-d");
   const collapse = args.includes("--collapse") || args.includes("--stop-at-base");
   const approved = args.includes("--approved");
+  const baseOnly = args.includes("--base");
 
   if (args.includes("--help")) {
     console.log(`
-gh-stack merge — Squash-merge stack via GitHub
+gh-stack merge — Squash-merge a stack via GitHub
 
 USAGE
   gh-stack merge [--dry-run] [-d|--delete-branch] [--collapse]
-  gh-stack merge --approved [--dry-run] [-d|--delete-branch]
+  gh-stack merge --approved [--collapse] [--dry-run] [-d|--delete-branch]
+  gh-stack merge --base [--dry-run] [-d|--delete-branch]
 
 DEFAULT (top-down collapse)
-  Squash-merges the stack from top to bottom via GitHub:
+  Squash-merges the whole stack from top to bottom via GitHub:
     PR3 → squash into PR2, PR2 → squash into PR1, PR1 → auto-merge into main.
   The whole stack lands on main as a single squash commit.
 
---approved (bottom-up, merge what's ready)
-  Merges approved PRs from the BOTTOM of the stack up, each as its own
-  squash commit on main, and leaves the unreviewed tail as a clean stack
-  re-rooted on main. Stops at the first PR that isn't approved. For the
-  "merge PRs as they get reviewed, keep stacking the rest" workflow.
+--approved (collapse the approved run)
+  Like the default collapse, but only as far up as the stack is approved.
+  Walks approval from the BASE up and stops at the first PR that isn't
+  approved — contiguous, so an unapproved PR4 caps the run at PR3 even if
+  PR5 is approved. Collapses base..highest-approved into a single squash
+  commit on main and leaves the unapproved tail in place. After the base PR
+  lands, run ${pc.green("gh-stack sync")} to re-root the tail onto main. All approved ⇒
+  identical to a full merge.
 
-  For each approved bottom PR it: squash-merges to main, re-roots the next
-  branch onto main (replaying only its own commits — no replay of the
-  squashed work), pushes it, and repoints its PR base to main. A PR already
-  merged outside gh-stack is detected and advanced past, not re-merged.
+--base (merge just the bottom PR)
+  Squash-merges only the bottom PR into main as its own commit, then re-roots
+  the next branch onto main. One PR per run — run it again to land the next.
+  Approval is enforced by GitHub branch protection, not gh-stack.
 
-All merges happen on GitHub, so PRs show as "Merged", Linear tickets
-close automatically, and all GitHub Actions/webhooks fire normally.
+--collapse (stop before main)
+  With the default or --approved, stop after collapsing into the base PR
+  WITHOUT merging it to main — review the cumulative diff on GitHub, then
+  re-run ${pc.green("gh-stack merge")} to finish. Alias: --stop-at-base.
 
-Skips PRs that are already merged (safe to re-run after partial failure).
-Waits for GitHub to process between merges, and self-heals GitHub's
-spurious "Head branch is out of date" (a stale PR head pointer after a
-child squash) by re-syncing the branch and retrying — only a genuine
-conflict or failing required check is reported as a hard failure.
+All merges happen on GitHub, so PRs show as "Merged", Linear tickets close
+automatically, and Actions/webhooks fire normally. Already-merged PRs are
+skipped (safe to re-run after a partial failure), and a spurious "Head branch
+is out of date" (a stale PR head pointer after a child squash) self-heals by
+re-syncing and retrying — only a genuine conflict or failing required check is
+a hard failure.
 
 A snapshot is taken first; ${pc.green("gh-stack undo")} restores the prior state.
 
 OPTIONS
   -d, --delete-branch  Delete remote branches after merging
-      --approved       Merge approved PRs bottom-up; leave the rest as PRs
+      --approved       Collapse only the approved run (from the base up)
+      --base           Merge just the bottom PR into main, re-root the next
+      --collapse       Stop after collapsing into the base PR (don't merge to
+                       main); alias: --stop-at-base
       --dry-run        Show what would happen without doing anything
-      --collapse       Stop after collapsing the stack into the base PR;
-                       do NOT merge base PR into main. Lets you review the
-                       cumulative diff on GitHub first. Re-run ${pc.green("gh-stack merge")}
-                       (without --collapse) to finish the job.
-      --stop-at-base   Alias for --collapse
 `);
     return;
   }
 
-  if (approved) {
-    await mergeApproved(deleteFlag, dryRun);
+  if (baseOnly) {
+    await mergeBaseOnly(deleteFlag, dryRun);
     return;
   }
 
@@ -314,17 +325,63 @@ OPTIONS
     process.exit(1);
   }
 
-  if (ordered.length <= 1) {
-    // Single branch — just enable auto-merge
-    const basePr = stack.branches[ordered[0]!]?.pr;
+  // ── Determine the collapse range ──
+  // Default: the whole stack. --approved: only the contiguous-from-base
+  // APPROVED run — the first unapproved PR is the ceiling. The unapproved tail
+  // is left in place and re-rooted by a later `gh-stack sync` once the base PR
+  // lands on main (approach A — no CI blocking). All approved ⇒ whole stack.
+  let rangeOrdered = ordered;
+  let tail: string[] = [];
+  if (approved) {
+    const reviewSpinner = p.spinner();
+    reviewSpinner.start("Checking PR review status...");
+    // Fetch every branch's review state concurrently — sequential `gh` calls
+    // add up fast on a deep stack.
+    const reviews: BranchReview[] = await Promise.all(
+      ordered.map(async (branch) => {
+        const pr = stack.branches[branch]?.pr ?? null;
+        if (pr == null) return { branch, pr: null, prState: null, reviewDecision: null };
+        const info = await getPrInfo(pr);
+        return {
+          branch,
+          pr,
+          prState: info?.state ?? null,
+          reviewDecision: info?.reviewDecision ?? null,
+        };
+      }),
+    );
+    reviewSpinner.stop("Review status checked");
+
+    // planMerges walks bottom-up over the contiguous run of approved (or
+    // already-merged) branches, stopping at the first that isn't approved.
+    const plan = planMerges(reviews, { approveAndMerge: true });
+    if (plan.steps.length === 0) {
+      p.cancel(
+        `Nothing approved to merge — the base PR isn't approved yet${plan.stop ? ` (${plan.stop.reason})` : ""}.\n\n` +
+          `  Approval is taken contiguously from the base, so the bottom PR must be approved first.`,
+      );
+      return;
+    }
+    rangeOrdered = ordered.slice(0, plan.steps.length);
+    tail = ordered.slice(plan.steps.length);
+  }
+
+  if (rangeOrdered.length <= 1) {
+    // Only the base PR is in range (single-branch stack, or --approved with just
+    // the bottom approved). Nothing to collapse — enable auto-merge on the base.
+    const basePr = stack.branches[rangeOrdered[0]!]?.pr;
     if (collapse) {
       p.log.info(
-        `Single-branch stack — nothing to collapse. The base PR${basePr ? ` (#${basePr})` : ""} already targets main.`,
+        `Nothing to collapse — the base PR${basePr ? ` (#${basePr})` : ""} already targets main.`,
       );
       return;
     }
     if (basePr) {
-      p.log.info("Single branch stack — enabling auto-merge on GitHub.");
+      p.log.info(
+        tail.length > 0
+          ? `Base PR (#${basePr}) is approved — enabling auto-merge on GitHub.`
+          : "Single branch stack — enabling auto-merge on GitHub.",
+      );
       if (!dryRun) {
         try {
           await $`gh pr merge ${basePr} --squash --auto`.quiet();
@@ -336,11 +393,24 @@ OPTIONS
     } else {
       p.log.info("Single branch stack — merge via GitHub as normal.");
     }
+    if (tail.length > 0 && !dryRun) {
+      console.log();
+      p.log.info(
+        `${tail.length} unapproved branch(es) left in place. After PR #${basePr} lands, run ${pc.green("gh-stack sync")} to re-root them onto main.`,
+      );
+    }
     return;
   }
 
   p.intro(pc.cyan(collapse ? "Stack Collapse (via GitHub)" : "Stack Merge (via GitHub)"));
   p.log.info(`Stack: ${pc.yellow(stackName)}`);
+  if (approved) {
+    p.log.info(
+      pc.dim(
+        `--approved: collapsing the ${rangeOrdered.length} approved branch(es) from the base up.`,
+      ),
+    );
+  }
   if (collapse) {
     p.log.info(
       pc.dim("--collapse: will stop after collapsing into base PR; base will NOT merge to main."),
@@ -348,9 +418,10 @@ OPTIONS
   }
   console.log();
 
-  // Check PR states and build the merge plan
-  const reversed = ordered.toReversed();
-  const baseBranch = ordered[0]!;
+  // Check PR states and build the merge plan — scoped to the collapse RANGE
+  // (the whole stack by default, the approved run under --approved).
+  const reversed = rangeOrdered.toReversed();
+  const baseBranch = rangeOrdered[0]!;
   const basePr = stack.branches[baseBranch]?.pr;
 
   console.log(`  ${pc.bold("Merge plan:")}`);
@@ -377,6 +448,11 @@ OPTIONS
       `    ${pc.blue(baseBranch)}${basePr ? ` (#${basePr})` : ""} → ${pc.green("main")} (auto-merge)`,
     );
   }
+  if (tail.length > 0) {
+    console.log(
+      `    ${pc.dim(`⏹ ${tail.length} unapproved branch(es) above left in place → re-root with `)}${pc.green("gh-stack sync")}${pc.dim(" after the base lands")}`,
+    );
+  }
   console.log();
 
   if (dryRun) {
@@ -384,8 +460,9 @@ OPTIONS
     return;
   }
 
-  // Check all PRs in stack have PR numbers
-  const missingPrs = ordered.filter((b) => !stack.branches[b]?.pr);
+  // Every PR in the collapse RANGE must have a number (tail branches aren't
+  // being merged now, so a local-only tip there is fine).
+  const missingPrs = rangeOrdered.filter((b) => !stack.branches[b]?.pr);
   if (missingPrs.length > 0) {
     p.cancel(
       `Missing PR numbers for: ${missingPrs.join(", ")}\n\n  Run ${pc.green("gh-stack submit")} first to create PRs.`,
@@ -633,6 +710,20 @@ OPTIONS
     pullSpinner.stop(pc.dim("Could not sync local branches — run git pull manually"));
   }
 
+  // --approved with an unapproved tail: the base PR is auto-merging the approved
+  // run as one commit, but branches remain. DON'T archive — leave the stack so
+  // `gh-stack sync` can re-root the tail onto main once the base lands (it
+  // detects the merged bottom and advances past it). (approach A)
+  if (tail.length > 0) {
+    p.outro(
+      pc.green(
+        `Approved run collapsed into PR #${basePr} → auto-merging to main. ` +
+          `After it lands, run \`gh-stack sync\` to re-root the ${tail.length} remaining branch(es).`,
+      ),
+    );
+    return;
+  }
+
   // Archive the stack
   if (!meta.archive) meta.archive = {};
   meta.archive[stackName] = { ...stack };
@@ -649,17 +740,13 @@ OPTIONS
 }
 
 /**
- * `gh-stack merge --approved` — merge approved PRs from the bottom of the stack
- * up, each as its own squash commit on main, advancing the rest of the stack
- * onto main as it goes. Stops at the first PR that isn't approved, leaving the
- * unreviewed tail as a clean stack re-rooted on main.
- *
- * The cascade is interleaved by necessity: each PR must be rebased off the
- * just-merged commits and pushed before the next one can merge cleanly, so we
- * merge → advance → merge → advance one branch at a time (see ./lib/advance.ts
- * for the re-root mechanics and fork-point resolution).
+ * `gh-stack merge --base` — squash-merge ONLY the bottom PR into main, then
+ * re-root the next branch onto main (replaying just its own commits, via
+ * advance.ts's fork-point resolution). One PR per run — run it again to land the
+ * next. Approval is NOT checked here; GitHub branch protection enforces it.
+ * A base PR already merged outside gh-stack is detected and advanced past.
  */
-async function mergeApproved(deleteFlag: boolean, dryRun: boolean): Promise<void> {
+async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean): Promise<void> {
   // We rebase the surviving branches, so the same pre-flight guards as restack.
   if (await git.isRebaseInProgress()) {
     p.cancel(
@@ -699,54 +786,40 @@ async function mergeApproved(deleteFlag: boolean, dryRun: boolean): Promise<void
   const trunk = base;
   const targetRef = `origin/${trunk}`;
 
-  p.intro(pc.cyan("Merge Approved (bottom-up, via GitHub)"));
+  p.intro(pc.cyan("Merge Base PR (via GitHub)"));
   p.log.info(`Stack: ${pc.yellow(stackName)}`);
 
-  // Gather each branch's PR review state, bottom-up.
-  const reviewSpinner = p.spinner();
-  reviewSpinner.start("Checking PR review status...");
-  const reviews: BranchReview[] = [];
-  for (const branch of ordered) {
-    const pr = stack.branches[branch]?.pr ?? null;
-    let prState: string | null = null;
-    let reviewDecision: string | null = null;
-    if (pr != null) {
-      const info = await getPrInfo(pr);
-      prState = info?.state ?? null;
-      reviewDecision = info?.reviewDecision ?? null;
-    }
-    reviews.push({ branch, pr, prState, reviewDecision });
+  const baseBranch = ordered[0]!;
+  const basePr = stack.branches[baseBranch]?.pr ?? null;
+  if (basePr == null) {
+    p.cancel(
+      `Base branch ${pc.yellow(baseBranch)} has no PR.\n\n  Open it with ${pc.green("gh-stack submit")} first.`,
+    );
+    process.exit(1);
   }
-  reviewSpinner.stop("Review status checked");
 
-  const plan = planMerges(reviews, { approveAndMerge: true });
+  // Only the bottom PR is merged. If it already landed (e.g. via the GitHub UI),
+  // advance the stack past it instead of re-merging.
+  const baseState = await getPrMergeState(basePr);
+  const baseAction: MergeAction = baseState?.state === "MERGED" ? "advance-only" : "merge";
+  const plan = { steps: [{ branch: baseBranch, pr: basePr, action: baseAction }] };
+  const nextChild = ordered[1] ?? null;
 
-  // Show the plan.
   console.log();
   console.log(`  ${pc.bold("Plan:")}`);
-  for (const step of plan.steps) {
-    const label =
-      step.action === "advance-only"
+  console.log(
+    `    ${pc.yellow(baseBranch)} (#${basePr}) → ${
+      baseAction === "advance-only"
         ? pc.dim("already merged — advance past")
-        : `${pc.green("squash-merge")} → ${pc.green(trunk)}`;
-    console.log(`    ${pc.yellow(step.branch)}${step.pr ? ` (#${step.pr})` : ""} → ${label}`);
-  }
-  if (plan.stop) {
+        : `${pc.green("squash-merge")} → ${pc.green(trunk)}`
+    }`,
+  );
+  if (nextChild) {
     console.log(
-      `    ${pc.dim("⏹")} stop at ${pc.yellow(plan.stop.branch)} ${pc.dim(`(${plan.stop.reason}) — left as a stack on ${trunk}`)}`,
+      `    ${pc.dim(`then re-root ${nextChild} onto ${trunk} — the rest stays a stack`)}`,
     );
   }
   console.log();
-
-  const mergeSteps = plan.steps.filter((s) => s.action === "merge");
-  if (mergeSteps.length === 0 && !plan.steps.some((s) => s.action === "advance-only")) {
-    p.outro(
-      plan.stop
-        ? pc.yellow(`Nothing approved to merge — bottom PR is ${plan.stop.reason}.`)
-        : pc.yellow("Nothing to merge."),
-    );
-    return;
-  }
 
   if (dryRun) {
     p.outro(pc.yellow("[DRY RUN] No changes made"));
@@ -754,7 +827,9 @@ async function mergeApproved(deleteFlag: boolean, dryRun: boolean): Promise<void
   }
 
   const confirmed = await confirmAction(
-    `Merge ${mergeSteps.length} approved PR(s) bottom-up into ${trunk} and re-root the rest?`,
+    nextChild
+      ? `Merge base PR #${basePr} into ${trunk} and re-root ${nextChild}?`
+      : `Merge base PR #${basePr} into ${trunk}?`,
   );
   if (!confirmed) {
     p.cancel("Cancelled");
@@ -763,7 +838,7 @@ async function mergeApproved(deleteFlag: boolean, dryRun: boolean): Promise<void
 
   // Snapshot first — this records every branch's pre-merge tip, which both the
   // fork-point resolver and `gh-stack undo` rely on.
-  await takeSnapshot(meta, stackName, "merge-approved");
+  await takeSnapshot(meta, stackName, "merge-base");
   // Keep a copy of the original topology to archive if the stack fully drains.
   const originalStack = structuredClone(stack);
 
@@ -797,7 +872,7 @@ async function mergeApproved(deleteFlag: boolean, dryRun: boolean): Promise<void
       if (!ready) {
         s.stop(pc.red(`PR #${prNum} is not mergeable`));
         p.log.info("Check the PR on GitHub for merge conflicts or required checks.");
-        p.log.info("Re-run with --approved to continue from where you left off.");
+        p.log.info("Re-run `gh-stack merge --base` to continue.");
         process.exit(2);
       }
 
@@ -813,7 +888,7 @@ async function mergeApproved(deleteFlag: boolean, dryRun: boolean): Promise<void
             ? "Real conflict or failing required check — resolve it on GitHub."
             : "GitHub's mergeability recompute didn't settle (transient lag).",
         );
-        p.log.info("Re-run with --approved to continue from where you left off.");
+        p.log.info("Re-run `gh-stack merge --base` to continue.");
         process.exit(2);
       }
     } else {
@@ -882,7 +957,7 @@ async function mergeApproved(deleteFlag: boolean, dryRun: boolean): Promise<void
     if (meta.current_stack === stackName) meta.current_stack = null;
     await writeMetadata(meta);
 
-    p.outro(pc.green("All approved PRs merged — stack drained & archived."));
+    p.outro(pc.green(`Base PR #${basePr} merged — stack drained & archived.`));
     return;
   }
 
@@ -902,7 +977,7 @@ async function mergeApproved(deleteFlag: boolean, dryRun: boolean): Promise<void
 
   p.outro(
     pc.green(
-      `Merged ${mergeSteps.length} approved PR(s); ${remaining.length} branch(es) left as a stack on ${trunk}.`,
+      `Merged base PR #${basePr} into ${trunk}; ${remaining.length} branch(es) left as a stack.`,
     ),
   );
 }

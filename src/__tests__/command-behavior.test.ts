@@ -129,6 +129,22 @@ describe("command dry-run safety", () => {
     expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
   });
 
+  test("merge --base --dry-run does not change refs or metadata", async () => {
+    const { shas } = await createLinearStack(tmpDir);
+    await checkout(tmpDir, "pr1");
+
+    // --base previews merging only the bottom PR; dry-run must touch nothing.
+    await merge(["--base", "--dry-run"]);
+
+    const meta = await readMetadata(tmpDir);
+    expect(meta.snapshots).toBeUndefined();
+    expect(meta.archive).toBeUndefined();
+    expect(meta.stacks["test-stack"]).toBeDefined();
+    expect(await getSha(tmpDir, "pr1")).toBe(shas.pr1!);
+    expect(await getSha(tmpDir, "pr2")).toBe(shas.pr2!);
+    expect(await getSha(tmpDir, "pr3")).toBe(shas.pr3!);
+  });
+
   test("submit --restack --dry-run previews both phases and mutates nothing", async () => {
     const { shas } = await createLinearStack(tmpDir);
     await checkout(tmpDir, "pr1"); // downstack: pr2/pr3 sit above

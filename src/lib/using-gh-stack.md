@@ -89,6 +89,21 @@ gh-stack create kiliman/third-WEB-9012     # stack another
 
 `init` options: `--name <stack>`, `--parent <trunk>`, `--description <text>`.
 
+**Track a local WIP branch without publishing it — `gh-stack add`.** If you
+created a branch with `git checkout -b` and want to `sync`/`restack` it _before_
+opening a PR, `add` registers it in a stack (network-free — no push, no PR):
+
+```bash
+gh-stack add           # track the current branch
+gh-stack add <branch>  # track a named branch
+```
+
+It walks local ancestry: a branch sitting on top of an existing stack is adopted
+into it (parent auto-detected); otherwise a new stack is created from the chain.
+This resolves the catch-22 where `sync`/`restack` said "not in any stack" for a
+tip you hadn't submitted yet. (`submit` still auto-tracks too — `add` is just the
+no-publish path.)
+
 ### 2. Push & create PRs — `submit`
 
 `submit` is the workhorse: **idempotent, scope-aware, self-healing**. It pushes
@@ -183,16 +198,27 @@ gh-stack status --json     # structured, for agents
 ### 6. Merge & ship
 
 ```bash
-gh-stack merge             # top-down: collapse stack into one squash commit → trunk
-gh-stack merge --approved  # bottom-up: merge approved PRs (each its own commit),
-                           # re-root the unreviewed tail, leave it as a clean stack
+gh-stack merge             # collapse the WHOLE stack into one squash commit → trunk
+gh-stack merge --approved  # collapse only the approved run (base..highest-approved)
+                           # into one commit; leave the unapproved tail in place
+gh-stack merge --base      # land ONLY the bottom PR → trunk, re-root the next branch
 gh-stack merge --dry-run
 ```
 
-- **`merge`** (top-down): the whole stack is approved → lands as a unit.
-- **`merge --approved`** (bottom-up): merge PRs as they're reviewed, keep
-  stacking the rest. Stops at the first un-approved PR; auto-advances past any
-  bottom PR already merged outside gh-stack.
+Merge is **top-down everywhere** (collapse PRn → PRn-1 → … → base PR, then base → trunk):
+
+- **`merge`**: the whole stack is approved → lands as a single squash commit.
+- **`merge --approved`**: collapse the **contiguous-from-base approved run** into
+  one commit on trunk. Approval is read from the base up — the first un-approved
+  PR caps the run (unapproved PR4 stops at PR3 even if PR5 is approved). The
+  unapproved tail is left in place; after the base lands, run `gh-stack sync` to
+  re-root the tail onto trunk (it does not block on CI).
+- **`merge --base`**: squash-merge **only the bottom PR** into trunk and re-root
+  the next branch onto trunk — one PR per run, re-run for the next. Use this to
+  land reviewed PRs one at a time. Auto-advances past a bottom PR already merged
+  outside gh-stack.
+- **`--collapse`** (with `merge` or `merge --approved`): stop after collapsing
+  into the base PR — review on GitHub, then re-run `merge` to finish.
 
 ### 7. Maintenance
 

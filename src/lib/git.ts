@@ -286,6 +286,15 @@ export async function rebaseOnto(
 }
 
 /**
+ * Move the current branch's ref to `ref` (working tree included).
+ * Returns true if successful. Caller must have verified the tree is clean.
+ */
+export async function resetHard(ref: string): Promise<boolean> {
+  const { exitCode } = await $`git reset --hard ${ref}`.nothrow().quiet();
+  return exitCode === 0;
+}
+
+/**
  * Simple rebase onto a target.
  * Returns true if successful, false if conflicts occurred.
  */

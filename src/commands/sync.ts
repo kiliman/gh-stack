@@ -146,7 +146,7 @@ with the base branch included.
 
   // Take snapshot BEFORE rebasing. This records every branch's pre-rebase
   // tip — including the orphaned base-branch tip that restack will later
-  // need to find when restacking children. (See findPreRewriteSha.)
+  // need to find when restacking children. (See resolveRestackBoundary.)
   await takeSnapshot(meta, stackName, "sync");
 
   // Step 1: Rebase base branch onto main

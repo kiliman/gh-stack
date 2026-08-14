@@ -21,7 +21,7 @@ import pc from "picocolors";
 import * as git from "./git.ts";
 import type { StackMetadata } from "../types.ts";
 import { removeBranchFromStack } from "./metadata.ts";
-import { findPreRewriteSha } from "./snapshot.ts";
+import { resolveRestackBoundary } from "./snapshot.ts";
 import { setPrBase } from "./github.ts";
 
 /** What a single bottom branch needs: an active squash-merge, or just advancing
@@ -109,21 +109,19 @@ function reviewReason(decision: string | null): string {
 
 /**
  * Resolve the rebase fork-point for re-rooting `child` after `mergedBranch`
- * landed on the trunk. Mirrors restack's resolver:
- *   1. snapshot pre-rewrite tip of `mergedBranch` (handles the case where the
- *      merged branch was itself rebased earlier in a multi-merge cascade), then
- *   2. `merge-base(child, mergedBranch)` for the common case where the merged
- *      branch still sits at the tip the child was stacked on.
- * Returns null if neither resolves (caller must abort rather than guess).
+ * landed on the trunk. Shares restack's resolver (snapshot pre-rewrite tip →
+ * derived fork point → merge-base; see resolveRestackBoundary) — the snapshot
+ * paths handle a merged branch that was itself rebased earlier in a
+ * multi-merge cascade, including a child that sat behind it (#30).
+ * Returns null if nothing resolves (caller must abort rather than guess).
  */
 export async function resolveForkPoint(
   meta: StackMetadata,
   mergedBranch: string,
   child: string,
 ): Promise<string | null> {
-  const fromSnapshot = await findPreRewriteSha(meta, mergedBranch, child);
-  if (fromSnapshot) return fromSnapshot;
-  return git.mergeBase(child, mergedBranch);
+  const boundary = await resolveRestackBoundary(meta, mergedBranch, child);
+  return boundary?.sha ?? null;
 }
 
 /** Outcome of advancing a single new bottom onto the trunk. */

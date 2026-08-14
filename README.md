@@ -342,6 +342,8 @@ The critical insight: after a parent branch's history is rewritten (e.g., rebase
 
 gh-stack solves this by snapshotting every branch's tip **before** any destructive operation. When restacking a child whose parent has been rewritten, gh-stack walks the snapshots newest-first and finds the most recent recorded tip that's no longer an ancestor of the parent's current tip. That orphaned SHA is the correct rebase base — `git rebase --onto <new-parent-tip> <orphaned-old-tip> <child>` replays only the child's unique commits.
 
+If the child sat **behind** the parent when the snapshot was taken (a placeholder branch created before any work landed on it), the recorded tip isn't in the child's history — but it still pins the parent's pre-rewrite history, so the boundary is derived as the child's fork point on it (`merge-base(child, recorded-tip)`). A child with no unique commits is simply moved to the parent's tip, no rebase involved. When no safe boundary can be determined at all, restack refuses with a manual `git rebase --onto` recipe rather than guessing.
+
 Snapshots also power `gh-stack undo`, so the same data structure does double duty.
 
 ### Stack Position in PR Titles

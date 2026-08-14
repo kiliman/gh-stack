@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.2
+
+### 🐛 Fixes
+- **`restack`/`sync` no longer replay the parent's own commits onto a child that sat behind it when the parent was rewritten.** The everyday trigger: create the next branch off the tip of your stack, commit more to the parent before touching it, then `sync` — the pre-sync snapshot records the parent *ahead* of the child, so when the child's restack looks up the pre-rewrite boundary, the recorded tip fails the issue-#5 child-ancestry guard (it's the child's **descendant**, not ancestor). Rejection silently degraded to `merge-base(child, parent)` — the exact known-broken base #2 was fixed to avoid — replaying the parent's pre-rebase history onto its own rebased equivalents (an add/add conflict storm on a restack that should have been a no-op). The boundary resolver (`resolveRestackBoundary`, now shared by restack, sync, and the `merge --base` advance path) instead **derives the fork point from the rejected snapshot** (`merge-base(child, recorded-old-tip)`), and only uses it when it sits *above* the plain merge-base — so a stale #5-shaped snapshot still loses to merge-base and can't regress. Two more layers on top: a child with **zero unique commits is moved to the parent's tip outright** (no rebase machinery, removing this conflict class for the common "placeholder branch for the next PR" shape), and when no safe boundary can be determined at all, restack now **refuses with a manual `git rebase --onto` recipe** — consistent with the `--onto` re-root path — instead of the old blind `git rebase parent` guess. (#30)
+
 ## 0.17.1
 
 ### 🐛 Fixes

@@ -13,77 +13,97 @@ import { mkdir, readdir, unlink } from "node:fs/promises";
 
 const MAX_SNAPSHOTS_PER_STACK = 10;
 
+/** Where a resolved restack boundary came from. */
+export type BoundarySource = "snapshot" | "snapshot-derived" | "merge-base";
+
+export type RestackBoundary = { sha: string; source: BoundarySource };
+
 /**
- * Find the pre-rewrite SHA for a parent branch by walking snapshots newest-first.
+ * Resolve the rebase boundary for restacking `childBranch` onto
+ * `parentBranch`: the commit whose range `boundary..child` contains exactly
+ * the child's own commits, for `git rebase --onto <parent> <boundary> <child>`.
  *
- * Returns the SHA from the most recent snapshot whose recorded tip for
- * `parentBranch` is NOT an ancestor of the parent's current tip — meaning
- * that snapshot was taken before the parent's history got rewritten
- * (typically by `sync` rebasing it onto a new main).
+ * Resolution order:
  *
- * That pre-rewrite SHA is the correct rebase base when restacking a child
- * onto this parent — `git rebase --onto <new-tip> <pre-rewrite-tip> <child>`
- * replays only the child's unique commits, never the parent's old history.
+ * 1. `"snapshot"` (issue #2) — the most recent snapshot whose recorded tip for
+ *    the parent is no longer an ancestor of the parent's current tip: that
+ *    snapshot predates a rewrite of the parent (typically `sync` rebasing it
+ *    onto a new main), and its orphaned old tip is exactly where the child's
+ *    own commits start. The recorded tip must also still be an ancestor of the
+ *    child (issue #5) — a stale tip the child was already rebased past would
+ *    replay a wildly wrong range; those candidates are skipped, not used.
  *
- * **Child validation (issue #5)**: When `childBranch` is provided, any candidate
- * SHA must also still be an ancestor of the child. If the child has already
- * been rebased past this point (e.g., a previous restack already moved it),
- * the recorded SHA is stale for this child and would cause `rebase --onto`
- * to replay a wildly wrong range. We skip those candidates and keep walking.
+ * 2. `"snapshot-derived"` (issue #30) — a snapshot proves the parent was
+ *    rewritten but its recorded tip is not an ancestor of the child, e.g. the
+ *    child sat BEHIND the parent at snapshot time (committed to the parent,
+ *    then synced, before the child got its first commit). The recorded tip
+ *    still pins the parent's pre-rewrite history, and the child forked
+ *    somewhere on it: `merge-base(child, recordedTip)` is that fork point.
+ *    Only used when it is a DESCENDANT of `merge-base(child, parent)` — the
+ *    higher boundary is always the safe one, since everything below it already
+ *    exists in the new base's history. (A stale #5-shaped snapshot derives a
+ *    fork point BELOW the current merge-base; using it would replay the
+ *    parent's commits, so the current merge-base wins there.)
  *
- * Returns null if no snapshots exist, no recorded tip qualifies, or every
- * snapshot's recorded tip is still an ancestor of the parent's current tip
- * (i.e., the parent has only had commits appended, never been rebased —
- * `merge-base` is still correct).
+ * 3. `"merge-base"` — `merge-base(child, parent)`, correct whenever the parent
+ *    has only had commits appended, never been rewritten.
+ *
+ * Returns null when nothing resolves (no snapshot evidence and no common
+ * history) — the caller must refuse rather than guess.
+ *
+ * If the child branch doesn't exist locally, snapshot validation degrades to
+ * parent-only (the newest rewritten tip is accepted without the child check).
  */
-export async function findPreRewriteSha(
+export async function resolveRestackBoundary(
   meta: StackMetadata,
   parentBranch: string,
-  childBranch?: string,
-): Promise<string | null> {
-  if (!meta.snapshots || meta.snapshots.length === 0) return null;
-
-  let currentParentTip: string;
+  childBranch: string,
+): Promise<RestackBoundary | null> {
+  let currentParentTip: string | null = null;
   try {
     currentParentTip = await git.revParse(parentBranch);
   } catch {
-    return null;
+    currentParentTip = null;
   }
 
   let currentChildTip: string | null = null;
-  if (childBranch) {
-    try {
-      currentChildTip = await git.revParse(childBranch);
-    } catch {
-      // Child doesn't exist locally — fall back to parent-only validation
-      currentChildTip = null;
+  try {
+    currentChildTip = await git.revParse(childBranch);
+  } catch {
+    currentChildTip = null;
+  }
+
+  // Walk snapshots newest → oldest for evidence the parent was rewritten.
+  let accepted: string | null = null;
+  let rejected: string | null = null; // newest rewritten tip that failed the child check
+  if (currentParentTip && meta.snapshots) {
+    for (let i = meta.snapshots.length - 1; i >= 0; i--) {
+      const recorded = meta.snapshots[i]!.branches[parentBranch];
+      if (!recorded || recorded === currentParentTip) continue;
+      if (await git.isAncestor(recorded, currentParentTip)) continue; // appended-to, not rewritten
+      if (!currentChildTip || (await git.isAncestor(recorded, currentChildTip))) {
+        accepted = recorded;
+        break;
+      }
+      rejected ??= recorded;
     }
   }
 
-  // Walk newest → oldest
-  for (let i = meta.snapshots.length - 1; i >= 0; i--) {
-    const recorded = meta.snapshots[i]!.branches[parentBranch];
-    if (!recorded) continue;
-    if (recorded === currentParentTip) continue;
+  if (accepted) return { sha: accepted, source: "snapshot" };
 
-    // The recorded SHA must no longer be an ancestor of the parent's current
-    // tip — that's how we detect the parent's history was rewritten.
-    const stillAncestorOfParent = await git.isAncestor(recorded, currentParentTip);
-    if (stillAncestorOfParent) continue;
+  const mbCurrent = await git.mergeBase(childBranch, parentBranch);
 
-    // Issue #5 guard: if we know the child, the recorded SHA must still be
-    // an ancestor of the child. Otherwise the child has already been rebased
-    // past this point (or never branched off it) and using it as a base
-    // would replay unrelated history.
-    if (currentChildTip) {
-      const stillAncestorOfChild = await git.isAncestor(recorded, currentChildTip);
-      if (!stillAncestorOfChild) continue;
+  if (rejected && currentChildTip) {
+    const derived = await git.mergeBase(childBranch, rejected);
+    if (derived) {
+      if (!mbCurrent) return { sha: derived, source: "snapshot-derived" };
+      if (derived !== mbCurrent && (await git.isAncestor(mbCurrent, derived))) {
+        return { sha: derived, source: "snapshot-derived" };
+      }
     }
-
-    return recorded;
   }
 
-  return null;
+  return mbCurrent ? { sha: mbCurrent, source: "merge-base" } : null;
 }
 
 /**
@@ -96,7 +116,7 @@ export async function findPreRewriteSha(
  * `git rebase --onto <new-base> <baseTip> <root>` drops the already-merged
  * prefix instead of replaying it.
  *
- * Unlike `findPreRewriteSha`, this does NOT require the base branch to still
+ * Unlike `resolveRestackBoundary`, this does NOT require the base branch to still
  * exist locally — that's the whole point: after a squash-merge deletes the base
  * branch, its tip survives only in these snapshots. The ancestor-of-root check
  * rejects stale candidates (an older base tip the root no longer sits on).

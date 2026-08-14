@@ -16,7 +16,7 @@ import {
 } from "./helpers.ts";
 import * as git from "../lib/git.ts";
 import { saveRestackState, loadRestackState, clearRestackState } from "../lib/metadata.ts";
-import { takeSnapshot, getLastSnapshot, findPreRewriteSha } from "../lib/snapshot.ts";
+import { takeSnapshot, getLastSnapshot, resolveRestackBoundary } from "../lib/snapshot.ts";
 import undo from "../commands/undo.ts";
 import { setAutoYes } from "../lib/ui.ts";
 
@@ -623,20 +623,20 @@ describe("tag cleanup", () => {
 // `merge-base(child, parent)` falls all the way back to original-main —
 // causing restack to replay the parent's old commits onto the child.
 //
-// findPreRewriteSha() should recover the orphaned old-parent tip from
+// resolveRestackBoundary() should recover the orphaned old-parent tip from
 // a pre-rewrite snapshot, giving restack the correct rebase base.
 // ────────────────────────────────────────────────────────
 
-describe("findPreRewriteSha", () => {
-  test("returns null when no snapshots exist", async () => {
-    const { meta } = await createLinearStack(tmpDir);
+describe("resolveRestackBoundary", () => {
+  test("falls back to merge-base when no snapshots exist", async () => {
+    const { meta, shas } = await createLinearStack(tmpDir);
 
-    const result = await findPreRewriteSha(meta, "pr1");
-    expect(result).toBeNull();
+    const result = await resolveRestackBoundary(meta, "pr1", "pr2");
+    expect(result).toEqual({ sha: shas.pr1!, source: "merge-base" });
   });
 
-  test("returns null when branch was only appended to (history not rewritten)", async () => {
-    const { meta } = await createLinearStack(tmpDir);
+  test("falls back to merge-base when branch was only appended to (history not rewritten)", async () => {
+    const { meta, shas } = await createLinearStack(tmpDir);
 
     // Snapshot the current state
     const updated = await takeSnapshot(meta, "test-stack", "restack");
@@ -646,9 +646,9 @@ describe("findPreRewriteSha", () => {
     await makeCommit(tmpDir, "pr1-extra.txt", "extra\n", "pr1: extra");
 
     // Snapshot's recorded SHA is still an ancestor of pr1's current tip
-    // → not "rewritten" → falls back to merge-base (caller's responsibility)
-    const result = await findPreRewriteSha(updated, "pr1");
-    expect(result).toBeNull();
+    // → not "rewritten" → merge-base, which is pr1's pre-append tip
+    const result = await resolveRestackBoundary(updated, "pr1", "pr2");
+    expect(result).toEqual({ sha: shas.pr1!, source: "merge-base" });
   });
 
   test("returns the orphaned tip after a rebase rewrites the branch", async () => {
@@ -673,13 +673,13 @@ describe("findPreRewriteSha", () => {
     expect(newPr1).not.toBe(shas.pr1);
 
     // The snapshot's recorded SHA (old pr1 tip) is no longer an ancestor
-    // of the new pr1 tip — they're siblings on a fork. findPreRewriteSha
+    // of the new pr1 tip — they're siblings on a fork. resolveRestackBoundary
     // detects this and returns the orphaned tip.
-    const result = await findPreRewriteSha(preSync, "pr1");
-    expect(result).toBe(shas.pr1!);
+    const result = await resolveRestackBoundary(preSync, "pr1", "pr2");
+    expect(result).toEqual({ sha: shas.pr1!, source: "snapshot" });
   });
 
-  test("walks newest→oldest, prefers most recent rewrite", async () => {
+  test("walks newest→oldest, prefers the newest rewritten tip the child sits on", async () => {
     const { meta, shas } = await createLinearStack(tmpDir);
     await pushAllBranches(tmpDir);
 
@@ -708,12 +708,18 @@ describe("findPreRewriteSha", () => {
     await git.rebase("origin/main");
 
     // Two snapshots exist:
-    //   [0] pre-first-sync: pr1 = firstPr1
-    //   [1] pre-second-sync: pr1 = secondPr1  ← most recent orphaned tip
-    // findPreRewriteSha should return secondPr1, not firstPr1.
-    const result = await findPreRewriteSha(m, "pr1");
-    expect(result).toBe(secondPr1);
-    expect(result).not.toBe(firstPr1);
+    //   [0] pre-first-sync: pr1 = firstPr1   ← what pr2 actually sits on
+    //   [1] pre-second-sync: pr1 = secondPr1 ← most recent orphaned tip
+    //
+    // pr2 was never restacked, so secondPr1 is not in its history — the
+    // child check skips it and the walk lands on firstPr1.
+    const result = await resolveRestackBoundary(m, "pr1", "pr2");
+    expect(result).toEqual({ sha: firstPr1!, source: "snapshot" });
+
+    // Without a resolvable child (branch missing locally), validation is
+    // parent-only and the newest orphaned tip wins.
+    const parentOnly = await resolveRestackBoundary(m, "pr1", "no-such-branch");
+    expect(parentOnly).toEqual({ sha: secondPr1, source: "snapshot" });
   });
 });
 
@@ -751,10 +757,10 @@ describe("issue #2 repro: sync → restack with rebased base", () => {
     //
     // The buggy path (merge-base): would return original-main (or close)
     // because new-pr1 doesn't share commits with unrebased pr2 anymore.
-    // The fix (findPreRewriteSha): returns the old pr1 tip from snapshot.
+    // The fix (resolveRestackBoundary): returns the old pr1 tip from snapshot.
 
     const buggyBase = await git.mergeBase("pr2", "pr1");
-    const correctBase = await findPreRewriteSha(preSync, "pr1");
+    const correctBase = (await resolveRestackBoundary(preSync, "pr1", "pr2"))!.sha;
 
     // Sanity: the two strategies disagree — that's the whole point of the fix
     expect(correctBase).toBe(shas.pr1!);
@@ -801,13 +807,13 @@ describe("issue #2 repro: sync → restack with rebased base", () => {
     expect(await git.rebase("origin/main")).toBe(true);
 
     // Restack pr2: use snapshot's pre-rewrite tip of pr1
-    const pr2Base = await findPreRewriteSha(preSync, "pr1");
+    const pr2Base = (await resolveRestackBoundary(preSync, "pr1", "pr2"))!.sha;
     expect(pr2Base).toBe(shas.pr1!);
     expect(await git.rebaseOnto("pr1", pr2Base!, "pr2")).toBe(true);
 
     // Restack pr3: pr2's tip is now rewritten, but the snapshot still has
     // pr2's pre-restack tip recorded — that's the rebase base for pr3.
-    const pr3Base = await findPreRewriteSha(preSync, "pr2");
+    const pr3Base = (await resolveRestackBoundary(preSync, "pr2", "pr3"))!.sha;
     expect(pr3Base).toBe(shas.pr2!);
     expect(await git.rebaseOnto("pr2", pr3Base!, "pr3")).toBe(true);
 
@@ -861,7 +867,7 @@ describe("issue #5: stale snapshot child-ancestry validation", () => {
     expect(await git.rebase("origin/main")).toBe(true);
 
     // Restack pr2 onto rebased pr1 — using the snapshot-driven correct base
-    const session1Base = await findPreRewriteSha(m, "pr1", "pr2");
+    const session1Base = (await resolveRestackBoundary(m, "pr1", "pr2"))!.sha;
     expect(session1Base).toBe(oldPr1);
     expect(await git.rebaseOnto("pr1", session1Base!, "pr2")).toBe(true);
 
@@ -884,18 +890,19 @@ describe("issue #5: stale snapshot child-ancestry validation", () => {
     // would replay a huge wrong range.
     //
     // The fix: passing pr2 as childBranch skips snapshot[0] because oldPr1
-    // is not an ancestor of pr2. We end up with null → caller falls back to
-    // merge-base, which now correctly points to the previous pr1 tip pr2
-    // is actually based on.
-    const baseWithChildCheck = await findPreRewriteSha(m, "pr1", "pr2");
-    expect(baseWithChildCheck).toBeNull();
-
-    // Sanity: without the child check, we'd get the stale tip back.
-    const baseWithoutChildCheck = await findPreRewriteSha(m, "pr1");
-    expect(baseWithoutChildCheck).toBe(oldPr1);
-
-    // And merge-base (the fallback) gives the right answer for pr2 in this case
+    // is not an ancestor of pr2 — and, critically, the #30 derivation must
+    // NOT kick in either: merge-base(pr2, oldPr1) is original-main, which
+    // sits BELOW merge-base(pr2, pr1) (the previous pr1 tip pr2 actually
+    // sits on). The descendant-most candidate — merge-base — wins.
     const mb = await git.mergeBase("pr2", "pr1");
+    const result = await resolveRestackBoundary(m, "pr1", "pr2");
+    expect(result).toEqual({ sha: mb!, source: "merge-base" });
+
+    // Sanity: the derived fork point really is the lower (wrong) boundary here.
+    const derivedFromStale = await git.mergeBase("pr2", oldPr1);
+    expect(derivedFromStale).not.toBe(mb);
+
+    // And merge-base gives the right answer for pr2 in this case
     expect(await isAncestor(tmpDir, mb!, pr2AfterRestack)).toBe(true);
   });
 
@@ -917,8 +924,8 @@ describe("issue #5: stale snapshot child-ancestry validation", () => {
     await checkout(tmpDir, "pr1");
     expect(await git.rebase("origin/main")).toBe(true);
 
-    const result = await findPreRewriteSha(preSync, "pr1", "pr2");
-    expect(result).toBe(shas.pr1!);
+    const result = await resolveRestackBoundary(preSync, "pr1", "pr2");
+    expect(result).toEqual({ sha: shas.pr1!, source: "snapshot" });
   });
 
   test("handles missing child gracefully (falls back to parent-only check)", async () => {
@@ -936,7 +943,7 @@ describe("issue #5: stale snapshot child-ancestry validation", () => {
     expect(await git.rebase("origin/main")).toBe(true);
 
     // Pass a child that doesn't exist — should fall back to parent-only check
-    const result = await findPreRewriteSha(preSync, "pr1", "nonexistent-branch");
-    expect(result).toBe(shas.pr1!);
+    const result = await resolveRestackBoundary(preSync, "pr1", "nonexistent-branch");
+    expect(result).toEqual({ sha: shas.pr1!, source: "snapshot" });
   });
 });

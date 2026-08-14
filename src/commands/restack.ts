@@ -15,7 +15,7 @@ import {
   writeMetadata,
 } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
-import { takeSnapshot, findPreRewriteSha, findRecordedBaseTip } from "../lib/snapshot.ts";
+import { takeSnapshot, resolveRestackBoundary, findRecordedBaseTip } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
 
@@ -549,47 +549,43 @@ async function processChain(
       continue;
     }
 
-    // Resolve the rebase base.
-    //
-    //   Strategy:
-    //     1. Look for a recent snapshot where the parent's recorded tip is no
-    //        longer an ancestor of the parent's current tip AND is still an
-    //        ancestor of the child. That recorded SHA is the orphaned
-    //        old-parent tip — exactly the rebase base we need.
-    //     2. Fall back to `merge-base(branch, parent)` if no snapshot tells us
-    //        the parent was rewritten (typical case: parent only had commits
-    //        appended, not rebased).
-    //
-    //   The child-ancestry check (issue #5) prevents stale snapshots from
-    //   older sessions — where the child has already been rebased past the
-    //   recorded point — from being used as a rebase base.
+    // Resolve the rebase boundary — snapshot pre-rewrite tip, a fork point
+    // derived from a rejected snapshot (#30), or merge-base, in that order.
+    // See resolveRestackBoundary for the full strategy.
     //
     //   Re-read metadata fresh because previous iterations of this loop may
     //   have updated snapshots.
     const freshMeta = (await readMetadata()) ?? meta;
-    const oldBaseFromSnapshot = await findPreRewriteSha(freshMeta, parent, branch);
-    const oldBaseFromMergeBase = await git.mergeBase(branch, parent);
-    const oldBase = oldBaseFromSnapshot ?? oldBaseFromMergeBase;
+    const boundary = await resolveRestackBoundary(freshMeta, parent, branch);
 
     if (verbose) {
       console.log();
       console.log(pc.yellow("  Diagnostic: base resolution"));
       console.log(
-        `  ${pc.cyan("Snapshot pre-rewrite tip:")} ${oldBaseFromSnapshot?.slice(0, 8) ?? "(none)"}`,
+        `  ${pc.cyan("Boundary:")} ${boundary ? `${boundary.sha.slice(0, 8)} (${boundary.source})` : "(none)"}`,
       );
-      console.log(
-        `  ${pc.cyan("Current merge-base:")}      ${oldBaseFromMergeBase?.slice(0, 8) ?? "(none)"}`,
-      );
-      if (
-        oldBaseFromSnapshot &&
-        oldBaseFromMergeBase &&
-        oldBaseFromSnapshot !== oldBaseFromMergeBase
-      ) {
+      if (boundary && boundary.source !== "merge-base") {
         console.log(
-          `  ${pc.yellow("⚠ Parent was rewritten")} — using snapshot base (would have replayed parent commits otherwise)`,
+          `  ${pc.yellow("⚠ Parent was rewritten")} — merge-base alone would have replayed parent commits`,
         );
       }
       console.log();
+    }
+
+    if (!boundary) {
+      // No snapshot evidence and no common history — any base would be a
+      // guess, and a wrong guess replays the parent's history onto itself.
+      // Refuse with the manual command, consistent with the --onto reroot
+      // path. (#30: never silently guess when we can't derive the boundary.)
+      p.log.error(
+        `Cannot determine a safe rebase base for ${pc.yellow(branch)} onto ${pc.yellow(parent)}.`,
+      );
+      console.log();
+      console.log("  Rebase it manually with an explicit boundary:");
+      console.log(`    ${pc.green(`git rebase --onto ${parent} <old-parent-tip> ${branch}`)}`);
+      console.log();
+      console.log(`  Then re-run ${pc.green("gh-stack restack")} to continue the chain.`);
+      process.exit(1);
     }
 
     // Checkout the branch
@@ -604,21 +600,28 @@ async function processChain(
     });
 
     let success: boolean;
-    if (oldBase) {
-      const sourceLabel = oldBaseFromSnapshot ? "snapshot" : "merge-base";
+    const branchTip = await git.revParse(branch);
+    if (boundary.sha === branchTip) {
+      // The child has no commits of its own (a placeholder branch created off
+      // the parent before any work landed). Nothing to replay — move the ref
+      // instead of invoking rebase. (#30)
       p.log.info(
-        `Rebasing onto ${pc.yellow(parent)} (base: ${oldBase.slice(0, 8)} from ${sourceLabel})`,
+        `${pc.yellow(branch)} has no unique commits — moving it to ${pc.yellow(parent)}'s tip`,
+      );
+      success = await git.resetHard(parent);
+    } else {
+      const sourceLabel =
+        boundary.source === "snapshot-derived" ? "snapshot (derived fork-point)" : boundary.source;
+      p.log.info(
+        `Rebasing onto ${pc.yellow(parent)} (base: ${boundary.sha.slice(0, 8)} from ${sourceLabel})`,
       );
 
       if (verbose) {
-        const count = await git.commitCount(oldBase, branch);
+        const count = await git.commitCount(boundary.sha, branch);
         console.log(`  Moving ${count} commit(s)`);
       }
 
-      success = await git.rebaseOnto(parent, oldBase, branch);
-    } else {
-      p.log.warn("Could not determine rebase base — using simple rebase");
-      success = await git.rebase(parent);
+      success = await git.rebaseOnto(parent, boundary.sha, branch);
     }
 
     if (success) {

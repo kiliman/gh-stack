@@ -7,9 +7,11 @@
 //   - no ANSI colors (picocolors auto-disables via NO_COLOR; we also strip
 //     any residual escapes defensively)
 //
-// Interactive prompts (text, confirm, select) are re-exported unchanged —
+// Interactive prompts (text, confirm, select) are unchanged by plain mode —
 // plain mode is about output, not interactivity. Agents already pair --plain
-// with --yes/GH_STACK_YES so the interactive paths aren't reached.
+// with --yes/GH_STACK_YES so the interactive paths aren't reached. If one IS
+// reached with no TTY on stdin, nothing can ever answer it, so we fail fast
+// instead of blocking forever (#33).
 import * as clack from "@clack/prompts";
 
 let _plain = false;
@@ -27,11 +29,38 @@ function strip(s: string | undefined): string {
   return (s ?? "").replace(ANSI_RE, "");
 }
 
-// ── Interactive prompts (unchanged) ──
+// ── Interactive prompts ──
 export const isCancel = clack.isCancel;
-export const text = clack.text;
-export const confirm = clack.confirm;
-export const select = clack.select;
+
+/**
+ * Exit non-zero instead of prompting when stdin isn't a TTY. A prompt there
+ * can never be answered, and it would otherwise hang (holding the repo) past
+ * the caller's timeout. (#33)
+ */
+function ensureInteractive(message: string): void {
+  if (process.stdin.isTTY) return;
+  console.error(
+    `gh-stack: refusing to prompt — stdin is not a TTY.\n` +
+      `  Prompt: ${strip(message)}\n` +
+      `  Pass --yes (or set GH_STACK_YES=1) to confirm automatically.`,
+  );
+  process.exit(1);
+}
+
+export const text: typeof clack.text = (opts) => {
+  ensureInteractive(opts.message);
+  return clack.text(opts);
+};
+
+export const confirm: typeof clack.confirm = (opts) => {
+  ensureInteractive(opts.message);
+  return clack.confirm(opts);
+};
+
+export const select: typeof clack.select = (opts) => {
+  ensureInteractive(opts.message);
+  return clack.select(opts);
+};
 
 // ── Banner / error ──
 export function intro(message?: string): void {

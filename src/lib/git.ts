@@ -347,6 +347,20 @@ export async function allLocalBranches(): Promise<string[]> {
 }
 
 /**
+ * Map every local branch to its tip SHA, in one call.
+ */
+export async function localBranchTips(): Promise<Map<string, string>> {
+  const result =
+    await $`git for-each-ref --format=${"%(refname:short) %(objectname)"} refs/heads`.text();
+  const tips = new Map<string, string>();
+  for (const line of result.trim().split("\n").filter(Boolean)) {
+    const [name, sha] = line.split(" ");
+    if (name && sha) tips.set(name, sha);
+  }
+  return tips;
+}
+
+/**
  * Determine the trunk branch name. Prefers "main", falls back to "master"
  * if only that exists locally. Defaults to "main" when neither is present.
  */

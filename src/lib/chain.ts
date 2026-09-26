@@ -53,6 +53,26 @@ export async function detectBranchChain(currentBranch: string, trunk: string): P
   return chain;
 }
 
+/**
+ * Local branches (other than trunk) whose tip is the SAME commit as `branch`.
+ * A branch with no commits of its own sits at its parent's tip rather than
+ * above it, so `detectBranchChain` can't see the parent — and from ancestry
+ * alone the two are indistinguishable. Callers use this to warn instead of
+ * silently rooting the branch at trunk. (#37)
+ */
+export async function colocatedBranches(branch: string, trunk: string): Promise<string[]> {
+  const tip = await git.revParse(branch);
+  const excluded = new Set([branch, trunk, "main", "master"]);
+  const out: string[] = [];
+  for (const [other, sha] of await git.localBranchTips()) {
+    if (excluded.has(other) || sha !== tip) continue;
+    // A branch sitting on trunk's tip isn't a stack parent, just trunk.
+    if (await git.isAncestor(other, trunk)) continue;
+    out.push(other);
+  }
+  return out;
+}
+
 export interface StackResolution {
   stackName: string;
   base: string; // effective base of the resulting stack (for display)

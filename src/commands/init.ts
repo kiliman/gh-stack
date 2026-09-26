@@ -13,6 +13,7 @@ import {
 import { getPrNumber } from "../lib/github.ts";
 import { isAutoYes } from "../lib/ui.ts";
 import { detectBranchChain } from "../lib/chain.ts";
+import { warnIfColocated } from "./add.ts";
 import { gateLegacyMetadata } from "../lib/safety.ts";
 import type { StackMetadata, Branch } from "../types.ts";
 
@@ -150,6 +151,9 @@ export default async function init(args: string[]): Promise<void> {
   prSpinner.stop(prCount > 0 ? `Found ${prCount} PR(s)` : "No PRs found");
 
   p.outro(pc.green(`Stack ${pc.yellow(stackName)} created with ${chain.length} branch(es)!`));
+
+  // A zero-commit branch can't see its parent through ancestry (#37).
+  if (chain.length === 1) await warnIfColocated(branch, trunk);
 
   // Next steps
   console.log();

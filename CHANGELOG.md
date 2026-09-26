@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.0
 
 ### ✨ Features
 - **`restack --no-push` / `sync --no-push` (and `GH_STACK_NO_PUSH=1`) — rebase without publishing.** Under `--yes`, restack and sync force-pushed every rebased branch, so an agent that was allowed to rewrite local history but not to publish it had no unattended way to restack. `--no-push` does every rebase and snapshot as usual, but never pushes (and `sync` doesn't retarget a PR base after advancing past a merged bottom). It ends by listing the refs left ahead of origin as expected output, not an error, and exits 0. It wins over `--yes` for pushes while `--yes` still accepts the rebases. An interrupted `--no-push` run stays local-only on `--resume`. (#36)

@@ -17,20 +17,27 @@ import { confirmAction } from "../lib/ui.ts";
 import { getPrInfo } from "../lib/github.ts";
 import { planMerges, advanceNewBottom, type BranchReview } from "../lib/advance.ts";
 import type { StackMetadata } from "../types.ts";
+import { wantsNoPush } from "./restack.ts";
 
 export default async function sync(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
+  const noPush = wantsNoPush(args);
 
   if (args.includes("--help")) {
     console.log(`
 gh-stack sync — Sync base with main + restack all
 
 USAGE
-  gh-stack sync [--dry-run]
+  gh-stack sync [--dry-run] [--no-push]
 
 Fetches latest main, rebases the base branch onto main,
 then restacks all children. Equivalent to running restack
 with the base branch included.
+
+OPTIONS
+  --dry-run   Show what would happen without executing
+  --no-push   Rebase locally only — never push or retarget PRs
+              (also GH_STACK_NO_PUSH=1). Wins over --yes for pushes
 `);
     return;
   }
@@ -91,7 +98,7 @@ with the base branch included.
   // them. A plain rebase onto main would then replay their now-squashed commits
   // and conflict — so advance past them (re-rooting the survivor onto main with
   // `--onto`) before the normal sync runs. (#20)
-  const advance = await advanceMergedBottoms(meta, stackName, base, dryRun);
+  const advance = await advanceMergedBottoms(meta, stackName, base, dryRun, noPush);
   if (advance.drained) {
     p.outro(pc.green("Bottom PR(s) already merged — stack fully drained & archived."));
     return;
@@ -178,6 +185,7 @@ with the base branch included.
       current_index: 0,
       stack_name: stackName,
       chain: ordered,
+      ...(noPush && { no_push: true }),
     });
 
     p.log.info("Rebasing onto origin/main...");
@@ -194,7 +202,11 @@ with the base branch included.
     p.log.success("Base branch rebased onto main");
 
     // Prompt to push base
-    await promptForcePush(baseBranch);
+    if (noPush) {
+      p.log.info(`Not pushing ${pc.yellow(baseBranch)} (--no-push) — it's now ahead of origin`);
+    } else {
+      await promptForcePush(baseBranch);
+    }
   }
 
   // Step 2: Restack children
@@ -218,7 +230,7 @@ with the base branch included.
   // Switch to first child and run restack
   if (children.length > 0) {
     await git.checkout(children[0]!);
-    await restack(dryRun ? ["--dry-run"] : []);
+    await restack([...(dryRun ? ["--dry-run"] : []), ...(noPush ? ["--no-push"] : [])]);
   }
 }
 
@@ -246,6 +258,7 @@ async function advanceMergedBottoms(
   stackName: string,
   trunk: string,
   dryRun: boolean,
+  noPush: boolean,
 ): Promise<AdvanceOutcome> {
   const stack = meta.stacks[stackName]!;
   const ordered = getOrderedBranches(stack);
@@ -302,6 +315,7 @@ async function advanceMergedBottoms(
         childPr,
         targetRef,
         recordedBase: trunk,
+        push: !noPush,
       });
       if (!res.ok) {
         console.log();

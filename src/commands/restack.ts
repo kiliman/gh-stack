@@ -19,8 +19,21 @@ import { takeSnapshot, resolveRestackBoundary, findRecordedBaseTip } from "../li
 import { confirmAction } from "../lib/ui.ts";
 import type { StackMetadata } from "../types.ts";
 
+/**
+ * `--no-push` / `GH_STACK_NO_PUSH=1`: rebase locally, never publish (#36).
+ * Module-level because every rebase path funnels through `pushBranchRef`.
+ * Wins over `--yes`, which still auto-accepts the rebases themselves.
+ */
+let noPush = false;
+
+/** Whether `--no-push` (or `GH_STACK_NO_PUSH=1`) is in effect for these args. */
+export function wantsNoPush(args: string[]): boolean {
+  return args.includes("--no-push") || process.env.GH_STACK_NO_PUSH === "1";
+}
+
 export default async function restack(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
+  noPush = wantsNoPush(args);
   const resume = args.includes("--resume");
   const verbose = args.includes("--verbose") || args.includes("-v");
 
@@ -42,6 +55,8 @@ USAGE
 OPTIONS
   --onto <ref> Re-root the stack onto a new base ref (changes stack base)
   --yes, -y   Skip confirmations (auto-accept all rebases and pushes)
+  --no-push   Rebase locally only — never push (also GH_STACK_NO_PUSH=1).
+              Wins over --yes for pushes; rebases are still auto-accepted
   --resume    Resume after resolving rebase conflicts
   --dry-run   Show what would happen without executing
   --verbose   Show diagnostic info (snapshot vs merge-base)
@@ -49,6 +64,8 @@ OPTIONS
 EXAMPLES
   gh-stack restack              Interactive (prompts before each rebase)
   gh-stack restack --yes        Non-interactive (for agents/CI)
+  gh-stack restack --yes --no-push
+                                Non-interactive, local-only (review first)
   gh-stack restack --resume     Continue after resolving conflicts
   gh-stack restack --onto main  Re-root a split stack onto main after its
                                 parent stack has merged
@@ -110,6 +127,21 @@ ALIASES
   // when a push didn't take. (#12)
   if (!dryRun) {
     const stale = await findStaleRefs(touched, meta);
+    if (stale.length > 0 && noPush) {
+      // Expected under --no-push: report what's ahead of origin so a later
+      // submit/restack knows what to publish, but don't fail the run.
+      console.log();
+      p.log.info("Not pushed (--no-push) — these refs are ahead of origin:");
+      for (const { branch, local, remote } of stale) {
+        console.log(`  ${pc.yellow("↑")} ${branch}  local ${local.slice(0, 8)}  origin ${remote}`);
+      }
+      console.log();
+      console.log(
+        `  Publish when ready: ${pc.green("gh-stack restack")} or ${pc.green("gh-stack submit")}`,
+      );
+      p.outro(pc.green("Stack Restack Complete (local only)"));
+      return;
+    }
     if (stale.length > 0) {
       console.log();
       p.log.error("Some branch refs are NOT in sync with origin:");
@@ -185,6 +217,8 @@ async function handleResume(
     p.cancel("No saved state found. Nothing to resume.");
     process.exit(1);
   }
+  // An interrupted --no-push run stays local-only when resumed.
+  if (state.no_push) noPush = true;
 
   // Check if rebase is still in progress
   if (await git.isRebaseInProgress()) {
@@ -597,6 +631,7 @@ async function processChain(
       current_index: i,
       stack_name: stackName,
       chain,
+      ...(noPush && { no_push: true }),
     });
 
     let success: boolean;
@@ -672,6 +707,8 @@ function branchHasPr(meta: StackMetadata, branch: string): boolean {
 
 async function pushBranchRef(meta: StackMetadata, branch: string): Promise<void> {
   if (branch === "main" || branch === "master") return;
+  // --no-push: leave origin alone; the end-of-run summary lists what's ahead.
+  if (noPush) return;
 
   const localSha = await git.revParse(branch);
   const hasRemote = await git.remoteBranchExists(branch);

@@ -146,8 +146,11 @@ export async function advanceNewBottom(opts: {
   childPr: number | null;
   targetRef: string;
   recordedBase: string;
+  /** false = `--no-push`: rebase + metadata only, leave origin and the PR alone (#36). */
+  push?: boolean;
 }): Promise<AdvanceResult> {
   const { meta, stackName, mergedBranch, child, childPr, targetRef, recordedBase } = opts;
+  const push = opts.push ?? true;
 
   const forkPoint = await resolveForkPoint(meta, mergedBranch, child);
   if (!forkPoint) return { ok: false, reason: "no-fork-point" };
@@ -164,15 +167,23 @@ export async function advanceNewBottom(opts: {
   const ok = await git.rebaseOnto(targetRef, forkPoint, child);
   if (!ok) return { ok: false, reason: "conflict", forkPoint };
 
-  // Push the rebased head first so the PR diff is clean before its base flips.
-  await git.pushStackedBranch(child);
-  if (childPr != null) {
-    const moved = await setPrBase(childPr, recordedBase);
-    if (moved) {
-      p.log.success(`PR #${childPr} base → ${pc.green(recordedBase)}`);
-    } else {
-      p.log.warn(`Could not retarget PR #${childPr} — set its base to ${recordedBase} manually`);
+  if (push) {
+    // Push the rebased head first so the PR diff is clean before its base flips.
+    await git.pushStackedBranch(child);
+    if (childPr != null) {
+      const moved = await setPrBase(childPr, recordedBase);
+      if (moved) {
+        p.log.success(`PR #${childPr} base → ${pc.green(recordedBase)}`);
+      } else {
+        p.log.warn(`Could not retarget PR #${childPr} — set its base to ${recordedBase} manually`);
+      }
     }
+  } else if (childPr != null) {
+    // Retargeting the base without pushing the rebased head would show the
+    // merged commits in the PR diff, so leave both for `submit` to reconcile.
+    p.log.info(
+      `Not pushing ${pc.yellow(child)} or retargeting PR #${childPr} (--no-push) — ${pc.green("gh-stack submit")} publishes both`,
+    );
   }
 
   // Metadata last: re-parents child (and siblings) onto the merged branch's

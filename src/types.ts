@@ -64,6 +64,8 @@ export interface RestackState {
   current_index: number;
   stack_name: string;
   chain: string[];
+  /** The interrupted run was `--no-push`; `--resume` keeps it local-only (#36). */
+  no_push?: boolean;
 }
 
 // PR info from GitHub API

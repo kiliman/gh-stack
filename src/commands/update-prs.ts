@@ -17,6 +17,7 @@ import {
 } from "../lib/metadata.ts";
 import { ensureMetadata } from "../lib/safety.ts";
 import {
+  findOpenPrForBranch,
   getPrInfo,
   getPrBody,
   updatePrBody,
@@ -100,6 +101,32 @@ async function backfillTitles(stack: Stack, ordered: string[]): Promise<boolean>
 
 function vizHash(viz: string): string {
   return createHash("sha1").update(viz).digest("hex");
+}
+
+/**
+ * Whether a live PR body already carries exactly this viz block. GitHub
+ * stores bodies edited in its web UI with CRLF line endings, so normalize
+ * before comparing — otherwise every such PR would look perpetually stale.
+ */
+export function bodyHasViz(body: string, viz: string): boolean {
+  return body.replace(/\r\n/g, "\n").includes(viz);
+}
+
+/**
+ * Record PR numbers for tracked branches whose PR was opened outside gh-stack
+ * (e.g. `gh pr create`), by looking up the open PR for each PR-less branch.
+ * Only an unambiguous single match is adopted. Returns the branches adopted —
+ * the caller persists metadata when non-empty. (#35)
+ */
+export async function discoverMissingPrs(stack: Stack, ordered: string[]): Promise<string[]> {
+  const missing = ordered.filter((b) => stack.branches[b]!.pr == null);
+  const found = await mapLimit(missing, 8, async (branch) => {
+    const pr = await findOpenPrForBranch(branch);
+    if (pr == null) return null;
+    stack.branches[branch]!.pr = pr;
+    return branch;
+  });
+  return found.filter((b): b is string => b != null);
 }
 
 /** Splice the rendered viz block into a PR body, replacing any existing one. */
@@ -201,6 +228,7 @@ export interface VizResult {
   updated: number; // PRs whose description we PATCHed
   unchanged: number; // PRs skipped because their rendered block was identical
   skipped: number; // branches with no PR
+  skippedBranches: string[]; // …and their names, so callers can say which
   dirty: boolean; // metadata mutated (caller should persist)
 }
 
@@ -213,12 +241,17 @@ export interface VizResult {
  * body: the override is used as the base instead of the current GitHub body,
  * the managed `📚 Stacked on` block is re-merged into it, and the PR is updated
  * even if the viz block itself didn't change.
+ *
+ * `verifyLive` checks each PR whose cached hash matches against its actual
+ * body, so a viz block removed by an external edit (`gh pr edit`, the web UI)
+ * is restored rather than reported "unchanged". It costs one read per PR, so
+ * `update-prs` opts in while `submit` stays on the cheap hash check. (#34)
  */
 export async function refreshStackViz(
   meta: StackMetadata,
   stack: Stack,
   ordered: string[],
-  opts: { force?: boolean; bodyOverrides?: Record<string, string> } = {},
+  opts: { force?: boolean; verifyLive?: boolean; bodyOverrides?: Record<string, string> } = {},
 ): Promise<VizResult> {
   const force = opts.force ?? false;
   const bodyOverrides = opts.bodyOverrides ?? {};
@@ -239,18 +272,34 @@ export async function refreshStackViz(
       const bm = stack.branches[info.branch]!;
       // A body override forces the PATCH even when the viz block is unchanged.
       const overridden = bodyOverrides[info.branch] != null;
-      return { info, viz, hash, bm, needsUpdate: force || overridden || bm.vizHash !== hash };
+      const needsUpdate = force || overridden || bm.vizHash !== hash;
+      return { info, viz, hash, bm, needsUpdate, liveBody: null as string | null };
     });
+
+  if (opts.verifyLive) {
+    await mapLimit(
+      plans.filter((plan) => !plan.needsUpdate),
+      8,
+      async (plan) => {
+        const body = await getPrBody(plan.info.prNumber!);
+        if (body !== null && !bodyHasViz(body, plan.viz)) {
+          plan.needsUpdate = true;
+          plan.liveBody = body;
+        }
+      },
+    );
+  }
 
   const toUpdate = plans.filter((plan) => plan.needsUpdate);
   const unchanged = plans.length - toUpdate.length;
-  const skipped = branchInfos.length - plans.length;
+  const skippedBranches = branchInfos.filter((b) => b.prNumber == null).map((b) => b.branch);
+  const skipped = skippedBranches.length;
 
   const oks = await mapLimit(toUpdate, 8, async (plan) => {
     // `submit -b` replaces the body; otherwise keep the PR's current body and
     // just re-merge the viz block into it.
     const override = bodyOverrides[plan.info.branch];
-    const body = override ?? (await getPrBody(plan.info.prNumber!));
+    const body = override ?? plan.liveBody ?? (await getPrBody(plan.info.prNumber!));
     if (body === null) return false;
     const ok = await updatePrBody(plan.info.prNumber!, mergeViz(body, plan.viz));
     if (ok) plan.bm.vizHash = plan.hash;
@@ -260,7 +309,7 @@ export async function refreshStackViz(
   const updated = oks.filter(Boolean).length;
   if (updated > 0) dirty = true;
 
-  return { updated, unchanged, skipped, dirty };
+  return { updated, unchanged, skipped, skippedBranches, dirty };
 }
 
 export default async function updatePrs(args: string[]): Promise<void> {
@@ -272,8 +321,13 @@ USAGE
   gh-stack update-prs [--force]
 
 Updates all PRs in the current stack with a standardized stack section
-showing the tree structure, PR links, and per-PR stack index. By default
-PRs whose rendered block is unchanged are skipped; --force rewrites all.
+showing the tree structure, PR links, and per-PR stack index. Each PR's
+live description is checked, so a stack section removed by an outside
+edit (gh pr edit, the GitHub UI) is restored. PRs that already show the
+current section are left alone; --force rewrites all.
+
+Tracked branches with no recorded PR are looked up on GitHub first, so a
+PR opened outside gh-stack (e.g. gh pr create) is adopted automatically.
 `);
     return;
   }
@@ -298,17 +352,30 @@ PRs whose rendered block is unchanged are skipped; --force rewrites all.
 
   const s = p.spinner();
   s.start("Updating PR titles & descriptions...");
+  const adopted = await discoverMissingPrs(stack, ordered);
   const titles = await reconcilePrTitles(stack, ordered);
-  const result = await refreshStackViz(meta, stack, ordered, { force });
+  const result = await refreshStackViz(meta, stack, ordered, { force, verifyLive: true });
   s.stop("Done");
 
-  if (titles.dirty || result.dirty) await writeMetadata(meta);
+  if (adopted.length > 0 || titles.dirty || result.dirty) await writeMetadata(meta);
+
+  for (const b of adopted) {
+    p.log.success(
+      `Adopted PR #${stack.branches[b]!.pr} for ${pc.blue(b)} (opened outside gh-stack)`,
+    );
+  }
+  if (result.skippedBranches.length > 0) {
+    p.log.warn(
+      `Skipped ${result.skippedBranches.length} branch(es) with no open PR: ${result.skippedBranches.map((b) => pc.blue(b)).join(", ")}\n` +
+        `  Open them with ${pc.green("gh-stack submit")}`,
+    );
+  }
 
   console.log();
   p.outro(
     pc.green(
       `Updated ${result.updated} description(s), ${titles.updated} title(s)` +
-        (result.unchanged > 0 ? `, ${result.unchanged} unchanged` : "") +
+        (result.unchanged > 0 ? `, ${result.unchanged} already up to date` : "") +
         (result.skipped > 0 ? `, ${result.skipped} without PRs` : ""),
     ),
   );

@@ -41,6 +41,26 @@ export async function getPrNumber(branch: string): Promise<number | null> {
 }
 
 /**
+ * Find the open PR whose head is `branch`, for adopting a PR opened outside
+ * gh-stack. Unlike getPrNumber, returns null unless there is exactly one match
+ * — a fork with the same branch name must never be adopted by accident.
+ */
+export async function findOpenPrForBranch(branch: string): Promise<number | null> {
+  try {
+    const out =
+      await $`gh pr list --head ${branch} --state open --json number --jq '.[].number'`.text();
+    const nums = out
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((n) => parseInt(n, 10));
+    return nums.length === 1 && !isNaN(nums[0]!) ? nums[0]! : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get PR info for a specific PR number.
  */
 export async function getPrInfo(prNumber: number): Promise<PrInfo | null> {

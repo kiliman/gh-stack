@@ -64,6 +64,13 @@ export GH_STACK_YES=1     # skip every confirmation, plain output
   of generic auto-generated ones (see below).
 - Commands that rebase (`restack`, `sync`, `merge`) **refuse to run on a dirty
   tree** — commit or stash first.
+- **`--yes` also accepts pushes.** To rebase without publishing (e.g. until a
+  human approves), add `--no-push` to `restack`/`sync`, or export
+  `GH_STACK_NO_PUSH=1`. It wins over `--yes` for pushes and lists what's ahead
+  of origin at the end.
+- A prompt reached without a TTY on stdin **exits 1** (naming the prompt)
+  instead of hanging. If you see `refusing to prompt`, re-run with
+  `GH_STACK_YES=1`.
 
 ## Core workflow
 
@@ -94,9 +101,16 @@ created a branch with `git checkout -b` and want to `sync`/`restack` it _before_
 opening a PR, `add` registers it in a stack (network-free — no push, no PR):
 
 ```bash
-gh-stack add           # track the current branch
-gh-stack add <branch>  # track a named branch
+gh-stack add                     # track the current branch
+gh-stack add <branch>            # track a named branch
+gh-stack add --parent <branch>   # stack the current branch directly on <branch>
 ```
+
+**A branch with no commits yet can't be placed by ancestry.** It sits _at_ its
+parent's tip, so `init`/`add` root it at trunk and warn that it "has no commits
+of its own". Fix it with `gh-stack add --parent <parent>`, which tracks the
+parent too if needed. `--parent` also re-homes a branch that's already tracked,
+but only when it's alone in its stack with no PR.
 
 It walks local ancestry: a branch sitting on top of an existing stack is adopted
 into it (parent auto-detected); otherwise a new stack is created from the chain.
@@ -163,6 +177,7 @@ gh-stack checkout      # interactive picker (alias: co)
 gh-stack sync          # fetch trunk, rebase base onto it, restack ALL children
 gh-stack restack       # rebase current branch + descendants onto their parents
 gh-stack restack --dry-run
+gh-stack restack --no-push   # rebase locally only (also: GH_STACK_NO_PUSH=1)
 ```
 
 **⚠️ Restack propagates UPWARD from the current branch.** Run it from the
@@ -229,7 +244,7 @@ gh-stack rename        # rename a tracked branch (keeps metadata in sync)
 gh-stack undo          # restore from the last snapshot
 gh-stack archive       # manage archived stacks
 gh-stack doctor        # migrate & repair stack metadata
-gh-stack update-prs    # refresh stack visualization in PR descriptions
+gh-stack update-prs    # repair stack viz in PR descriptions + adopt PRs opened with gh pr create
 ```
 
 ## Stack visualization

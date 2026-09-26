@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### ✨ Features
+- **`restack --no-push` / `sync --no-push` (and `GH_STACK_NO_PUSH=1`) — rebase without publishing.** Under `--yes`, restack and sync force-pushed every rebased branch, so an agent that was allowed to rewrite local history but not to publish it had no unattended way to restack. `--no-push` does every rebase and snapshot as usual, but never pushes (and `sync` doesn't retarget a PR base after advancing past a merged bottom). It ends by listing the refs left ahead of origin as expected output, not an error, and exits 0. It wins over `--yes` for pushes while `--yes` still accepts the rebases. An interrupted `--no-push` run stays local-only on `--resume`. (#36)
+- **`add --parent <branch>` — place a branch explicitly, and re-home a mistaken one.** A branch with no commits of its own sits *at* its parent's tip, so ancestry can't tell the two apart, and `init`/`add` rooted it at trunk. `add --parent` stacks it directly on the named branch (tracking that branch first if needed), after checking that it's actually based on it. It also re-homes an already-tracked branch, but only when it's alone in its stack and has no PR, which is the shape a mistaken `init` leaves. `init` and `add` now warn when this happens and print the `add --parent` command. (#37)
+
+### 🐛 Fixes
+- **Prompts no longer block forever when stdin isn't a TTY.** A confirmation reached from an agent or script without `GH_STACK_YES=1` waited for an answer that couldn't arrive, and the process outlived the caller's timeout while holding the repo. Every prompt now exits 1 in that case, naming the prompt and pointing at `GH_STACK_YES=1`. (#33)
+- **`update-prs` restores a stack visualization removed by an outside edit.** It compared against the hash of what gh-stack last wrote, so after `gh pr edit --body-file` or a web-UI edit dropped the `📚 Stacked on` block, it reported the PR as "unchanged". It now checks each PR's live body and re-merges the block when it's missing or stale (CRLF bodies from the web editor are handled). `submit` keeps the cheap hash check from #16. The summary says "already up to date" and names any branches skipped for having no PR. (#34)
+- **`update-prs` adopts PRs opened outside gh-stack.** A tracked branch whose PR came from `gh pr create` had no PR number in metadata, so it was skipped. `update-prs` now looks up the open PR for each PR-less branch and records it when there's exactly one match. (#35)
+
 ## 0.17.2
 
 ### 🐛 Fixes

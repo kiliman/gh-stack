@@ -83,11 +83,19 @@ create <branch-name> [--description <desc>]
     Create a new git branch off the current branch and add it to
     the stack. The current branch must already be tracked.
 
-add [branch]
+add [branch] [--parent <branch>]
     Track an EXISTING local branch (default: the current branch) in a
     stack — without pushing or opening a PR. Walks local ancestry: if the
     branch sits on top of an existing stack it's adopted into it (parent
     auto-detected); otherwise a new stack is created from the chain.
+
+    --parent <branch>: stack it directly on <branch> (which it must
+    already be based on), tracking <branch> first if needed. Use this
+    for a branch with no commits of its own yet — it sits AT its
+    parent's tip, so ancestry can't tell which is the parent and it
+    would otherwise be rooted at trunk (init/add warn when this
+    happens). It also re-homes an already-tracked branch, but only
+    when it's alone in its stack and has no PR.
 
     Use this for a WIP branch you've created with `git checkout -b` but
     aren't ready to submit. It fills the gap between creating a branch and
@@ -152,10 +160,15 @@ ls
 ### Stack Management
 
 ```
-restack [--resume] [--dry-run] [--verbose]
+restack [--resume] [--dry-run] [--no-push] [--verbose]
     Rebase the current branch and all descendants onto their parents.
     Uses metadata snapshots to recover the correct rebase base even
     after a parent's history has been rewritten.
+
+    --no-push (or GH_STACK_NO_PUSH=1): rebase locally only, and list
+    the refs left ahead of origin. It overrides --yes for pushes, so
+    an agent can restack unattended without publishing anything. An
+    interrupted --no-push run stays local-only on --resume.
 
     On conflict:
         git rebase --continue
@@ -169,7 +182,7 @@ restack --onto <ref>
     onto main once the parent stack has merged — only the stack's own
     commits replay onto the new base.
 
-sync [--dry-run]
+sync [--dry-run] [--no-push]
     Fetch main, rebase the base branch onto main, then restack all
     children. Snapshots every branch's pre-sync tip so children can be
     correctly rebased even though their parent's history was rewritten.
@@ -178,6 +191,10 @@ sync [--dry-run]
     them — re-rooting the survivor onto main with `--onto` so only its
     own commits replay — instead of replaying the now-squashed commits
     and conflicting.
+
+    --no-push (or GH_STACK_NO_PUSH=1): as for restack. Also skips
+    retargeting a PR's base after advancing past a merged bottom;
+    the next `submit` pushes and retargets together.
 
 merge [--dry-run] [-d|--delete-branch] [--collapse]
 merge --approved [--collapse] [--dry-run] [-d|--delete-branch]
@@ -266,9 +283,13 @@ log
 
 update-prs [--force]
     Refresh the "📚 Stacked on" visualization block in every PR
-    description for the current stack. PRs whose rendered block is
-    unchanged are skipped; --force rewrites all of them. (submit does
-    this automatically — use this to refresh without pushing.)
+    description for the current stack. Each PR's live description is
+    checked, so a block removed by an outside edit (`gh pr edit`, the
+    GitHub UI) is restored; PRs already showing the current block are
+    skipped, and --force rewrites all of them. A tracked branch with no
+    recorded PR is looked up on GitHub first, so a PR opened with
+    `gh pr create` is adopted. (submit refreshes the block too, but
+    compares against what it last wrote — use update-prs to repair.)
 
 stacks [--current] [--json]
     List all stacks and their topology. Read-only and network-free —
@@ -322,11 +343,14 @@ learn [--skill] [--harness <name>] [--global] [--force]
 
 `--plain` is auto-enabled when `--yes` / `GH_STACK_YES=1` is set, so agents get clean, easily-filtered output by default. Use `--plain` alone if you want plain output but still interactive prompts.
 
+If a command needs to prompt but stdin isn't a TTY, it exits 1 with the prompt it would have shown, instead of waiting for an answer that can't arrive. Set `GH_STACK_YES=1` (or pass `--yes`) in that context.
+
 ## Environment Variables
 
 ```
 GH_STACK_YES=1         Skip all confirmations (same as --yes; also enables --plain)
 GH_STACK_PLAIN=1       Plain output (same as --plain)
+GH_STACK_NO_PUSH=1     restack/sync never push (same as --no-push; wins over --yes)
 GH_STACK_NO_COLOR=1    Disable colored output
 ```
 
@@ -517,6 +541,9 @@ gh-stack submit -t "Title [WEB-1234]" -b "Description"  # Explicit PR details
 gh-stack submit -n               # Or auto-generate titles
 gh-stack sync
 gh-stack restack
+
+# Rebase without publishing (e.g. before a human approves the push)
+GH_STACK_NO_PUSH=1 gh-stack restack
 
 # Structured output
 gh-stack status --json

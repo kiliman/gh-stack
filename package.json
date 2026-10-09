@@ -33,7 +33,8 @@
   },
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "bun build --compile src/index.ts --outfile dist/gh-stack",
+    "build": "bun build --compile src/index.ts --outfile dist/gh-stack && bun run sign",
+    "sign": "[ \"$(uname)\" != Darwin ] || codesign --force --sign - dist/gh-stack",
     "test": "bun test",
     "lint": "oxlint src/",
     "format": "oxfmt --write src/",

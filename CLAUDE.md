@@ -47,8 +47,13 @@ bun test                 # Run tests
 ## Building
 
 ```bash
-bun build --compile src/index.ts --outfile dist/gh-stack
+bun run build   # bun build --compile + ad-hoc codesign on macOS
 ```
+
+On macOS, `bun build --compile` appends the bundle to a linker-signed Mach-O,
+leaving its ad-hoc signature invalid. macOS 27+ kills such binaries on launch
+(`Killed: 9`, exit 137), so the build re-signs with `codesign --force --sign -`.
+Always build via `bun run build`, never the raw `bun build` command.
 
 The compiled binary can be symlinked to PATH:
 ```bash

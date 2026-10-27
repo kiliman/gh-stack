@@ -256,15 +256,17 @@ describe("learn --skill (install)", () => {
     expect(installed).toEqual({ ".claude": true, ".codex": true, ".cursor": false });
   });
 
-  test("an unknown name in a comma list rejects the whole run", async () => {
-    const { exitCode, stdout, stderr } = await runCli(
-      ["learn", "--skill", "--harness", "claude,vim"],
-      { GH_STACK_YES: "1" },
-    );
-    expect(exitCode).toBe(1);
-    expect(stdout + stderr).toContain('Unknown harness "vim"');
-    expect(await Bun.file(join(tmpDir, ".claude/skills/using-gh-stack/SKILL.md")).exists()).toBe(
-      false,
-    );
-  });
+  test.each([["claude,vim"], ["all,vim"]])(
+    "an unknown name in %s rejects the whole run",
+    async (list) => {
+      const { exitCode, stdout, stderr } = await runCli(["learn", "--skill", "--harness", list], {
+        GH_STACK_YES: "1",
+      });
+      expect(exitCode).toBe(1);
+      expect(stdout + stderr).toContain('Unknown harness "vim"');
+      expect(await Bun.file(join(tmpDir, ".claude/skills/using-gh-stack/SKILL.md")).exists()).toBe(
+        false,
+      );
+    },
+  );
 });

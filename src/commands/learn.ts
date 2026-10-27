@@ -52,13 +52,12 @@ function parseHarnesses(value: string): Harness[] | string {
       .map((k) => k.trim())
       .filter(Boolean),
   );
-  if (keys.has("all")) return HARNESSES;
-  const unknown = [...keys].filter((k) => !HARNESSES.some((h) => h.key === k));
+  const unknown = [...keys].filter((k) => k !== "all" && !HARNESSES.some((h) => h.key === k));
   if (keys.size === 0 || unknown.length > 0) {
     const bad = unknown.length > 0 ? unknown.join(", ") : value;
     return `Unknown harness "${bad}". Choose from: ${HARNESSES.map((h) => h.key).join(", ")}, or all (comma lists work too).`;
   }
-  return HARNESSES.filter((h) => keys.has(h.key));
+  return keys.has("all") ? HARNESSES : HARNESSES.filter((h) => keys.has(h.key));
 }
 
 /** Shorten a path under the home directory to `~/...` for display. */

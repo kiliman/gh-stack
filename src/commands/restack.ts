@@ -17,23 +17,39 @@ import {
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot, resolveRestackBoundary, findRecordedBaseTip } from "../lib/snapshot.ts";
 import { confirmAction } from "../lib/ui.ts";
+import { describeSource, flagSetting, resolveFlag, type Resolved } from "../lib/config.ts";
 import type { StackMetadata } from "../types.ts";
 
 /**
- * `--no-push` / `GH_STACK_NO_PUSH=1`: rebase locally, never publish (#36).
- * Module-level because every rebase path funnels through `pushBranchRef`.
- * Wins over `--yes`, which still auto-accepts the rebases themselves.
+ * `--no-push` / `GH_STACK_NO_PUSH=1` / `[restack] push = false`: rebase
+ * locally, never publish (#36, #39). Module-level because every rebase path
+ * funnels through `pushBranchRef`. Wins over `--yes`, which still auto-accepts
+ * the rebases themselves.
  */
 let noPush = false;
+/** Why pushing is off, for the local-only summary (e.g. "--no-push"). */
+let noPushReason = "--no-push";
 
-/** Whether `--no-push` (or `GH_STACK_NO_PUSH=1`) is in effect for these args. */
-export function wantsNoPush(args: string[]): boolean {
-  return args.includes("--no-push") || process.env.GH_STACK_NO_PUSH === "1";
+/**
+ * Whether restack/sync push, from `--push`/`--no-push`, `GH_STACK_NO_PUSH`, or
+ * the `[restack] push` config default. Says so when a default turned pushing
+ * off, since nothing on the command line explains it.
+ */
+export async function resolvePush(args: string[]): Promise<Resolved> {
+  const push = await resolveFlag("restack.push", args);
+  if (!push.value && push.source !== "flag") {
+    p.log.info(pc.dim(`Not pushing: ${describeSource(push)}. Pass --push to override.`));
+  }
+  return push;
+}
+
+/** What to call the source of a "don't push" decision in the summary. */
+function pushReason(push: Resolved): string {
+  return push.source === "flag" ? "--no-push" : describeSource(push);
 }
 
 export default async function restack(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
-  noPush = wantsNoPush(args);
   const resume = args.includes("--resume");
   const verbose = args.includes("--verbose") || args.includes("-v");
 
@@ -55,9 +71,12 @@ USAGE
 OPTIONS
   --onto <ref> Re-root the stack onto a new base ref (changes stack base)
   --yes, -y   Skip confirmations (auto-accept all rebases and pushes)
-  --no-push   Rebase locally only — never push (also GH_STACK_NO_PUSH=1).
+  --no-push   Rebase locally only — never push (also GH_STACK_NO_PUSH=1,
+              or \`[restack] push = false\` in config; see gh-stack config).
               Wins over --yes for pushes; rebases are still auto-accepted
-  --resume    Resume after resolving rebase conflicts
+  --push      Push even when a config default or env var says not to
+  --resume    Resume after resolving rebase conflicts. Keeps the interrupted
+              run's push decision unless --push/--no-push is passed
   --dry-run   Show what would happen without executing
   --verbose   Show diagnostic info (snapshot vs merge-base)
 
@@ -74,6 +93,14 @@ ALIASES
   gh-stack rebase
 `);
     return;
+  }
+
+  // A resume keeps the push decision of the run it resumes (unless this
+  // command passes --push/--no-push), so it's settled in handleResume.
+  if (!resume) {
+    const push = await resolvePush(args);
+    noPush = !push.value;
+    noPushReason = pushReason(push);
   }
 
   // Reject if a git rebase is already in progress (unless we're resuming).
@@ -106,7 +133,7 @@ ALIASES
   if (ontoFlag) {
     await handleReroot(meta, ontoFlag, rebasedBranches, touched, dryRun, verbose);
   } else if (resume) {
-    await handleResume(meta, rebasedBranches, touched, verbose);
+    await handleResume(meta, rebasedBranches, touched, verbose, flagSetting("restack.push", args));
   } else {
     await handleFreshRestack(meta, rebasedBranches, touched, dryRun, verbose);
   }
@@ -131,13 +158,13 @@ ALIASES
       // Expected under --no-push: report what's ahead of origin so a later
       // submit/restack knows what to publish, but don't fail the run.
       console.log();
-      p.log.info("Not pushed (--no-push) — these refs are ahead of origin:");
+      p.log.info(`Not pushed (${noPushReason}) — these refs are ahead of origin:`);
       for (const { branch, local, remote } of stale) {
         console.log(`  ${pc.yellow("↑")} ${branch}  local ${local.slice(0, 8)}  origin ${remote}`);
       }
       console.log();
       console.log(
-        `  Publish when ready: ${pc.green("gh-stack restack")} or ${pc.green("gh-stack submit")}`,
+        `  Publish when ready: ${pc.green("gh-stack restack --push")} or ${pc.green("gh-stack submit")}`,
       );
       p.outro(pc.green("Stack Restack Complete (local only)"));
       return;
@@ -209,6 +236,7 @@ async function handleResume(
   rebasedBranches: string[],
   touched: string[],
   verbose: boolean,
+  explicitPush: Resolved | null,
 ): Promise<void> {
   p.log.warn("Resuming from saved state...");
 
@@ -217,8 +245,15 @@ async function handleResume(
     p.cancel("No saved state found. Nothing to resume.");
     process.exit(1);
   }
-  // An interrupted --no-push run stays local-only when resumed.
-  if (state.no_push) noPush = true;
+  // Keep the interrupted run's push decision, so a local-only run stays local
+  // even if the config changed meanwhile. An explicit flag on --resume wins.
+  if (explicitPush) {
+    noPush = !explicitPush.value;
+    noPushReason = "--no-push";
+  } else {
+    noPush = !state.push;
+    noPushReason = "resumed a local-only run; its push decision is kept";
+  }
 
   // Check if rebase is still in progress
   if (await git.isRebaseInProgress()) {
@@ -631,7 +666,7 @@ async function processChain(
       current_index: i,
       stack_name: stackName,
       chain,
-      ...(noPush && { no_push: true }),
+      push: !noPush,
     });
 
     let success: boolean;

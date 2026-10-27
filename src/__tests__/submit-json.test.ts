@@ -2,7 +2,6 @@
 // against a stub `gh` on PATH, so stdout can be checked to hold only the JSON.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import {
   buildSubmitJson,
   submitAction,
@@ -14,7 +13,9 @@ import {
   checkout,
   cleanup,
   createBranch,
+  createGhStub,
   createTempRepo,
+  ghStubEnv,
   makeCommit,
   readMetadata,
   setupRemote,
@@ -171,36 +172,6 @@ describe("buildSubmitJson for an early exit", () => {
 
 const cliPath = new URL("../index.ts", import.meta.url).pathname;
 
-// Answers the gh calls submit makes. `pr list` finds no PRs (except the one
-// named by GH_EXISTING_PR), `pr create` hands
-// out PR numbers from 101 up (or fails when GH_FAIL_CREATE is set), description
-// edits fail when GH_FAIL_BODY_EDIT is set, and every call is appended to $GH_LOG.
-const GH_STUB = `#!/bin/sh
-echo "$*" >> "$GH_LOG"
-case "$1 $2" in
-  "repo view") echo "acme/widgets" ;;
-  "pr list")
-    # GH_EXISTING_PR=<branch>=<number>: that branch already has a PR.
-    head=""; prev=""
-    for a in "$@"; do [ "$prev" = "--head" ] && head="$a"; prev="$a"; done
-    if [ -n "$GH_EXISTING_PR" ] && [ "\${GH_EXISTING_PR%%=*}" = "$head" ]; then
-      echo "\${GH_EXISTING_PR#*=}"
-    fi
-    ;;
-  "pr create")
-    if [ -n "$GH_FAIL_CREATE" ]; then echo "GraphQL: something broke" >&2; exit 1; fi
-    n=$(cat "$GH_STATE" 2>/dev/null || echo 100)
-    n=$((n + 1))
-    echo "$n" > "$GH_STATE"
-    echo "https://github.com/acme/widgets/pull/$n"
-    ;;
-  "pr edit")
-    case "$*" in *--body-file*) [ -n "$GH_FAIL_BODY_EDIT" ] && exit 1 ;; esac
-    ;;
-esac
-exit 0
-`;
-
 let tmpDir: string;
 let remoteDir: string;
 let stubDir: string;
@@ -208,9 +179,7 @@ let stubDir: string;
 beforeEach(async () => {
   tmpDir = await createTempRepo();
   remoteDir = await setupRemote(tmpDir);
-  stubDir = await fs.mkdtemp(path.join(await fs.realpath("/tmp"), "gh-stack-ghstub-"));
-  await Bun.write(`${stubDir}/gh`, GH_STUB);
-  await fs.chmod(`${stubDir}/gh`, 0o755);
+  stubDir = await createGhStub();
 
   // A bare two-branch chain: main → feat-a → feat-b (submit self-heals it).
   await createBranch(tmpDir, "feat-a", "main");
@@ -227,9 +196,7 @@ afterEach(async () => {
 async function runSubmit(args: string[], env: Record<string, string | undefined> = {}) {
   const merged: Record<string, string | undefined> = {
     ...process.env,
-    PATH: `${stubDir}:${process.env.PATH}`,
-    GH_LOG: `${stubDir}/calls.log`,
-    GH_STATE: `${stubDir}/next-pr`,
+    ...ghStubEnv(stubDir),
     GH_STACK_NO_COLOR: "1",
     ...env,
   };

@@ -32,3 +32,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Skill installs from dogfooding `gh-stack learn --skill`; the source is
+# src/lib/using-gh-stack.md. .cursor/ holds tracked project rules, so only the
+# installed skill is ignored there.
+.claude/
+.codex/
+.cursor/skills/using-gh-stack/

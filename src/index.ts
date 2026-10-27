@@ -1,24 +1,28 @@
 #!/usr/bin/env bun
 // gh-stack — Unified stacked PR manager for squash-merge workflows
 
-// Map GH_STACK_NO_COLOR → NO_COLOR so picocolors (and other tools) respect it.
-// Also pre-detect plain mode (--plain flag, GH_STACK_YES=1, or GH_STACK_PLAIN=1)
-// and set NO_COLOR *before* any import below — picocolors snapshots env at
-// load time, so this must run before the import block.
-const _earlyArgs = process.argv.slice(2);
-const _earlyPlain =
-  _earlyArgs.includes("--plain") ||
+// Map GH_STACK_NO_COLOR → NO_COLOR so picocolors (and other tools) respect it,
+// and turn colors off for plain mode (--plain, GH_STACK_YES=1, GH_STACK_PLAIN=1)
+// and --json (a machine reads the stderr logs, and error messages land inside
+// the JSON itself).
+//
+// picocolors reads NO_COLOR once, when it first loads. So this file has NO
+// static imports: those are evaluated before this body runs, and Bun evaluates
+// a CommonJS dependency like picocolors even before an earlier ESM side-effect
+// import. Everything that can pull in picocolors is imported dynamically below.
+const earlyArgs = new Set(process.argv.slice(2));
+const colorOff =
+  !!process.env.GH_STACK_NO_COLOR ||
+  earlyArgs.has("--plain") ||
+  earlyArgs.has("--json") ||
   process.env.GH_STACK_YES === "1" ||
   process.env.GH_STACK_PLAIN === "1";
-if (process.env.GH_STACK_NO_COLOR || _earlyPlain) {
-  process.env.NO_COLOR = "1";
-}
+if (colorOff) process.env.NO_COLOR = "1";
 
-import { ensureGitRepo } from "./lib/safety.ts";
-import { parseCliArgs } from "./lib/cli.ts";
-import { setAutoYes } from "./lib/ui.ts";
-import { setPlain } from "./lib/output.ts";
-
+const { ensureGitRepo } = await import("./lib/safety.ts");
+const { parseCliArgs } = await import("./lib/cli.ts");
+const { setAutoYes } = await import("./lib/ui.ts");
+const { setPlain } = await import("./lib/output.ts");
 const { version: VERSION } = await import("../package.json");
 
 const args = process.argv.slice(2);

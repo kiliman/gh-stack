@@ -62,6 +62,8 @@ export GH_STACK_YES=1     # skip every confirmation, plain output
   (network-free) or `gh-stack status --json` (adds PR/CI/review state).
 - **Always pass `-t`/`-b` to `submit`** so PRs get real titles/bodies instead
   of generic auto-generated ones (see below).
+- **Need the PR number or URL? Add `--json` to `submit`** instead of running
+  `gh pr view` afterwards. stdout is only the JSON; logs go to stderr.
 - Commands that rebase (`restack`, `sync`, `merge`) **refuse to run on a dirty
   tree** — commit or stash first.
 - **`--yes` also accepts pushes.** To rebase without publishing (e.g. until a
@@ -150,6 +152,54 @@ gh-stack submit \
 EOF
 )"
 ```
+
+**`submit --json` returns what happened to each branch** (stdout is only the
+JSON document, on every exit; logs go to stderr, so capture stdout alone):
+
+```bash
+gh-stack submit --json -t "<title>" --body-file /tmp/body.md > /tmp/submit.json
+jq -r '.branches[-1].url' /tmp/submit.json     # the current branch's PR
+```
+
+```json
+{
+  "stack": "my-stack",
+  "current_branch": "feat-b",
+  "branches": [
+    {
+      "branch": "feat-a",
+      "parent": "main",
+      "pr": 101,
+      "url": "https://github.com/org/repo/pull/101",
+      "title": "Feat A (1/2)",
+      "action": "unchanged",
+      "pushed": false,
+      "draft": null
+    },
+    {
+      "branch": "feat-b",
+      "parent": "feat-a",
+      "pr": 102,
+      "url": "https://github.com/org/repo/pull/102",
+      "title": "Feat B (2/2)",
+      "action": "created",
+      "pushed": true,
+      "draft": false
+    }
+  ],
+  "error": null
+}
+```
+
+`branches` is the submit scope (trunk → current) in stack order, so on success
+the last entry is the branch you're on. `action` is `created`, `updated`
+(pushed, or base/title/description edited), `unchanged`, or `failed` (with an
+`error`). `draft` is only known for PRs created this run (else `null`). When
+the run stops early (nothing to submit, a bad `--body-file`, a push failure),
+top-level `error` is `{ "message": "..." }` and `branches` lists what happened
+before it. Exit code is 1 whenever `error` is set or any branch `failed`.
+`--json` implies `--no-edit` and can't be combined with `--dry-run` or
+`--restack`; run `gh-stack restack` as a separate step.
 
 **`submit -t`/`-b` also updates an existing PR in place** — pass them while on a
 branch that already has a PR to change just that one (visualization-safe).

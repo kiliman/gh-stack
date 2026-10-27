@@ -5,3 +5,8 @@
 # exact version ("name@1.2.3"), with the GHSA and publish date in a comment.
 minimumReleaseAge = 259200 # seconds (3 days)
 minimumReleaseAgeExcludes = []
+
+[test]
+# Scrub git repo-locating env vars (GIT_DIR, ...) so tests never touch the
+# enclosing repository when run from a git hook. See src/__tests__/preload.ts.
+preload = ["./src/__tests__/preload.ts"]

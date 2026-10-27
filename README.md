@@ -67,6 +67,10 @@ gh-stack status
 gh-stack split feat-12           # feat-12.. → new stack based on feat-11
 # ...later, after the original stack merges to main:
 gh-stack restack --onto main     # re-root the split stack onto main
+
+# Splice a branch (and its open PR) that was cut from main on its own into the stack
+gh-stack join fix-auth --dry-run # preview the resulting stack + each PR's diff
+gh-stack join fix-auth           # make it the new bottom (or --above <branch>)
 ```
 
 ## Commands
@@ -245,6 +249,46 @@ split [<branch>] [--name <name>]
     original stack stays the review unit and the new stack rides on its
     tip. Once the original stack merges, re-root the new stack with
     `gh-stack restack --onto main`.
+
+join <branch> [--above <branch>] [--dry-run] [--no-push] [--verbose]
+    Splice an existing branch — usually one that already has a PR —
+    into a stack. Without --above it becomes the new bottom of the
+    current stack; with --above <branch> it goes between <branch> and
+    its children (--above main = the bottom). The <branch> named by
+    --above picks the stack, so that form works from anywhere.
+
+    The incoming branch is synced FIRST: only its own commits (those
+    above its fork point with main) replay onto the current tip of its
+    new parent. Otherwise a branch that's behind main would carry the
+    main commits it was missing into every child's diff once they're
+    restacked onto it. Then the branches above it are restacked onto it
+    (restack's own loop), each branch is pushed with --force-with-lease,
+    and the PR bases are retargeted on GitHub (the incoming PR onto its
+    new parent, each re-parented child PR onto the incoming branch).
+    An open PR for the incoming branch is adopted into the metadata.
+
+    A stack named after its old bottom branch is renamed after the new
+    bottom (the old stack file is tombstoned under deleted/); a custom
+    name is kept. A branch alone in its own one-branch stack (what
+    `submit` makes of a standalone PR) is absorbed; a branch in a larger
+    stack is refused.
+
+    --dry-run   Show the resulting stack and, for every affected PR,
+                its projected commits / files changed vs its new parent,
+                plus how far the incoming branch is behind main. Changes
+                nothing (uses the last fetch of origin/main).
+    --no-push   As for restack: rebase and update metadata locally, and
+                leave origin and the PR bases alone. The next `submit`
+                pushes and retargets together.
+
+    Takes a snapshot first (`gh-stack undo` restores every branch,
+    including the incoming one). Refuses on a dirty tree, and when the
+    branches above the insertion point need a restack first. On a
+    conflict syncing the incoming branch the stack is left unchanged:
+    resolve, `git rebase --continue`, and re-run the same join (or
+    `git rebase --abort`). A conflict restacking the branches above it
+    resumes like restack: `git rebase --continue`, then
+    `gh-stack restack --resume`.
 
 rename [<old-name>] <new-name>
     Rename a tracked branch (runs `git branch -m`) and re-key the stack

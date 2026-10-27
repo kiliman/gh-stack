@@ -210,25 +210,19 @@ export default async function join(args: string[]): Promise<void> {
     p.log.success(`${plan.incoming} already sits on ${plan.newParentRef} — no sync needed`);
   }
 
-  await writeMetadata(joined);
-  const chain = buildRebaseChain(joined.stacks[stackName]!, plan.incoming);
-
   // ── 2. Check each child will replay exactly its own commits ──
   // Restack resolves each child's boundary itself; make sure it lands where
-  // the plan (and the dry run) said. Stop BEFORE rewriting a child otherwise.
-  const metaAfterSync = await freshMeta();
+  // the plan (and the dry run) said. Checked against the in-memory join (its
+  // snapshot included) before the metadata is written, so a stop here leaves
+  // the stack as it was and `undo` just puts the incoming branch back.
   for (const child of plan.children) {
-    const resolved = await resolveRestackBoundary(metaAfterSync, plan.incoming, child.branch);
+    const resolved = await resolveRestackBoundary(joined, plan.incoming, child.branch);
     if (resolved?.sha !== child.boundary) {
       p.log.error(
-        `Restack would rebase ${pc.yellow(child.branch)} from ${resolved ? short(resolved.sha) : "(none)"}, not its fork point ${short(child.boundary)} — its diff would be wrong.`,
+        `Restack would rebase ${pc.yellow(child.branch)} from ${resolved ? short(resolved.sha) : "(none)"}, not its fork point ${short(child.boundary)} — its diff would be wrong. Stopping.`,
       );
-      console.log(`  ${plan.incoming} is synced and the metadata is updated. Restack it by hand:`);
-      console.log(
-        `    ${pc.green(`git rebase --onto ${plan.incoming} ${short(child.boundary)} ${child.branch}`)}`,
-      );
-      console.log(`    ${pc.green("gh-stack restack")}  ${pc.dim(`(from ${child.branch})`)}`);
-      console.log(`  Or put everything back: ${pc.green("gh-stack undo")}`);
+      console.log(`  The stack is unchanged. Put ${plan.incoming} back with:`);
+      console.log(`    ${pc.green("gh-stack undo")}`);
       process.exit(1);
     }
     if (verbose) {
@@ -236,9 +230,17 @@ export default async function join(args: string[]): Promise<void> {
     }
   }
 
+  await writeMetadata(joined);
+  const chain = buildRebaseChain(joined.stacks[stackName]!, plan.incoming);
+
   // ── 3. Publish the incoming branch, then retarget PR bases onto it ──
-  await publishBranch(metaAfterSync, plan.incoming, { noPush });
+  await publishBranch(await freshMeta(), plan.incoming, { noPush });
   const retargeted = noPush ? [] : await retargetPrs(plan);
+  if (noPush && expectedRetargets(plan) > 0) {
+    p.log.info(
+      `PR bases left alone (--no-push) — ${pc.green("gh-stack submit")} publishes and retargets them together.`,
+    );
+  }
 
   // ── 4. Restack everything above it (restack's own loop: conflicts → --resume) ──
   let touched: string[] = [plan.incoming];

@@ -118,6 +118,26 @@ This resolves the catch-22 where `sync`/`restack` said "not in any stack" for a
 tip you hadn't submitted yet. (`submit` still auto-tracks too — `add` is just the
 no-publish path.)
 
+**Splice an existing branch/PR into a stack — `gh-stack join`.** For a branch
+that should have been stacked but was cut from main on its own (often with its
+own PR already open):
+
+```bash
+gh-stack join <branch> --dry-run          # preview: resulting stack + each PR's projected diff
+gh-stack join <branch>                    # insert as the new bottom of the current stack
+gh-stack join <branch> --above <parent>   # insert between <parent> and its children
+```
+
+`join` syncs the incoming branch onto its new parent first, replaying only its
+own commits, then restacks everything above it, pushes, and retargets the PR
+bases on GitHub. **Don't do this by hand with `git rebase`:** rebasing children
+onto a branch that's behind main silently drags merged main commits into their
+diffs. Run `--dry-run` first and check each PR's commit/file count. A conflict
+syncing the incoming branch leaves the stack untouched (resolve,
+`git rebase --continue`, re-run the join); a conflict restacking above it resumes
+with `gh-stack restack --resume`. A branch alone in its own one-branch stack is
+absorbed; one in a larger stack is refused.
+
 ### 2. Push & create PRs — `submit`
 
 `submit` is the workhorse: **idempotent, scope-aware, self-healing**. It pushes
@@ -240,6 +260,7 @@ Merge is **top-down everywhere** (collapse PRn → PRn-1 → … → base PR, th
 ```bash
 gh-stack delete        # remove a branch from the stack (re-parents children)
 gh-stack split         # cut a stack into two at a branch
+gh-stack join <b>      # splice an existing branch/PR into the stack (--above <b>, --dry-run)
 gh-stack rename        # rename a tracked branch (keeps metadata in sync)
 gh-stack undo          # restore from the last snapshot
 gh-stack archive       # manage archived stacks

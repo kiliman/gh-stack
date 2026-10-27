@@ -605,7 +605,7 @@ export function getOrderedBranches(stack: Stack): string[] {
  */
 export function getChildren(stack: Stack, branchName: string): string[] {
   return Object.entries(stack.branches)
-    .filter(([_, b]) => b.parent === branchName)
+    .filter(([, b]) => b.parent === branchName)
     .map(([name]) => name);
 }
 

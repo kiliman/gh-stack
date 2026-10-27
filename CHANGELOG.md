@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.19.0
+
+### ⚠️ Behavior changes
+- **Force pushes refuse to drop commits you never had.** Every force push now uses `--force-if-includes` (or an explicit lease on a tip the remote guard has checked), so a push can't silently overwrite commits that landed on origin after your last look, for example the squash commit `merge` adds when it collapses a child into its parent. Before rewriting a branch, `restack`, `sync` and `merge --base` also check origin and stop if it has commits the local branch never had. Commits already in your reflog, a snapshot, main, or a patch-equivalent local commit don't count. The message names the commits and gives the `git pull --ff-only` / `git cherry-pick` fix. `--overwrite-remote` rewrites anyway. (#28)
+- **A bare `restack`/`sync` with an interrupted run pending offers to resume it** and never silently starts a fresh run. Under `--yes` it resumes. `--fresh` discards the pending run, after checking the new run can actually start. (#29)
+- **`merge` and `submit --restack` always push their internal restack**, regardless of push defaults. They publish by nature, and leaving child PR heads stale on GitHub is worse than any default. (#39)
+- **`sync` restacks every branch of a branching stack**, not just the first child's subtree, and no longer takes a second snapshot mid-sync, so `undo` after `sync` restores the pre-sync state. (#29)
+- **`GH_STACK_NO_PUSH` is parsed strictly** (`1/0/true/false/yes/no`). Any other value is an error before anything runs, not silently ignored. (#39)
+
+### ✨ Features
+- **`gh-stack join <branch> [--above <branch>]` splices an existing branch or PR into a stack.** It first syncs the incoming branch onto its new parent, replaying only its own commits, so children never inherit main commits it was missing. Then it restacks the branches above it with restack's own loop, pushes with `--force-with-lease` and retargets the PR bases. `--dry-run` shows the resulting stack and each PR's projected commits and files. It refuses a dirty tree, a branch in another multi-branch stack, a local-only incoming branch in push mode, and a child cut from a since-rewritten incoming tip, each with the exact fix. (#32)
+- **`submit --json` returns each branch's PR number and URL.** stdout is one JSON document (`branch`, `parent`, `pr`, `url`, `title`, `action`, `pushed`, `draft`), and every failure exit prints an `error` document instead, so callers can always parse it. Logs go to stderr without color. (#6)
+- **Defaults config: `.gh-stack.toml` (repo), `~/.config/gh-stack/config.toml` (user), and env vars.** Set `[submit] draft = true` (or `GH_STACK_DRAFT=1`) so every new PR opens as a draft, and `[restack] push = false` to keep restack/sync/join local. Precedence: flag > env > repo > user > built-in. Adds `--no-draft` and `--push` overrides, and a `gh-stack config [--json]` command that shows each value and where it came from. `--yes` is deliberately not configurable. (#39)
+- **`learn --skill --harness all`** (or a comma list like `claude,codex`) installs the agent skill for several harnesses in one run, writing a shared real path once. (#38)
+- **Resumable runs with an action log.** restack, sync and join keep their state, including a log of every rebase and push, until the last push is done. `restack --resume` continues what's left, or prints the finished run's log and exits 0, instead of "No saved state found". (#15)
+
+### 🐛 Fixes
+- **A branch is never pushed onto a parent whose push failed.** Its descendants are rebased locally and held, and the run exits 1 until `restack --resume` publishes them parents-first. This is the "1000+ files changed" PR. Declined rebases are never pushed on resume. (#29)
+- **`merge` checks the collapse before landing the base PR.** After collapsing children into the base (and in `merge --base`, when an earlier run collapsed into it), merge confirms each child's squash commit is still in the base on origin, by ancestry, patch-id or file contents. Missing changes stop the merge with recovery steps for every affected PR. Anything it can't confirm (API errors, shallow clones) prompts, or stops with exit 2 under `--yes`. `--skip-collapse-check` overrides. (#28)
+- **`learn --skill` no longer writes through a symlinked skill dir or `SKILL.md`** (e.g. one linked into a skills repo) unless you pass `--force`; auto-yes doesn't count. Dangling links are reported as such, and the refresh hint keeps the `--global` / `--harness` scope you used. (#38)
+- **`--plain` actually turns colors off.** `NO_COLOR` was set after picocolors had already read the environment. (#45)
+
+### 🔧 Internal
+- 3-day release-age window for installs (`bunfig.toml`). Patched tinypool (critical), picomatch and yaml advisories. `@clack/prompts` 1.8.1, `oxlint` 1.89, `oxfmt` 0.74, `lint-staged` 17. (#40, #41, #42)
+- `bun run build` re-signs the binary ad hoc on macOS, because macOS 27 kills the invalid signature `bun build --compile` leaves.
+- The pre-push hook clears git's repo-locating env vars, and the test suite scrubs them (including for bare `Bun.spawn`), so tests run from a hook can never act on the real repository. A failing check's output now prints under husky's `sh -e`. (#43, #48)
+- `.gitignore` ignores dogfood `learn --skill` installs. (#38)
+
 ## 0.18.0
 
 ### ✨ Features

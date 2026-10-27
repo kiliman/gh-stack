@@ -1,5 +1,11 @@
-output=$(bun run check 2>&1)
-if [ $? -ne 0 ]; then
+# Git exports repo-locating variables (GIT_DIR, GIT_INDEX_FILE, ...) to hooks.
+# From a linked worktree GIT_DIR is absolute, so any git spawned by the checks
+# would act on this repository. Clear them first (see src/__tests__/preload.ts).
+unset $(git rev-parse --local-env-vars)
+
+# husky runs hooks with `sh -e`: test the status inside `if`, or a failing
+# check exits the hook before its output is printed.
+if ! output=$(bun run check 2>&1); then
   echo "$output"
   exit 1
 fi

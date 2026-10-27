@@ -494,14 +494,36 @@ describe("review fixes (#49)", () => {
   test("a stale remote-tracking ref can't wedge the run: in-sync is judged from origin itself", async () => {
     await stackNeedingRestack();
     expect((await runCli(["restack"])).exitCode).toBe(0);
-    // origin/pr3 really is at local pr3, but the tracking ref lags (#23).
+    // Someone moves origin/pr2 back; this clone hasn't fetched, so its
+    // tracking ref still matches local pr2. Judged by that ref, pr2 is "in
+    // sync" and never pushed, while the hold check (reading origin) holds
+    // pr3 on every resume: a loop with no way out.
+    await $`git -C ${remoteDir} update-ref refs/heads/pr2 ${await sha("pr1~1")}`.quiet();
+    await checkout(tmpDir, "pr2");
+
+    const first = await runCli(["restack"]);
+    expect(first.exitCode).toBe(1);
+    expect(first.out).toContain("Push of pr2 failed");
+    expect(first.out).toContain("so the lease refused");
+    expect(first.out).toContain("git fetch origin pr2");
+
+    // Following the hint gets the run through.
+    await $`git -C ${tmpDir} fetch -q origin`.quiet();
+    const resumed = await runCli(["restack", "--resume"]);
+    expect(resumed.exitCode).toBe(0);
+    for (const b of ["pr2", "pr3"]) expect(await remoteSha(b)).toBe(await sha(b));
+  });
+
+  test("a lagging tracking ref with origin already current is in sync (#23)", async () => {
+    await stackNeedingRestack();
+    expect((await runCli(["restack"])).exitCode).toBe(0);
     await $`git -C ${tmpDir} update-ref refs/remotes/origin/pr3 ${await sha("pr3~1")}`.quiet();
     await checkout(tmpDir, "pr2");
 
     const res = await runCli(["restack"]);
 
     expect(res.exitCode).toBe(0);
-    expect(res.out).not.toContain("Push of pr3 failed");
+    expect(res.out).not.toContain("Push Rebased Branch?");
     expect((await savedState())?.finished_at).toBeTruthy();
   });
 

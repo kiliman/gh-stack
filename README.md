@@ -107,11 +107,16 @@ add [branch] [--parent <branch>]
     know about it, and `add` is how you track it without publishing. (When
     you do run `submit`, it auto-tracks too — `add` is the no-push path.)
 
-submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--restack] [--dry-run]
+submit [-d|--draft|--no-draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--restack] [--json] [--dry-run]
     Push all downstack branches to GitHub, create PRs for branches
     that don't have them, number each PR title with its stack position
     `(N/M)`, and update all PR descriptions with stack visualization.
     Idempotent — safe to run repeatedly.
+
+    --draft creates new PRs as drafts; --no-draft creates them ready for
+    review. Draft is create-time only: submit never changes the draft
+    state of an existing PR. A repo can make drafts the default with
+    `[submit] draft = true` in .gh-stack.toml (see Configuration).
 
     --restack: after submitting, restack the branches above the current
     one onto it. submit covers DOWNSTACK (trunk → current); restack covers
@@ -135,6 +140,24 @@ submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file
     let an agent or script regenerate a PR's title/description safely.
     --body-file reads the body from a file. In --yes mode without --title,
     titles are auto-generated from branch names.
+
+    --json prints the result as one JSON document on stdout, on every
+    exit, so a script or agent gets the PR it just created without a
+    follow-up `gh pr view`:
+      { stack, current_branch,
+        branches: [{ branch, parent, pr, url, title, action, pushed,
+                     draft, error? }],
+        error: null | { message } }
+    branches is the submit scope (trunk → current) in stack order. action
+    is created (new PR), updated (pushed, or base/title/description
+    edited), unchanged, or failed (see the entry's error). draft is
+    true/false for PRs created this run, null otherwise. The top-level
+    error is set when the run stopped early (bad flags, nothing to
+    submit, a push failure): branches then lists what happened before
+    it, and stack/current_branch may be null. Exits 1 if error is set or
+    any branch failed. Logs go to stderr, plain and uncolored. Implies
+    --no-edit; can't be combined with --dry-run or --restack (run
+    `gh-stack restack` separately).
 ```
 
 ### Stack Navigation
@@ -164,15 +187,18 @@ ls
 ### Stack Management
 
 ```
-restack [--resume] [--dry-run] [--no-push] [--verbose]
+restack [--resume] [--dry-run] [--no-push|--push] [--verbose]
     Rebase the current branch and all descendants onto their parents.
     Uses metadata snapshots to recover the correct rebase base even
     after a parent's history has been rewritten.
 
-    --no-push (or GH_STACK_NO_PUSH=1): rebase locally only, and list
-    the refs left ahead of origin. It overrides --yes for pushes, so
-    an agent can restack unattended without publishing anything. An
-    interrupted --no-push run stays local-only on --resume.
+    --no-push (or GH_STACK_NO_PUSH=1, or `[restack] push = false` in
+    config): rebase locally only, and list the refs left ahead of
+    origin. It overrides --yes for pushes, so an agent can restack
+    unattended without publishing anything. --push pushes even when the
+    env var or a config default says not to. --resume keeps the push
+    decision of the run it resumes (an interrupted local-only run stays
+    local) unless the resume itself passes --push or --no-push.
 
     On conflict:
         git rebase --continue
@@ -186,7 +212,7 @@ restack --onto <ref>
     onto main once the parent stack has merged — only the stack's own
     commits replay onto the new base.
 
-sync [--dry-run] [--no-push]
+sync [--dry-run] [--no-push|--push]
     Fetch main, rebase the base branch onto main, then restack all
     children. Snapshots every branch's pre-sync tip so children can be
     correctly rebased even though their parent's history was rewritten.
@@ -196,7 +222,7 @@ sync [--dry-run] [--no-push]
     own commits replay — instead of replaying the now-squashed commits
     and conflicting.
 
-    --no-push (or GH_STACK_NO_PUSH=1): as for restack. Also skips
+    --no-push / --push (and their defaults): as for restack. Also skips
     retargeting a PR's base after advancing past a merged bottom;
     the next `submit` pushes and retargets together.
 
@@ -250,7 +276,7 @@ split [<branch>] [--name <name>]
     tip. Once the original stack merges, re-root the new stack with
     `gh-stack restack --onto main`.
 
-join <branch> [--above <branch>] [--dry-run] [--no-push] [--verbose]
+join <branch> [--above <branch>] [--dry-run] [--push|--no-push] [--verbose]
     Splice an existing branch — usually one that already has a PR —
     into a stack. Without --above it becomes the new bottom of the
     current stack; with --above <branch> it goes between <branch> and
@@ -265,6 +291,9 @@ join <branch> [--above <branch>] [--dry-run] [--no-push] [--verbose]
     (restack's own loop), each branch is pushed with --force-with-lease,
     and the PR bases are retargeted on GitHub (the incoming PR onto its
     new parent, each re-parented child PR onto the incoming branch).
+    Pushing follows the same setting as restack: --no-push,
+    GH_STACK_NO_PUSH, or `[restack] push = false` in .gh-stack.toml or
+    the user config keeps the join local; --push overrides them.
     An open PR for the incoming branch is adopted into the metadata.
 
     A stack named after its old bottom branch is renamed after the new
@@ -367,6 +396,13 @@ undo
 archive [--restore <name>]
     List archived stacks by default, or restore one by name.
 
+config [--json]
+    Show every configurable flag default, its resolved value, and where
+    it came from (flag/env/repo config/user config/built-in), plus the
+    config file paths. Answers "why did this PR open as a draft?" in
+    one command. Works outside a git repo too (user and env layers
+    only). Read-only; edit the TOML files directly.
+
 doctor
     Migrate old (v2) metadata to the v3 layout, reconcile git branch
     config against the topology files, and flag stacks whose base
@@ -381,9 +417,21 @@ learn [--skill] [--harness <name>] [--global] [--force]
       Claude Code  <root>/.claude/skills/using-gh-stack/SKILL.md
       Codex        <root>/.codex/skills/using-gh-stack/SKILL.md
       Cursor       <root>/.cursor/skills/using-gh-stack/SKILL.md
-    --harness  claude | codex | cursor (skips the interactive prompt)
+    --harness  claude | codex | cursor | all, or a comma list such as
+               claude,codex (skips the interactive prompt). Each target
+               is checked and installed on its own.
     --global   Install under ~/.<harness>/ instead of the project root
-    --force    Overwrite an existing skill file without confirming
+    --force    Overwrite an existing skill file without confirming, and
+               write through a symlinked skill dir or SKILL.md
+    If the skill dir or SKILL.md is a symlink (say, into a skills repo
+    you keep under version control), the install refuses and names the
+    link target. Only --force writes through it; --yes / GH_STACK_YES
+    does not. A dangling link is never written through: remove it to
+    install there. Harnesses that resolve to the same SKILL.md (a linked
+    skill dir or a shared skills/ dir) are written once and reported as
+    installed via the first. Cancelling an overwrite prompt lists what
+    was installed and what was not attempted, and exits non-zero. The
+    closing refresh hint repeats the --global and --harness you used.
 ```
 
 ## Global Options
@@ -404,9 +452,50 @@ If a command needs to prompt but stdin isn't a TTY, it exits 1 with the prompt i
 ```
 GH_STACK_YES=1         Skip all confirmations (same as --yes; also enables --plain)
 GH_STACK_PLAIN=1       Plain output (same as --plain)
-GH_STACK_NO_PUSH=1     restack/sync never push (same as --no-push; wins over --yes)
+GH_STACK_NO_PUSH=1     restack/sync never push (same as --no-push; wins over --yes; 0 = push)
+GH_STACK_DRAFT=1       submit creates new PRs as drafts (same as --draft; 0 = ready)
+                       (both accept 1/0, true/false, yes/no; anything else is an error)
 GH_STACK_NO_COLOR=1    Disable colored output
 ```
+
+## Configuration
+
+Flags that encode a repo's conventions can get a default, so nobody has to
+remember to type them:
+
+```toml
+# .gh-stack.toml at the repo root (commit it), or
+# ~/.config/gh-stack/config.toml for personal defaults (honors XDG_CONFIG_HOME)
+[submit]
+draft = true      # new PRs open as drafts; --no-draft overrides for one PR
+
+[restack]
+push = false      # restack and sync stay local; --push overrides
+```
+
+Precedence, highest first: **CLI flag > env var > repo config > user config >
+built-in default**. `gh-stack config` prints each resolved value and its
+source. When a default (rather than a flag) decides draft or push, the command
+says so in its output.
+
+| Key              | Flags                    | Env                           | Built-in |
+| ---------------- | ------------------------ | ----------------------------- | -------- |
+| `[submit] draft` | `--draft` / `--no-draft` | `GH_STACK_DRAFT`              | `false`  |
+| `[restack] push` | `--push` / `--no-push`   | `GH_STACK_NO_PUSH` (inverted) | `true`   |
+
+`[restack] push` governs `restack` and `sync` only. `merge` and
+`submit --restack` always push the branches they restack: publishing is their
+job, and child PRs left stale on GitHub would be worse than any default. A
+`restack --resume` keeps the push decision of the run it resumes unless you
+pass `--push` or `--no-push`.
+
+Unknown keys print a warning and are ignored. Malformed TOML, an unreadable
+config file, a non-boolean value for a known key, or an env value other than
+`1/0`, `true/false`, `yes/no` is an error naming the file or variable. It is
+reported before the command changes anything, and a command given an explicit
+flag (`--draft`, `--push`, ...) never reads the config for that setting. `--yes` can't be set in a config file:
+auto-confirming destructive operations has to be asked for per run, with
+`--yes` or `GH_STACK_YES=1`.
 
 ## How It Works
 
@@ -584,6 +673,7 @@ and gotchas straight from the binary:
 # Teach an agent the current API (always in sync with the installed version)
 gh-stack learn                              # print the skill to stdout
 gh-stack learn --skill --harness claude     # install it for Claude Code
+gh-stack learn --skill -g --harness all     # every harness, in your home dir
 ```
 
 ```bash
@@ -599,7 +689,11 @@ gh-stack restack
 # Rebase without publishing (e.g. before a human approves the push)
 GH_STACK_NO_PUSH=1 gh-stack restack
 
+# Check which defaults apply here (.gh-stack.toml, user config, env)
+gh-stack config
+
 # Structured output
+gh-stack submit --json -t "Title" --body-file body.md   # PR number + URL per branch
 gh-stack status --json
 gh-stack status --current --json
 gh-stack ls

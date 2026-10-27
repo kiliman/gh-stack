@@ -362,3 +362,53 @@ export async function cleanup(...dirs: string[]): Promise<void> {
     await fs.rm(dir, { recursive: true, force: true });
   }
 }
+
+// ── Stub `gh` ──
+
+// A fake `gh` for end-to-end submit tests, answering the calls submit makes.
+// `pr list` finds no PRs (except the one named by GH_EXISTING_PR), `pr create`
+// hands out PR numbers from 101 up (or fails when GH_FAIL_CREATE is set),
+// description edits fail when GH_FAIL_BODY_EDIT is set, and every call is
+// appended to $GH_LOG.
+const GH_STUB = `#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "repo view") echo "acme/widgets" ;;
+  "pr list")
+    # GH_EXISTING_PR=<branch>=<number>: that branch already has a PR.
+    head=""; prev=""
+    for a in "$@"; do [ "$prev" = "--head" ] && head="$a"; prev="$a"; done
+    if [ -n "$GH_EXISTING_PR" ] && [ "\${GH_EXISTING_PR%%=*}" = "$head" ]; then
+      echo "\${GH_EXISTING_PR#*=}"
+    fi
+    ;;
+  "pr create")
+    if [ -n "$GH_FAIL_CREATE" ]; then echo "GraphQL: something broke" >&2; exit 1; fi
+    n=$(cat "$GH_STATE" 2>/dev/null || echo 100)
+    n=$((n + 1))
+    echo "$n" > "$GH_STATE"
+    echo "https://github.com/acme/widgets/pull/$n"
+    ;;
+  "pr edit")
+    case "$*" in *--body-file*) [ -n "$GH_FAIL_BODY_EDIT" ] && exit 1 ;; esac
+    ;;
+esac
+exit 0
+`;
+
+/** Write the stub `gh` to a new temp dir and return the dir (prepend it to PATH). */
+export async function createGhStub(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(await fs.realpath("/tmp"), "gh-stack-ghstub-"));
+  await Bun.write(`${dir}/gh`, GH_STUB);
+  await fs.chmod(`${dir}/gh`, 0o755);
+  return dir;
+}
+
+/** Env for a CLI run against the stub: gh on PATH, its call log and PR counter. */
+export function ghStubEnv(stubDir: string): Record<string, string> {
+  return {
+    PATH: `${stubDir}:${process.env.PATH}`,
+    GH_LOG: `${stubDir}/calls.log`,
+    GH_STATE: `${stubDir}/next-pr`,
+  };
+}

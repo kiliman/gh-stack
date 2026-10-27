@@ -62,12 +62,22 @@ export GH_STACK_YES=1     # skip every confirmation, plain output
   (network-free) or `gh-stack status --json` (adds PR/CI/review state).
 - **Always pass `-t`/`-b` to `submit`** so PRs get real titles/bodies instead
   of generic auto-generated ones (see below).
+- **Run `gh-stack config` once per repo** to see its defaults. A repo whose
+  `.gh-stack.toml` sets `[submit] draft = true` opens every new PR as a draft
+  without `--draft`; pass `--no-draft` only when you were asked for a
+  ready-for-review PR. `submit --json` reports `draft` for PRs it created.
+- **Need the PR number or URL? Add `--json` to `submit`** instead of running
+  `gh pr view` afterwards. stdout is only the JSON; logs go to stderr.
 - Commands that rebase (`restack`, `sync`, `merge`) **refuse to run on a dirty
   tree** — commit or stash first.
 - **`--yes` also accepts pushes.** To rebase without publishing (e.g. until a
   human approves), add `--no-push` to `restack`/`sync`, or export
-  `GH_STACK_NO_PUSH=1`. It wins over `--yes` for pushes and lists what's ahead
-  of origin at the end.
+  `GH_STACK_NO_PUSH=1` (a repo may also set `[restack] push = false`). It wins
+  over `--yes` for pushes and lists what's ahead of origin at the end; publish
+  later with `gh-stack restack --push`. `merge` and `submit --restack` always
+  push. `restack --resume` keeps the interrupted run's push decision unless you
+  pass `--push`/`--no-push`. `--yes` itself can't come from a config file:
+  always pass it or `GH_STACK_YES=1`.
 - A prompt reached without a TTY on stdin **exits 1** (naming the prompt)
   instead of hanging. If you see `refusing to prompt`, re-run with
   `GH_STACK_YES=1`.
@@ -152,6 +162,7 @@ visualization in every PR body.
 ```bash
 gh-stack submit                       # push downstack + create/update PRs
 gh-stack submit -d                    # create new PRs as drafts
+gh-stack submit --no-draft            # ready for review despite a draft default
 gh-stack submit --dry-run             # preview, no side effects
 gh-stack submit --restack             # then propagate up to children (see below)
 gh-stack submit -t "<title>" -b "<body>"   # explicit title/body for new PRs
@@ -174,6 +185,54 @@ gh-stack submit \
 EOF
 )"
 ```
+
+**`submit --json` returns what happened to each branch** (stdout is only the
+JSON document, on every exit; logs go to stderr, so capture stdout alone):
+
+```bash
+gh-stack submit --json -t "<title>" --body-file /tmp/body.md > /tmp/submit.json
+jq -r '.branches[-1].url' /tmp/submit.json     # the current branch's PR
+```
+
+```json
+{
+  "stack": "my-stack",
+  "current_branch": "feat-b",
+  "branches": [
+    {
+      "branch": "feat-a",
+      "parent": "main",
+      "pr": 101,
+      "url": "https://github.com/org/repo/pull/101",
+      "title": "Feat A (1/2)",
+      "action": "unchanged",
+      "pushed": false,
+      "draft": null
+    },
+    {
+      "branch": "feat-b",
+      "parent": "feat-a",
+      "pr": 102,
+      "url": "https://github.com/org/repo/pull/102",
+      "title": "Feat B (2/2)",
+      "action": "created",
+      "pushed": true,
+      "draft": false
+    }
+  ],
+  "error": null
+}
+```
+
+`branches` is the submit scope (trunk → current) in stack order, so on success
+the last entry is the branch you're on. `action` is `created`, `updated`
+(pushed, or base/title/description edited), `unchanged`, or `failed` (with an
+`error`). `draft` is only known for PRs created this run (else `null`). When
+the run stops early (nothing to submit, a bad `--body-file`, a push failure),
+top-level `error` is `{ "message": "..." }` and `branches` lists what happened
+before it. Exit code is 1 whenever `error` is set or any branch `failed`.
+`--json` implies `--no-edit` and can't be combined with `--dry-run` or
+`--restack`; run `gh-stack restack` as a separate step.
 
 **`submit -t`/`-b` also updates an existing PR in place** — pass them while on a
 branch that already has a PR to change just that one (visualization-safe).
@@ -202,6 +261,7 @@ gh-stack sync          # fetch trunk, rebase base onto it, restack ALL children
 gh-stack restack       # rebase current branch + descendants onto their parents
 gh-stack restack --dry-run
 gh-stack restack --no-push   # rebase locally only (also: GH_STACK_NO_PUSH=1)
+gh-stack restack --push      # push despite GH_STACK_NO_PUSH / [restack] push = false
 ```
 
 **⚠️ Restack propagates UPWARD from the current branch.** Run it from the

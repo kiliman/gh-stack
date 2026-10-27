@@ -333,6 +333,7 @@ describe("restack state (resume support)", () => {
 
     await saveRestackState({
       current_index: 1,
+      push: true,
       stack_name: "test-stack",
       chain: ["pr1", "pr2", "pr3"],
     });
@@ -349,6 +350,7 @@ describe("restack state (resume support)", () => {
 
     await saveRestackState({
       current_index: 0,
+      push: true,
       stack_name: "test-stack",
       chain: ["pr1"],
     });

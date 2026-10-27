@@ -15,9 +15,30 @@
 import * as clack from "@clack/prompts";
 
 let _plain = false;
+let stderrOnly = false;
 
 export function setPlain(enabled: boolean): void {
   _plain = enabled;
+}
+
+/**
+ * `--json` mode: plain output, all of it on stderr, so stdout carries only the
+ * JSON document the command writes itself.
+ */
+export function setStderrOnly(): void {
+  _plain = true;
+  stderrOnly = true;
+}
+
+/** Plain-mode line: stdout normally, stderr in --json mode. */
+function say(line: string): void {
+  if (stderrOnly) console.error(line);
+  else console.log(line);
+}
+
+/** A raw line of output (tree drawings, spacing), routed like the log calls. */
+export function print(line = ""): void {
+  say(_plain ? strip(line) : line);
 }
 
 export function isPlain(): boolean {
@@ -65,7 +86,7 @@ export const select: typeof clack.select = (opts) => {
 // ── Banner / error ──
 export function intro(message?: string): void {
   if (_plain) {
-    if (message) console.log(strip(message));
+    if (message) say(strip(message));
   } else {
     clack.intro(message);
   }
@@ -73,7 +94,7 @@ export function intro(message?: string): void {
 
 export function outro(message?: string): void {
   if (_plain) {
-    if (message) console.log(strip(message));
+    if (message) say(strip(message));
   } else {
     clack.outro(message);
   }
@@ -89,11 +110,11 @@ export function cancel(message?: string): void {
 
 // ── log.* ──
 export const log = {
-  info: (msg: string) => (_plain ? console.log(strip(msg)) : clack.log.info(msg)),
-  success: (msg: string) => (_plain ? console.log(strip(msg)) : clack.log.success(msg)),
+  info: (msg: string) => (_plain ? say(strip(msg)) : clack.log.info(msg)),
+  success: (msg: string) => (_plain ? say(strip(msg)) : clack.log.success(msg)),
   warn: (msg: string) => (_plain ? console.warn(strip(msg)) : clack.log.warn(msg)),
   error: (msg: string) => (_plain ? console.error(strip(msg)) : clack.log.error(msg)),
-  step: (msg: string) => (_plain ? console.log(strip(msg)) : clack.log.step(msg)),
+  step: (msg: string) => (_plain ? say(strip(msg)) : clack.log.step(msg)),
 };
 
 // ── Spinner ──
@@ -107,13 +128,13 @@ export function spinner(): Spinner {
   if (!_plain) return clack.spinner() as Spinner;
   return {
     start: (msg) => {
-      if (msg) console.log(strip(msg));
+      if (msg) say(strip(msg));
     },
     stop: (msg) => {
-      if (msg) console.log(strip(msg));
+      if (msg) say(strip(msg));
     },
     message: (msg) => {
-      if (msg) console.log(strip(msg));
+      if (msg) say(strip(msg));
     },
   };
 }

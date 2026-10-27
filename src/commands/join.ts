@@ -36,7 +36,7 @@ import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib
 import { takeSnapshot, resolveRestackBoundary } from "../lib/snapshot.ts";
 import { findOpenPrForBranch, setPrBase } from "../lib/github.ts";
 import { confirmAction, renderStackTree } from "../lib/ui.ts";
-import { findStaleRefs, publishBranch, restackChain, wantsNoPush } from "./restack.ts";
+import { findStaleRefs, publishBranch, resolvePush, restackChain } from "./restack.ts";
 import type { Branch, Stack, StackMetadata } from "../types.ts";
 
 const HELP = `
@@ -61,6 +61,8 @@ OPTIONS
                     projected commits / files vs its new parent. Changes nothing.
   --no-push         Rebase and update metadata locally only — never push or
                     retarget PRs (also GH_STACK_NO_PUSH=1). Wins over --yes
+  --push            Push even when GH_STACK_NO_PUSH or [restack] push = false
+                    in .gh-stack.toml / user config says not to
   --yes, -y         Skip confirmations
   --verbose, -v     Show rebase-boundary diagnostics
 
@@ -133,7 +135,8 @@ export default async function join(args: string[]): Promise<void> {
   }
 
   const { incoming, above, dryRun, verbose } = parseArgs(args);
-  const noPush = wantsNoPush(args);
+  // Same push setting as restack: flag > env > repo/user config ([restack] push).
+  const noPush = !(await resolvePush(args)).value;
 
   if (await git.isRebaseInProgress()) {
     fail(
@@ -696,7 +699,8 @@ async function verifyResult(plan: JoinPlan): Promise<void> {
 
 // ── Helpers ──
 
-const USAGE = "gh-stack join <branch> [--above <branch>] [--dry-run] [--no-push] [--verbose]";
+const USAGE =
+  "gh-stack join <branch> [--above <branch>] [--dry-run] [--push|--no-push] [--verbose]";
 
 /**
  * Strict parsing: an unknown flag or a stray positional is an error, never
@@ -718,7 +722,7 @@ export function parseArgs(args: string[]): {
       above = args[++i];
       if (!above || above.startsWith("-")) usageError("--above needs a branch name.");
     } else if (arg === "--dry-run") dryRun = true;
-    else if (arg === "--no-push") continue; // read by wantsNoPush
+    else if (arg === "--push" || arg === "--no-push") continue; // read by resolvePush
     else if (arg === "--verbose" || arg === "-v") verbose = true;
     else if (arg.startsWith("-")) usageError(`Unknown option ${pc.yellow(arg)}.`);
     else if (incoming === undefined) incoming = arg;
@@ -759,9 +763,12 @@ async function higherOf(a: string | null, b: string | null): Promise<string | nu
   return a; // unrelated forks: the first (the parent/trunk fork point) is the defined one
 }
 
-/** The join command to re-run, with the user's own --above / --no-push kept. */
+/**
+ * The join command to re-run, with the user's --above kept and the push
+ * decision spelled out, so a config default can't flip it on the re-run.
+ */
 function rerunCommand(incoming: string, above: string | undefined, noPush: boolean): string {
-  return `gh-stack join ${incoming}${above !== undefined ? ` --above ${above}` : ""}${noPush ? " --no-push" : ""}`;
+  return `gh-stack join ${incoming}${above !== undefined ? ` --above ${above}` : ""}${noPush ? " --no-push" : " --push"}`;
 }
 
 /**

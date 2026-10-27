@@ -973,7 +973,10 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean): Promise<void
   if (await git.localBranchExists(newBottom)) {
     await git.checkout(newBottom);
     const { default: restack } = await import("./restack.ts");
-    await restack([]);
+    // Always push: merge publishes by nature (the advance above already
+    // pushed), and children left stale on GitHub are worse than any default.
+    // An explicit flag also means no config is read mid-merge.
+    await restack(["--push"]);
   }
 
   p.outro(

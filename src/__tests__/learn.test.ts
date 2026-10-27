@@ -133,4 +133,281 @@ describe("learn --skill (install)", () => {
     expect(written).not.toContain("STALE CONTENT");
     expect(written).toContain("# Using gh-stack");
   });
+
+  // ── Symlinked skill dirs (#38) ──
+  // Some setups manage ~/.claude/skills as per-skill symlinks into a
+  // version-controlled skills repo. Bun.write follows symlinks, so without an
+  // lstat guard the install would silently overwrite the file in that repo.
+  describe("symlinked skill dir", () => {
+    let home: string;
+    let skillsRepo: string;
+    let realSkill: string;
+    let linkedDir: string;
+
+    beforeEach(async () => {
+      home = await fs.mkdtemp(join(tmpdir(), "gh-stack-home-"));
+      skillsRepo = await fs.mkdtemp(join(tmpdir(), "gh-stack-skills-repo-"));
+      await fs.mkdir(join(skillsRepo, "using-gh-stack"));
+      realSkill = join(skillsRepo, "using-gh-stack/SKILL.md");
+      await Bun.write(realSkill, "MY HAND-MAINTAINED SKILL");
+      await fs.mkdir(join(home, ".claude/skills"), { recursive: true });
+      linkedDir = join(home, ".claude/skills/using-gh-stack");
+      await fs.symlink(join(skillsRepo, "using-gh-stack"), linkedDir);
+    });
+
+    afterEach(async () => {
+      await cleanup(home, skillsRepo);
+    });
+
+    test("refuses to write through it, even under GH_STACK_YES", async () => {
+      const { exitCode, stdout, stderr } = await runCli(
+        ["learn", "--skill", "--global", "--harness", "claude"],
+        { HOME: home, GH_STACK_YES: "1" },
+      );
+      expect(exitCode).toBe(1);
+      const out = stdout + stderr;
+      expect(out).toContain("~/.claude/skills/using-gh-stack is a symlink to");
+      expect(out).toContain(await fs.realpath(join(skillsRepo, "using-gh-stack")));
+      expect(out).toContain("not writing through it");
+      // The file in the skills repo is untouched, and the link is still a link.
+      expect(await Bun.file(realSkill).text()).toBe("MY HAND-MAINTAINED SKILL");
+      expect((await fs.lstat(linkedDir)).isSymbolicLink()).toBe(true);
+    });
+
+    test("--yes on the command line does not write through it either", async () => {
+      const { exitCode } = await runCli(
+        ["learn", "--skill", "-g", "--harness", "claude", "--yes"],
+        {
+          HOME: home,
+        },
+      );
+      expect(exitCode).toBe(1);
+      expect(await Bun.file(realSkill).text()).toBe("MY HAND-MAINTAINED SKILL");
+    });
+
+    test("--force writes through it", async () => {
+      const { exitCode, stdout, stderr } = await runCli(
+        ["learn", "--skill", "-g", "--harness", "claude", "--force"],
+        { HOME: home, GH_STACK_YES: "1" },
+      );
+      expect(exitCode).toBe(0);
+      expect(stdout + stderr).toContain("writing through it");
+      expect(await Bun.file(realSkill).text()).toContain("# Using gh-stack");
+      expect((await fs.lstat(linkedDir)).isSymbolicLink()).toBe(true);
+    });
+
+    test("--harness all installs the other harnesses and refuses the symlinked one", async () => {
+      const { exitCode, stdout, stderr } = await runCli(
+        ["learn", "--skill", "-g", "--harness", "all"],
+        { HOME: home, GH_STACK_YES: "1" },
+      );
+      expect(exitCode).toBe(1);
+      expect(stdout + stderr).toContain("--harness claude --force");
+      expect(await Bun.file(realSkill).text()).toBe("MY HAND-MAINTAINED SKILL");
+      for (const dir of [".codex", ".cursor"]) {
+        const target = join(home, dir, "skills/using-gh-stack/SKILL.md");
+        expect(await Bun.file(target).text()).toContain("# Using gh-stack");
+      }
+    });
+  });
+
+  test("refuses a symlinked SKILL.md inside a real skill dir", async () => {
+    const elsewhere = await fs.mkdtemp(join(tmpdir(), "gh-stack-elsewhere-"));
+    try {
+      const realFile = join(elsewhere, "SKILL.md");
+      await Bun.write(realFile, "KEEP ME");
+      await fs.mkdir(join(tmpDir, ".claude/skills/using-gh-stack"), { recursive: true });
+      await fs.symlink(realFile, join(tmpDir, ".claude/skills/using-gh-stack/SKILL.md"));
+
+      const { exitCode, stdout, stderr } = await runCli(
+        ["learn", "--skill", "--harness", "claude"],
+        { GH_STACK_YES: "1" },
+      );
+      expect(exitCode).toBe(1);
+      expect(stdout + stderr).toContain("SKILL.md is a symlink to");
+      expect(await Bun.file(realFile).text()).toBe("KEEP ME");
+    } finally {
+      await cleanup(elsewhere);
+    }
+  });
+
+  // ── Multiple harnesses (#38) ──
+  test("--harness all installs for every harness", async () => {
+    const { exitCode } = await runCli(["learn", "--skill", "--harness", "all"], {
+      GH_STACK_YES: "1",
+    });
+    expect(exitCode).toBe(0);
+    for (const dir of [".claude", ".codex", ".cursor"]) {
+      expect(await Bun.file(join(tmpDir, dir, "skills/using-gh-stack/SKILL.md")).exists()).toBe(
+        true,
+      );
+    }
+  });
+
+  test("a comma list installs only the named harnesses", async () => {
+    const { exitCode } = await runCli(["learn", "--skill", "--harness", "claude,codex"], {
+      GH_STACK_YES: "1",
+    });
+    expect(exitCode).toBe(0);
+    const installed: Record<string, boolean> = {};
+    for (const dir of [".claude", ".codex", ".cursor"]) {
+      installed[dir] = await Bun.file(join(tmpDir, dir, "skills/using-gh-stack/SKILL.md")).exists();
+    }
+    expect(installed).toEqual({ ".claude": true, ".codex": true, ".cursor": false });
+  });
+
+  test.each([["claude,vim"], ["all,vim"]])(
+    "an unknown name in %s rejects the whole run",
+    async (list) => {
+      const { exitCode, stdout, stderr } = await runCli(["learn", "--skill", "--harness", list], {
+        GH_STACK_YES: "1",
+      });
+      expect(exitCode).toBe(1);
+      expect(stdout + stderr).toContain('Unknown harness "vim"');
+      expect(await Bun.file(join(tmpDir, ".claude/skills/using-gh-stack/SKILL.md")).exists()).toBe(
+        false,
+      );
+    },
+  );
+});
+
+function skillFile(dir: string): string {
+  return join(tmpDir, dir, "skills/using-gh-stack/SKILL.md");
+}
+
+describe("learn --skill (review round on #44)", () => {
+  // A bare `gh-stack learn --skill` prompts, or fails under GH_STACK_YES, so
+  // the hint has to carry the scope the install actually used.
+  test.each([
+    [["--harness", "claude,codex"], "gh-stack learn --skill --harness claude,codex"],
+    [["--harness", "all"], "gh-stack learn --skill --harness all"],
+    [["--harness", "codex,cursor,claude"], "gh-stack learn --skill --harness all"],
+  ])("refresh hint keeps the scope of %p", async (flags, hint) => {
+    const { exitCode, stdout } = await runCli(["learn", "--skill", ...flags], {
+      GH_STACK_YES: "1",
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain(`Refresh after upgrading with ${hint}.`);
+  });
+
+  test("refresh hint keeps --global", async () => {
+    const home = await fs.mkdtemp(join(tmpdir(), "gh-stack-home-"));
+    try {
+      const { exitCode, stdout } = await runCli(["learn", "--skill", "-g", "--harness", "codex"], {
+        HOME: home,
+        GH_STACK_YES: "1",
+      });
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain(
+        "Refresh after upgrading with gh-stack learn --skill --global --harness codex.",
+      );
+    } finally {
+      await cleanup(home);
+    }
+  });
+
+  test("a dangling skill-dir link is reported as dangling, even with --force", async () => {
+    await fs.mkdir(join(tmpDir, ".claude/skills"), { recursive: true });
+    const link = join(tmpDir, ".claude/skills/using-gh-stack");
+    await fs.symlink(join(tmpDir, "no-such-skills-repo/using-gh-stack"), link);
+
+    const { exitCode, stdout, stderr } = await runCli(
+      ["learn", "--skill", "--harness", "claude", "--force"],
+      { GH_STACK_YES: "1" },
+    );
+    const out = stdout + stderr;
+    expect(exitCode).toBe(1);
+    expect(out).toContain("is a dangling symlink to");
+    expect(out).toContain("no-such-skills-repo/using-gh-stack, which does not exist");
+    expect(out).toContain("Remove the link");
+    expect(out).not.toContain("writing through it");
+    expect(out).not.toContain("ENOENT");
+    // Nothing was created behind the link, and the link itself is left alone.
+    expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
+    expect(await Bun.file(join(tmpDir, "no-such-skills-repo")).exists()).toBe(false);
+  });
+
+  test.each([
+    // [linked harness dir, link target (relative to its skills/ dir), the harness that writes]
+    [".cursor", "../../.claude/skills/using-gh-stack", "Cursor", "Claude Code"],
+    [".claude", "../../.cursor/skills/using-gh-stack", "Claude Code", "Cursor"], // link comes first
+  ])(
+    "--harness all reports %s, linked to another harness's skill dir, as already installed",
+    async (linkedDir, linkTarget, linkedLabel, viaLabel) => {
+      await fs.mkdir(join(tmpDir, linkedDir, "skills"), { recursive: true });
+      await fs.symlink(linkTarget, join(tmpDir, linkedDir, "skills/using-gh-stack"));
+
+      const { exitCode, stdout, stderr } = await runCli(["learn", "--skill", "--harness", "all"], {
+        GH_STACK_YES: "1",
+      });
+      const out = stdout + stderr;
+      expect(exitCode).toBe(0);
+      expect(out).toContain(`${linkedLabel}: `);
+      expect(out).toContain(`already installed via ${viaLabel}`);
+      expect(out).not.toContain("not writing through it");
+      expect(
+        (await fs.lstat(join(tmpDir, linkedDir, "skills/using-gh-stack"))).isSymbolicLink(),
+      ).toBe(true);
+      expect(await Bun.file(skillFile(linkedDir)).text()).toContain("# Using gh-stack");
+    },
+  );
+
+  test("a shared skills/ dir is written once and the other harness reported as an alias", async () => {
+    await fs.mkdir(join(tmpDir, ".claude/skills"), { recursive: true });
+    await fs.mkdir(join(tmpDir, ".codex"), { recursive: true });
+    await fs.symlink("../.claude/skills", join(tmpDir, ".codex/skills"));
+
+    const { exitCode, stdout, stderr } = await runCli(
+      ["learn", "--skill", "--harness", "claude,codex"],
+      { GH_STACK_YES: "1" },
+    );
+    const out = stdout + stderr;
+    expect(exitCode).toBe(0);
+    expect(out.match(/Installed .* skill/g)).toEqual(["Installed Claude Code skill"]);
+    expect(out).toContain("Codex: ");
+    expect(out).toContain("already installed via Claude Code");
+    expect(await Bun.file(skillFile(".codex")).text()).toContain("# Using gh-stack");
+  });
+
+  // Prompts refuse to run without a TTY, so cancel is driven in-process
+  // through installSkills' injectable confirm.
+  test("cancelling an overwrite prompt mid-run reports progress and is not a success", async () => {
+    const { installSkills, HARNESSES } = await import("../commands/learn.ts");
+    await fs.mkdir(join(tmpDir, ".codex/skills/using-gh-stack"), { recursive: true });
+    await Bun.write(skillFile(".codex"), "OLD CODEX SKILL");
+
+    const written: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    let result;
+    try {
+      result = await installSkills({
+        root: tmpDir,
+        harnesses: HARNESSES,
+        content: "NEW",
+        global: false,
+        force: false,
+        autoYes: false,
+        confirm: async () => "cancel",
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    expect(result).toEqual({
+      ok: false,
+      cancelled: true,
+      installed: ["claude"],
+      notAttempted: ["codex", "cursor"],
+    });
+    const out = written.join("");
+    expect(out).toContain("Installed: Claude Code");
+    expect(out).toContain("Not attempted: Codex, Cursor");
+    expect(await Bun.file(skillFile(".claude")).text()).toBe("NEW");
+    expect(await Bun.file(skillFile(".codex")).text()).toBe("OLD CODEX SKILL");
+    expect(await Bun.file(skillFile(".cursor")).exists()).toBe(false);
+  });
 });

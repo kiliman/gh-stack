@@ -17,18 +17,17 @@ import { confirmAction } from "../lib/ui.ts";
 import { getPrInfo } from "../lib/github.ts";
 import { planMerges, advanceNewBottom, type BranchReview } from "../lib/advance.ts";
 import type { StackMetadata } from "../types.ts";
-import { wantsNoPush } from "./restack.ts";
+import { resolvePush } from "./restack.ts";
 
 export default async function sync(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
-  const noPush = wantsNoPush(args);
 
   if (args.includes("--help")) {
     console.log(`
 gh-stack sync — Sync base with main + restack all
 
 USAGE
-  gh-stack sync [--dry-run] [--no-push]
+  gh-stack sync [--dry-run] [--no-push | --push]
 
 Fetches latest main, rebases the base branch onto main,
 then restacks all children. Equivalent to running restack
@@ -37,10 +36,14 @@ with the base branch included.
 OPTIONS
   --dry-run   Show what would happen without executing
   --no-push   Rebase locally only — never push or retarget PRs
-              (also GH_STACK_NO_PUSH=1). Wins over --yes for pushes
+              (also GH_STACK_NO_PUSH=1, or \`[restack] push = false\` in
+              config; see gh-stack config). Wins over --yes for pushes
+  --push      Push even when a config default or env var says not to
 `);
     return;
   }
+
+  const noPush = !(await resolvePush(args)).value;
 
   // Reject if a git rebase is already in progress. Letting sync run on top
   // of a half-finished rebase produces deeply confusing state — make the
@@ -185,7 +188,7 @@ OPTIONS
       current_index: 0,
       stack_name: stackName,
       chain: ordered,
-      ...(noPush && { no_push: true }),
+      push: !noPush,
     });
 
     p.log.info("Rebasing onto origin/main...");
@@ -230,7 +233,9 @@ OPTIONS
   // Switch to first child and run restack
   if (children.length > 0) {
     await git.checkout(children[0]!);
-    await restack([...(dryRun ? ["--dry-run"] : []), ...(noPush ? ["--no-push"] : [])]);
+    // Pass the push decision explicitly so restack doesn't re-resolve it (and
+    // re-announce a config default sync already reported).
+    await restack([...(dryRun ? ["--dry-run"] : []), noPush ? "--no-push" : "--push"]);
   }
 }
 

@@ -290,6 +290,35 @@ describe("join <branch> --above <branch>", () => {
     expect(await remoteSha("incoming")).not.toBe(await git("rev-parse", "incoming"));
     expect((await ghCalls()).some((c) => c.startsWith("pr edit"))).toBe(false);
   });
+
+  // join shares restack's push setting (#39): [restack] push = false in the
+  // repo config keeps it local, and --push overrides that.
+  async function topJoinWithPushFalseConfig(args: string[]) {
+    await createLinearStack(tmpDir);
+    await createBranch(tmpDir, "incoming", "main");
+    await makeCommit(tmpDir, "incoming.txt", "incoming\n", "incoming: add file");
+    remoteDir = await setupRemote(tmpDir);
+    await pushAllBranches(tmpDir);
+    await checkout(tmpDir, "pr1");
+    await Bun.write(`${tmpDir}/.gh-stack.toml`, "[restack]\npush = false\n");
+    // Keep the config file out of join's dirty-tree check.
+    await Bun.write(`${tmpDir}/.git/info/exclude`, ".gh-stack.toml\n");
+    return runCli(["join", "incoming", "--above", "pr3", ...args]);
+  }
+
+  test("[restack] push = false in .gh-stack.toml keeps the join local", async () => {
+    const res = await topJoinWithPushFalseConfig([]);
+    expect(res.exitCode).toBe(0);
+    expect(await prFiles("pr3", "incoming")).toEqual(["incoming.txt"]);
+    expect(await remoteSha("incoming")).not.toBe(await git("rev-parse", "incoming"));
+    expect((await ghCalls()).some((c) => c.startsWith("pr edit"))).toBe(false);
+  });
+
+  test("--push overrides a [restack] push = false repo config", async () => {
+    const res = await topJoinWithPushFalseConfig(["--push"]);
+    expect(res.exitCode).toBe(0);
+    expect(await remoteSha("incoming")).toBe(await git("rev-parse", "incoming"));
+  });
 });
 
 describe("join --dry-run", () => {

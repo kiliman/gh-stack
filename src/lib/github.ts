@@ -203,17 +203,75 @@ export async function getPrBody(prNumber: number): Promise<string | null> {
  * squash-merge lands on this branch. Compare `headRefOid` against the live ref
  * (`getBranchRefSha`) to detect that staleness — see `merge.ts`.
  */
-export async function getPrMergeState(prNumber: number): Promise<{
+/** A PR's merge state, plus what merging it left behind. */
+export interface PrMergeResult {
   state: string;
   mergeable: string;
   mergeStateStatus: string;
   headRefName: string;
+  /** The PR's head; for a merged PR, its head when it merged. */
   headRefOid: string;
-} | null> {
+  /** The branch it targets (or merged into). */
+  baseRefName: string;
+  /** The commit merging it created on its base (for a squash merge, the squash commit). */
+  mergeCommit: string | null;
+}
+
+export async function getPrMergeState(prNumber: number): Promise<PrMergeResult | null> {
   try {
-    const result =
-      await $`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,headRefName,headRefOid`.text();
-    return JSON.parse(result.trim());
+    const data = JSON.parse(
+      (
+        await $`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,mergeCommit`.text()
+      ).trim(),
+    );
+    return { ...data, mergeCommit: data.mergeCommit?.oid ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/** A commit as a patch (`git format-patch` style), from the GitHub API. Null if unavailable. */
+export async function getCommitPatch(sha: string): Promise<string | null> {
+  const nwo = await getRepoNwo();
+  if (!nwo) return null;
+  const { stdout, exitCode } =
+    await $`gh api -H ${"Accept: application/vnd.github.patch"} repos/${nwo}/commits/${sha}`
+      .nothrow()
+      .quiet();
+  const text = stdout.toString();
+  return exitCode === 0 && text.trim() ? text : null;
+}
+
+/**
+ * The files a commit changed (path, status, blob sha after the commit), from
+ * the GitHub API. Null if unavailable, or if GitHub truncated the list (it
+ * returns at most 300 files): a partial list can't prove anything.
+ */
+export async function getCommitFiles(
+  sha: string,
+): Promise<
+  { filename: string; status: string; sha: string | null; before?: string | null }[] | null
+> {
+  const nwo = await getRepoNwo();
+  if (!nwo) return null;
+  const { stdout, exitCode } =
+    await $`gh api repos/${nwo}/commits/${sha} --jq ${"[.files[] | {filename, status, sha}]"}`
+      .nothrow()
+      .quiet();
+  if (exitCode !== 0) return null;
+  try {
+    const files: { filename: string; status: string; sha: string | null }[] = JSON.parse(
+      stdout.toString(),
+    );
+    if (!Array.isArray(files) || files.length === 0 || files.length >= 300) return null;
+    // The API gives no blob from before the commit, except that an added
+    // file had none; a removed file has no blob after it.
+    return files.map((f) => ({
+      filename: f.filename,
+      status: f.status,
+      sha: f.status === "removed" ? null : f.sha,
+      before: f.status === "added" ? null : undefined,
+    }));
   } catch {
     return null;
   }

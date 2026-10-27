@@ -143,30 +143,92 @@ export async function isAncestor(ancestor: string, descendant: string): Promise<
   return exitCode === 0;
 }
 
+export type PushResult =
+  | { ok: true }
+  | {
+      ok: false;
+      /**
+       * `not-integrated`: origin's tip was fetched but isn't in the local
+       * branch's history (--force-if-includes refused). `stale-lease`: origin
+       * moved since the last fetch. `rejected`: anything else.
+       */
+      reason: "not-integrated" | "stale-lease" | "rejected";
+      stderr: string;
+    };
+
 /**
- * Force-push a branch with lease protection.
+ * The one way gh-stack force-pushes a branch (restack, sync, merge's advance,
+ * submit, join). Sets upstream, and works whether or not the branch exists on
+ * origin yet.
+ *
+ * By default it's `--force-with-lease --force-if-includes`: the lease refuses
+ * if origin moved since the last fetch, and --force-if-includes refuses if the
+ * fetched tip was never brought into the local branch. That second check is
+ * #28's root cause (a collapse's squash commit fetched, never pulled, then
+ * overwritten), covered here for every command.
+ *
+ * `expect` gives the lease an explicit remote sha instead. Use it only for a
+ * tip whose content was checked first (see lib/remote-guard.ts): git makes
+ * --force-if-includes a no-op then, and the push still fails if origin moved
+ * off that sha.
  */
-export async function forcePushWithLease(branch?: string): Promise<boolean> {
-  try {
-    if (branch) {
-      await $`git push --force-with-lease origin ${branch}`;
-    } else {
-      await $`git push --force-with-lease`;
-    }
-    return true;
-  } catch {
-    return false;
+export async function forcePushWithLease(
+  branch: string,
+  opts: { expect?: string } = {},
+): Promise<PushResult> {
+  const lease = opts.expect
+    ? `--force-with-lease=refs/heads/${branch}:${opts.expect}`
+    : "--force-with-lease";
+  const { exitCode, stderr } = await $`git push -u ${lease} --force-if-includes origin ${branch}`
+    .nothrow()
+    .quiet();
+  if (exitCode === 0) return { ok: true };
+  const text = stderr.toString();
+  const reason = text.includes("remote ref updated since checkout")
+    ? "not-integrated"
+    : text.includes("stale info")
+      ? "stale-lease"
+      : "rejected";
+  return { ok: false, reason, stderr: text };
+}
+
+/** Why a force-push was refused, and what to do, in gh-stack terms (plain lines). */
+export function pushFailureHint(branch: string, result: PushResult): string[] {
+  if (result.ok) return [];
+  switch (result.reason) {
+    case "not-integrated":
+      return [
+        `origin/${branch} has commits you fetched but never brought into local ${branch}, so git refused to overwrite them (--force-if-includes).`,
+        `That's how a collapsed PR's squash commit gets lost (#28). See them: git log ${branch}..origin/${branch}`,
+        `Bring them in (git pull --rebase origin ${branch}, or cherry-pick), then retry.`,
+        `To drop them on purpose: gh-stack restack --overwrite-remote`,
+      ];
+    case "stale-lease":
+      return [
+        `origin/${branch} moved since your last fetch, so the lease refused.`,
+        `Look at what's there first: git fetch origin ${branch} && git log ${branch}..origin/${branch}`,
+      ];
+    default:
+      return [
+        result.stderr
+          .trim()
+          .split("\n")
+          .find((l) => l.includes("rejected") || l.startsWith("error")) ?? result.stderr.trim(),
+      ];
   }
 }
 
 /**
- * Push a stacked branch's ref to origin, setting upstream and using
- * force-with-lease. Works whether or not the remote branch already exists
- * (creates it on first push) — so restack can reconcile every ref, including
- * a branch that was never pushed before.
+ * Fetch commits from origin without moving any ref: no remote-tracking ref
+ * update (`--refmap=`) and no FETCH_HEAD. The tracking refs are what
+ * `--force-with-lease` and `--force-if-includes` compare against, so a check
+ * that needs origin's objects must never advance them.
  */
-export async function pushStackedBranch(branch: string): Promise<boolean> {
-  const { exitCode } = await $`git push -u --force-with-lease origin ${branch}`.nothrow().quiet();
+export async function fetchObjectsOnly(refs: string[]): Promise<boolean> {
+  if (refs.length === 0) return true;
+  const { exitCode } = await $`git fetch --quiet --no-write-fetch-head --refmap= origin ${refs}`
+    .nothrow()
+    .quiet();
   return exitCode === 0;
 }
 

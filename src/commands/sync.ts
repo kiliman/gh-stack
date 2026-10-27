@@ -13,8 +13,9 @@ import {
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { resolveFlag } from "../lib/config.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
+import { guardRemoteContent } from "../lib/remote-guard.ts";
 import { getPrInfo } from "../lib/github.ts";
-import { planMerges, advanceNewBottom, type BranchReview } from "../lib/advance.ts";
+import { planMerges, advanceNewBottom, type BranchReview, type MergePlan } from "../lib/advance.ts";
 import type { StackMetadata } from "../types.ts";
 import restack, {
   notePendingRun,
@@ -47,16 +48,25 @@ OPTIONS
   --push      Push even when a config default or env var says not to
   --resume    Same as \`gh-stack restack --resume\`
   --fresh     Discard an interrupted restack/sync instead of resuming it
+  --overwrite-remote
+              Rewrite branches even though origin has commits they lack.
+              Those commits are dropped from origin
 
 If an interrupted restack or sync is pending, sync asks whether to resume it
 (with --yes it resumes) rather than starting over on top of it.
+
+Before rewriting anything, sync stops if a branch's copy on origin has
+commits the local branch never had (e.g. the squash commit \`merge --collapse\`
+adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`.
 `);
     return;
   }
 
-  // Only explicit push flags carry over to a resume: it otherwise keeps the
-  // push decision of the run it resumes.
-  const pushFlags = args.filter((a) => a === "--push" || a === "--no-push");
+  // Only explicit push flags (and --overwrite-remote) carry over to a resume:
+  // it otherwise keeps the push decision of the run it resumes.
+  const pushFlags = args.filter(
+    (a) => a === "--push" || a === "--no-push" || a === "--overwrite-remote",
+  );
   const resumeRun = () => restack(["--resume", ...pushFlags]);
   if (args.includes("--resume")) {
     await resumeRun();
@@ -100,7 +110,29 @@ If an interrupted restack or sync is pending, sync asks whether to resume it
   // them. A plain rebase onto main would then replay their now-squashed commits
   // and conflict — so advance past them (re-rooting the survivor onto main with
   // `--onto`) before the normal sync runs. (#20)
-  const advance = await advanceMergedBottoms(meta, stackName, base, dryRun, noPush);
+  const merged = await findMergedBottoms(meta, stackName);
+
+  // Nothing is rewritten yet: stop here if origin holds commits the local
+  // branches lack, e.g. a collapse's squash commit on the base branch (#28).
+  // Bottoms whose PRs already merged are skipped: the advance drops them
+  // rather than rewriting them, and after `merge --approved` they're exactly
+  // where the collapse's squash commits live.
+  const mergedBranches = new Set(merged.steps.map((step) => step.branch));
+  const verified = await guardRemoteContent(
+    meta,
+    ordered.filter((b) => !mergedBranches.has(b)),
+    { command: "sync", overwrite: args.includes("--overwrite-remote"), dryRun },
+  );
+
+  const advance = await advanceMergedBottoms(
+    meta,
+    stackName,
+    base,
+    dryRun,
+    noPush,
+    merged,
+    verified,
+  );
   if (advance.drained) {
     p.outro(pc.green("Bottom PR(s) already merged — stack fully drained & archived."));
     return;
@@ -160,7 +192,7 @@ If an interrupted restack or sync is pending, sync asks whether to resume it
 
   // Rebase the root onto main, push it, then restack every branch above it —
   // one run, saved after every step, so `restack --resume` can finish it.
-  await syncChain(meta, stackName, ordered, { trunkRef: "origin/main", push });
+  await syncChain(meta, stackName, ordered, { trunkRef: "origin/main", push, verified });
 }
 
 /**
@@ -228,20 +260,15 @@ interface AdvanceOutcome {
  * Returns what happened so the caller can re-derive the root or short-circuit.
  * In dry-run it reports and makes no changes.
  */
-async function advanceMergedBottoms(
-  meta: StackMetadata,
-  stackName: string,
-  trunk: string,
-  dryRun: boolean,
-  noPush: boolean,
-): Promise<AdvanceOutcome> {
+/**
+ * The contiguous bottom branches whose PRs already merged (outside gh-stack,
+ * or the base of a `merge --approved`), walking bottom-up and stopping at the
+ * first that isn't.
+ */
+async function findMergedBottoms(meta: StackMetadata, stackName: string): Promise<MergePlan> {
   const stack = meta.stacks[stackName]!;
-  const ordered = getOrderedBranches(stack);
-
-  // Walk bottom-up gathering PR state; stop at the first branch that isn't a
-  // merged PR (only contiguous merged bottoms can be advanced past).
   const reviews: BranchReview[] = [];
-  for (const branch of ordered) {
+  for (const branch of getOrderedBranches(stack)) {
     const pr = stack.branches[branch]?.pr ?? null;
     let prState: string | null = null;
     if (pr != null) {
@@ -251,8 +278,21 @@ async function advanceMergedBottoms(
     reviews.push({ branch, pr, prState, reviewDecision: null });
     if (prState !== "MERGED") break;
   }
+  return planMerges(reviews, { approveAndMerge: false });
+}
 
-  const plan = planMerges(reviews, { approveAndMerge: false });
+async function advanceMergedBottoms(
+  meta: StackMetadata,
+  stackName: string,
+  trunk: string,
+  dryRun: boolean,
+  noPush: boolean,
+  plan: MergePlan,
+  verified: Map<string, string>,
+): Promise<AdvanceOutcome> {
+  const stack = meta.stacks[stackName]!;
+  const ordered = getOrderedBranches(stack);
+
   if (plan.steps.length === 0) {
     return { detected: false, advanced: false, drained: false };
   }
@@ -291,6 +331,7 @@ async function advanceMergedBottoms(
         targetRef,
         recordedBase: trunk,
         push: !noPush,
+        expect: verified.get(child),
       });
       if (!res.ok) {
         console.log();

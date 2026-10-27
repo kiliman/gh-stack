@@ -12,8 +12,19 @@ import {
 } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
-import { getBranchRefSha, getPrInfo, getPrMergeState, resyncPrHead } from "../lib/github.ts";
-import { confirmAction } from "../lib/ui.ts";
+import {
+  getBranchRefSha,
+  getCommitPatch,
+  getPrInfo,
+  getCommitFiles,
+  getPrMergeState,
+  getRepoNwo,
+  resyncPrHead,
+} from "../lib/github.ts";
+import { verifyCollapse, type CollapsedChild } from "../lib/collapse-guard.ts";
+import type { Stack } from "../types.ts";
+import { confirmAction, isAutoYes } from "../lib/ui.ts";
+import { guardRemoteContent } from "../lib/remote-guard.ts";
 import { ensureNoPendingRun } from "./restack.ts";
 import {
   planMerges,
@@ -284,12 +295,24 @@ a hard failure.
 
 A snapshot is taken first; ${pc.green("gh-stack undo")} restores the prior state.
 
+Before the base PR is handed to main, merge checks that each collapsed child's
+squash commit is still in the branch it was squashed into (as an ancestor, or a
+rebased copy). If the base branch was rewritten without one (e.g. a sync that
+never pulled it), merge stops and names the PR whose changes would be lost.
+Whatever it can't establish (a GitHub or fetch failure, a shallow clone,
+content it can't compare) is UNVERIFIED, never "missing": merge asks (default
+stop, with a retry for transient failures); with --yes it stops. --base runs
+the same check when the base PR carries PRs collapsed into it earlier.
+
 OPTIONS
   -d, --delete-branch  Delete remote branches after merging
       --approved       Collapse only the approved run (from the base up)
       --base           Merge just the bottom PR into main, re-root the next
       --collapse       Stop after collapsing into the base PR (don't merge to
                        main); alias: --stop-at-base
+      --skip-collapse-check
+                       Don't verify the collapsed children's content is in
+                       the base PR (above)
       --dry-run        Show what would happen without doing anything
 `);
     return;
@@ -300,7 +323,7 @@ OPTIONS
   if (!dryRun) await ensureNoPendingRun("merge");
 
   if (baseOnly) {
-    await mergeBaseOnly(deleteFlag, dryRun);
+    await mergeBaseOnly(deleteFlag, dryRun, args);
     return;
   }
 
@@ -546,6 +569,12 @@ OPTIONS
     }
   }
 
+  // Every child is squashed into its parent now (this run or an earlier one).
+  // Before the base goes anywhere, make sure it still holds their content (#28).
+  if (!args.includes("--skip-collapse-check")) {
+    await ensureCollapseIntact(stack, rangeOrdered, baseBranch, basePr!);
+  }
+
   // ─── --collapse: stop here. Base PR holds the cumulative diff; let the
   //     user review on GitHub and re-run `gh-stack merge` to finish.
   if (collapse) {
@@ -746,13 +775,187 @@ OPTIONS
 }
 
 /**
+ * Before the base PR goes to main, check every collapsed child's squash commit
+ * is still in what it was squashed into (#28). Fails closed:
+ *   - proven missing: stop (exit 2), naming the PR and how to put it back;
+ *   - unconfirmed or unverified (a lookup failed, a shallow clone, content that
+ *     can't be compared): interactive, ask (default stop, with a retry when the
+ *     cause looks transient); under --yes, stop (exit 2) and say it's
+ *     unverified, with the checks to run by hand.
+ */
+async function ensureCollapseIntact(
+  stack: Stack,
+  rangeOrdered: string[],
+  baseBranch: string,
+  basePr: number,
+): Promise<void> {
+  const children: CollapsedChild[] = [];
+  for (const branch of rangeOrdered) {
+    if (branch === baseBranch) continue;
+    const entry = stack.branches[branch]!;
+    children.push({
+      branch,
+      pr: entry.pr!,
+      parent: entry.parent,
+      parentPr: entry.parent === baseBranch ? null : (stack.branches[entry.parent]?.pr ?? null),
+    });
+  }
+  if (children.length === 0) return;
+
+  const nwo = (await getRepoNwo()) ?? "{owner}/{repo}";
+  const patchCommand = (sha: string) =>
+    `gh api -H "Accept: application/vnd.github.patch" repos/${nwo}/commits/${sha} | git am`;
+  const trunkRef = `origin/${await git.trunkBranch()}`;
+
+  for (;;) {
+    const s = p.spinner();
+    s.start(`Checking PR #${basePr} still holds every collapsed PR's changes...`);
+    const verdicts = await verifyCollapse({
+      base: baseBranch,
+      trunkRef,
+      children,
+      lookup: {
+        prResult: getPrMergeState,
+        commitPatch: getCommitPatch,
+        commitFiles: getCommitFiles,
+      },
+    });
+    const missing = verdicts.flatMap((v) => (v.status === "missing" ? [v] : []));
+    const uncertain = verdicts.flatMap((v) =>
+      v.status === "unconfirmed" || v.status === "unverified" ? [v] : [],
+    );
+    s.stop(
+      missing.length > 0
+        ? pc.red(`PR #${basePr} is missing collapsed changes`)
+        : uncertain.length > 0
+          ? pc.yellow(`Couldn't confirm PR #${basePr} holds every collapsed PR's changes`)
+          : `PR #${basePr} holds every collapsed PR's changes`,
+    );
+
+    if (missing.length > 0) {
+      console.log();
+      for (const v of missing) {
+        p.log.error(
+          `PR #${v.child.pr} (${pc.yellow(v.child.branch)})'s changes are missing from PR #${basePr}: ${v.containerLabel} (${v.container.slice(0, 8)}) has every file its squash commit ${v.mergeCommit.slice(0, 8)} touched exactly as it was before that commit.`,
+        );
+      }
+      console.log();
+      console.log(
+        `  ${pc.yellow(baseBranch)} was rewritten after the collapse (e.g. a restack or sync that never pulled the squash commit).`,
+      );
+      console.log(
+        `  Merging PR #${basePr} now would ship it without those PRs' changes. Nothing was merged to main.`,
+      );
+      console.log();
+      console.log(
+        `  Put the squash commit(s) back on ${baseBranch}, then re-run ${pc.green("gh-stack merge")}:`,
+      );
+      console.log(
+        `    ${pc.green(`git checkout ${baseBranch} && git pull --ff-only origin ${baseBranch}`)}`,
+      );
+      for (const v of missing) {
+        // An orphaned squash commit usually can't be fetched from GitHub, but
+        // its patch can: lead with what works.
+        console.log(
+          `    ${pc.green(
+            v.fetchable
+              ? `git fetch origin ${v.mergeCommit} && git cherry-pick ${v.mergeCommit}`
+              : patchCommand(v.mergeCommit),
+          )}`,
+        );
+      }
+      console.log(`    ${pc.green(`git push --force-with-lease origin ${baseBranch}`)}`);
+      console.log(
+        `  If the changes really are there in another form: ${pc.green("gh-stack merge --skip-collapse-check")}`,
+      );
+      process.exit(2);
+    }
+
+    if (uncertain.length === 0) return;
+
+    console.log();
+    for (const v of uncertain) {
+      p.log.warn(
+        `Could not confirm PR #${v.child.pr} (${pc.yellow(v.child.branch)})'s changes are in PR #${basePr} — this is UNVERIFIED, not known to be missing: ${v.reason}.`,
+      );
+    }
+    console.log();
+    console.log("  Check by hand before merging:");
+    console.log(
+      `    ${pc.green(`gh pr diff ${basePr} --name-only`)}   ${pc.dim("(the base PR's files)")}`,
+    );
+    for (const v of uncertain) {
+      console.log(
+        `    ${pc.green(`gh pr diff ${v.child.pr} --name-only`)}   ${pc.dim(`(PR #${v.child.pr}'s files: each should be in #${basePr})`)}`,
+      );
+      if (v.status === "unconfirmed") {
+        console.log(
+          `      ${pc.dim(`if they aren't, put its squash commit back on ${baseBranch}:`)} ${pc.green(patchCommand(v.mergeCommit))}`,
+        );
+      }
+    }
+    console.log(`  If they're all there: ${pc.green("gh-stack merge --skip-collapse-check")}`);
+
+    if (isAutoYes()) {
+      p.cancel(
+        `Stopped before merging PR #${basePr}: its collapsed content is unverified, and --yes never merges on a guess. Nothing was merged to main.`,
+      );
+      process.exit(2);
+    }
+    const transient = uncertain.some((v) => v.transient);
+    const choice = await p.select({
+      message: `Merge PR #${basePr} without confirming those changes are in it?`,
+      initialValue: "stop",
+      options: [
+        ...(transient
+          ? [{ value: "retry", label: "Retry the check", hint: "a GitHub or network read failed" }]
+          : []),
+        { value: "stop", label: "Stop — merge nothing" },
+        { value: "merge", label: "Merge anyway" },
+      ],
+    });
+    if (p.isCancel(choice) || choice === "stop") {
+      p.cancel(`Stopped before merging PR #${basePr}. Nothing was merged to main.`);
+      process.exit(2);
+    }
+    if (choice === "merge") return;
+  }
+}
+
+/**
+ * The children collapsed into `base` by an earlier `merge --collapse`: walking
+ * up from the base, each branch whose PR merged into its stack parent (itself
+ * the base or collapsed). `unknown` is the first branch whose PR couldn't be
+ * read, when that stopped the walk.
+ */
+async function collapsedChildren(
+  stack: Stack,
+  ordered: string[],
+  base: string,
+): Promise<{ collapsed: string[]; unknown: string | null }> {
+  const collapsed: string[] = [];
+  const into = new Set([base]);
+  for (const branch of ordered) {
+    const entry = stack.branches[branch];
+    if (branch === base || !entry?.pr || !into.has(entry.parent)) continue;
+    const state = await getPrMergeState(entry.pr);
+    if (!state) return { collapsed, unknown: branch };
+    if (state.state === "MERGED" && state.baseRefName === entry.parent) {
+      collapsed.push(branch);
+      into.add(branch);
+    }
+  }
+  return { collapsed, unknown: null };
+}
+
+/**
  * `gh-stack merge --base` — squash-merge ONLY the bottom PR into main, then
  * re-root the next branch onto main (replaying just its own commits, via
  * advance.ts's fork-point resolution). One PR per run — run it again to land the
  * next. Approval is NOT checked here; GitHub branch protection enforces it.
  * A base PR already merged outside gh-stack is detected and advanced past.
  */
-async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean): Promise<void> {
+async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[]): Promise<void> {
   // We rebase the surviving branches, so the same pre-flight guards as restack.
   if (await git.isRebaseInProgress()) {
     p.cancel(
@@ -842,6 +1045,52 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean): Promise<void
     process.exit(0);
   }
 
+  // #28: a base PR that carries PRs collapsed into it by an earlier
+  // `merge --collapse` must still hold their content before it goes to main.
+  // Collapsed children are found from GitHub (merged PRs whose base was their
+  // stack parent); a lookup that fails is uncertainty, and fails closed.
+  let collapsed: string[] = [];
+  if (baseAction === "merge" && !args.includes("--skip-collapse-check")) {
+    const found = await collapsedChildren(stack, ordered, baseBranch);
+    if (found.unknown) {
+      p.log.warn(
+        `Couldn't tell whether PR #${basePr} carries PRs collapsed into it: ${found.unknown}'s PR couldn't be read from GitHub.`,
+      );
+      console.log(
+        `  Check by hand: ${pc.green(`gh pr view ${stack.branches[found.unknown]!.pr} --json state,baseRefName`)}`,
+      );
+      console.log(
+        `  Then re-run, or skip the check: ${pc.green("gh-stack merge --base --skip-collapse-check")}`,
+      );
+      if (isAutoYes()) {
+        p.cancel(
+          `Stopped before merging PR #${basePr} (--yes never merges on a guess). Nothing was merged.`,
+        );
+        process.exit(2);
+      }
+      const go = await p.confirm({ message: `Merge PR #${basePr} anyway?`, initialValue: false });
+      if (p.isCancel(go) || !go) {
+        p.cancel(`Stopped before merging PR #${basePr}. Nothing was merged.`);
+        process.exit(2);
+      }
+    }
+    collapsed = found.collapsed;
+    if (collapsed.length > 0) {
+      await ensureCollapseIntact(stack, [baseBranch, ...collapsed], baseBranch, basePr);
+    }
+  }
+
+  // The branches this run rewrites and force-pushes (the next child here, the
+  // rest in the restack below) must not drop commits only origin has.
+  // Collapsed children are left out: their origin copies hold the squash
+  // commits of PRs merged into them, which aren't the user's to pull.
+  const overwrite = args.includes("--overwrite-remote");
+  const verified = await guardRemoteContent(
+    meta,
+    ordered.slice(1).filter((b) => !collapsed.includes(b)),
+    { command: "merge --base", overwrite, dryRun: false },
+  );
+
   // Snapshot first — this records every branch's pre-merge tip, which both the
   // fork-point resolver and `gh-stack undo` rely on.
   await takeSnapshot(meta, stackName, "merge-base");
@@ -910,6 +1159,7 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean): Promise<void
         childPr,
         targetRef,
         recordedBase: trunk,
+        expect: verified.get(child),
       });
       if (!res.ok) {
         console.log();
@@ -981,7 +1231,7 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean): Promise<void
     // Always push: merge publishes by nature (the advance above already
     // pushed), and children left stale on GitHub are worse than any default.
     // An explicit flag also means no config is read mid-merge.
-    await restack(["--push"]);
+    await restack(["--push", ...(overwrite ? ["--overwrite-remote"] : [])]);
   }
 
   p.outro(

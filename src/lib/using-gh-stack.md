@@ -295,6 +295,13 @@ it (its PR would be diffed against the parent's old history); the run lists it
 as held and exits 1 until `--resume` gets the parent pushed. `merge` and `join`
 refuse to run while a restack/sync is pending.
 
+**"Origin has commits that the local branches don't"** (restack/sync exit 1
+before changing anything): a branch's copy on origin has commits it never had,
+often the squash commit a `merge --collapse` added on GitHub. Run the
+`git pull --ff-only` / `git cherry-pick` lines it prints, then re-run. Don't
+pass `--overwrite-remote` unless you were asked to drop those commits: it
+deletes them from the PR.
+
 **`sync` is self-correcting:** if you merged the bottom PR in the GitHub UI,
 `sync` detects it and advances the stack past the merged branch (re-rooting onto
 trunk) instead of replaying squashed commits and conflicting.
@@ -331,6 +338,21 @@ Merge is **top-down everywhere** (collapse PRn → PRn-1 → … → base PR, th
   outside gh-stack.
 - **`--collapse`** (with `merge` or `merge --approved`): stop after collapsing
   into the base PR — review on GitHub, then re-run `merge` to finish.
+
+After a collapse, the base branch on origin holds the children's squash
+commits. Pull it before touching it locally (`git pull --ff-only origin <base>`).
+Before the base PR goes to main, `merge` checks those commits are still in it.
+If it exits 2 with "PR #N's changes are missing from PR #base", the base was
+rewritten without them: follow the printed steps (`gh api … | git am`) and
+re-run `merge`. If it exits 2 saying PR #N's changes are UNVERIFIED, nothing
+is known to be lost, but it couldn't be checked (often a GitHub or network
+hiccup: re-run first): compare `gh pr diff <N> --name-only` against the base
+PR's files. `merge --base` does the same check for a base with collapsed PRs. Use `--skip-collapse-check` only after
+confirming the base PR's diff on GitHub really has PR #N's changes.
+
+A push that fails with "fetched but never brought into local <branch>" means
+origin has commits you haven't integrated (git's --force-if-includes): pull or
+cherry-pick them, don't force past it.
 
 ### 7. Maintenance
 

@@ -572,8 +572,8 @@ describe("remote branch detection", () => {
     await makeCommit(tmpDir, "pr1-new.txt", "new\n", "pr1: new");
 
     // Force push should succeed (no one else pushed)
-    const ok = await git.forcePushWithLease("pr1");
-    expect(ok).toBe(true);
+    const result = await git.forcePushWithLease("pr1");
+    expect(result.ok).toBe(true);
   });
 });
 

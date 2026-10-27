@@ -162,6 +162,7 @@ export function numberedTitle(title: string, position: number, total: number): s
 
 export interface TitleResult {
   updated: number; // PR titles we edited on GitHub
+  updatedBranches: string[]; // …and their branches, for per-branch reporting (submit --json)
   dirty: boolean; // metadata mutated (cached prTitle changed) — caller persists
 }
 
@@ -211,21 +212,24 @@ export async function reconcilePrTitles(
 
   const items = ordered.map((name) => {
     const bm = stack.branches[name]!;
-    return { pr: bm.pr, prTitle: bm.prTitle, override: overrides[name], bm };
+    return { name, pr: bm.pr, prTitle: bm.prTitle, override: overrides[name], bm };
   });
 
-  const oks = await mapLimit(planTitleEdits(items), 8, async ({ item, desired }) => {
+  const edits = planTitleEdits(items);
+  const oks = await mapLimit(edits, 8, async ({ item, desired }) => {
     const ok = await updatePrTitle(item.pr!, desired);
     if (ok) item.bm.prTitle = desired;
     return ok;
   });
 
-  const updated = oks.filter(Boolean).length;
-  return { updated, dirty: dirtyBackfill || updated > 0 };
+  const updatedBranches = edits.filter((_, i) => oks[i]).map(({ item }) => item.name);
+  const updated = updatedBranches.length;
+  return { updated, updatedBranches, dirty: dirtyBackfill || updated > 0 };
 }
 
 export interface VizResult {
   updated: number; // PRs whose description we PATCHed
+  updatedBranches: string[]; // …and their branches, for per-branch reporting (submit --json)
   unchanged: number; // PRs skipped because their rendered block was identical
   skipped: number; // branches with no PR
   skippedBranches: string[]; // …and their names, so callers can say which
@@ -306,10 +310,11 @@ export async function refreshStackViz(
     return ok;
   });
 
-  const updated = oks.filter(Boolean).length;
+  const updatedBranches = toUpdate.filter((_, i) => oks[i]).map((plan) => plan.info.branch);
+  const updated = updatedBranches.length;
   if (updated > 0) dirty = true;
 
-  return { updated, unchanged, skipped, skippedBranches, dirty };
+  return { updated, updatedBranches, unchanged, skipped, skippedBranches, dirty };
 }
 
 export default async function updatePrs(args: string[]): Promise<void> {

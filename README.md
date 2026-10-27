@@ -103,7 +103,7 @@ add [branch] [--parent <branch>]
     know about it, and `add` is how you track it without publishing. (When
     you do run `submit`, it auto-tracks too — `add` is the no-push path.)
 
-submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--restack] [--dry-run]
+submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--restack] [--json] [--dry-run]
     Push all downstack branches to GitHub, create PRs for branches
     that don't have them, number each PR title with its stack position
     `(N/M)`, and update all PR descriptions with stack visualization.
@@ -131,6 +131,18 @@ submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file
     let an agent or script regenerate a PR's title/description safely.
     --body-file reads the body from a file. In --yes mode without --title,
     titles are auto-generated from branch names.
+
+    --json prints the result as one JSON document on stdout, so a script
+    or agent gets the PR it just created without a follow-up `gh pr view`:
+      { stack, current_branch,
+        branches: [{ branch, parent, pr, url, title, action, pushed,
+                     draft, error? }] }
+    branches is the submit scope (trunk → current) in stack order. action
+    is created (new PR), updated (pushed, or base/title/description
+    edited), unchanged, or failed (see error). draft is true/false for
+    PRs created this run, null otherwise. Logs go to stderr, plain.
+    Implies --no-edit; exits 1 if any branch failed; can't be combined
+    with --dry-run. With --restack, the JSON is printed before restacking.
 ```
 
 ### Stack Navigation
@@ -546,6 +558,7 @@ gh-stack restack
 GH_STACK_NO_PUSH=1 gh-stack restack
 
 # Structured output
+gh-stack submit --json -t "Title" --body-file body.md   # PR number + URL per branch
 gh-stack status --json
 gh-stack status --current --json
 gh-stack ls

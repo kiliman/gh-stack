@@ -12,7 +12,7 @@ import {
 } from "../lib/metadata.ts";
 import { isAutoYes } from "../lib/ui.ts";
 import type { Stack, StackMetadata } from "../types.ts";
-import { getPrNumber } from "../lib/github.ts";
+import { getPrNumber, getRepoNwo, prUrlFor } from "../lib/github.ts";
 import { resolveOrCreateStack } from "../lib/chain.ts";
 import { reconcilePrTitles, refreshStackViz, branchToTitle } from "./update-prs.ts";
 
@@ -39,12 +39,27 @@ OPTIONS
       --body-file <f>  Read PR body from a file
       --restack        After submitting, restack the branches above the current
                        one onto it (propagate a downstack fix up to children)
+      --json           Print the result as JSON on stdout: each branch's PR
+                       number, URL, and action (created/updated/unchanged/failed).
+                       Logs go to stderr. Implies --no-edit and --plain
       --dry-run        Show what would happen without doing anything
 
 Updating an existing PR: -t / -b also update the PR for the branch you're on
 if it already exists — the title keeps its (N/M) stack position, and the body
 is replaced with the "Stacked on" block re-merged in. Use this instead of
 gh pr edit so the stack visualization is never clobbered.
+
+JSON output (--json): stdout is one JSON document, so a script or agent can
+capture the PRs it just created without a follow-up \`gh pr view\`:
+  { "stack": "...", "current_branch": "...",
+    "branches": [{ "branch", "parent", "pr", "url", "title",
+                   "action", "pushed", "draft", "error"? }] }
+"branches" is the submit scope (trunk → current), in stack order. "action" is
+created (new PR), updated (pushed, or base/title/description edited),
+unchanged, or failed (PR creation or push failed; see "error"). "draft" is
+true/false for PRs created this run and null otherwise. Exits 1 if any branch
+failed. With --restack, the JSON is printed before the restack runs. Not
+available with --dry-run.
 
 Restack after submit (--restack): submit covers DOWNSTACK (trunk → current);
 restack covers UPSTACK (the children above current). Together they sync the
@@ -58,14 +73,88 @@ EXAMPLES
   gh-stack submit -t "My PR" -b "Description"  # Explicit title and body
   gh-stack submit --restack                    # Submit, then restack children onto it
   gh-stack submit --draft                      # Create new PRs as drafts
+  gh-stack submit --json -t "My PR" | jq '.branches[-1].url'   # URL of the PR
   gh-stack submit --dry-run                    # Preview what would happen
 `;
 
+// ── --json result ──
+
+export type SubmitAction = "created" | "updated" | "unchanged" | "failed";
+
+/** What the push/create phase did to one branch in scope. */
+export interface BranchOutcome {
+  branch: string;
+  parent: string;
+  pr: number | null;
+  /** URL printed by `gh pr create`. Existing PRs get theirs from the repo nwo. */
+  url: string | null;
+  pushed: boolean;
+  created: boolean;
+  baseChanged: boolean;
+  /** Whether a PR created this run was opened as a draft (null: not created). */
+  draft: boolean | null;
+  error: string | null;
+}
+
+export interface SubmitBranchJson {
+  branch: string;
+  parent: string;
+  pr: number | null;
+  url: string | null;
+  title: string | null;
+  action: SubmitAction;
+  pushed: boolean;
+  draft: boolean | null;
+  error?: string;
+}
+
+export interface SubmitJson {
+  stack: string;
+  current_branch: string;
+  branches: SubmitBranchJson[];
+}
+
 /**
- * Generate a PR title from a branch name.
- * Strips common prefixes like "kiliman/", replaces hyphens with spaces,
- * and capitalizes the first letter.
+ * Classify one branch's outcome. A PR is "updated" when it already existed and
+ * this run changed it on GitHub: new commits pushed, base retargeted, or its
+ * title/description edited (`edited`, from the reconcile + viz phases).
  */
+export function submitAction(outcome: BranchOutcome, edited: ReadonlySet<string>): SubmitAction {
+  if (outcome.error) return "failed";
+  if (outcome.created) return "created";
+  if (outcome.pushed || outcome.baseChanged || edited.has(outcome.branch)) return "updated";
+  return "unchanged";
+}
+
+/** Build the `submit --json` document. Pure, so the shape is unit-testable. */
+export function buildSubmitJson(input: {
+  stackName: string;
+  currentBranch: string;
+  stack: Stack;
+  outcomes: BranchOutcome[];
+  edited: ReadonlySet<string>;
+  nwo: string | null;
+}): SubmitJson {
+  return {
+    stack: input.stackName,
+    current_branch: input.currentBranch,
+    branches: input.outcomes.map((o) => {
+      const entry: SubmitBranchJson = {
+        branch: o.branch,
+        parent: o.parent,
+        pr: o.pr,
+        url: o.url ?? (o.pr != null ? prUrlFor(input.nwo, o.pr) : null),
+        title: input.stack.branches[o.branch]?.prTitle ?? null,
+        action: submitAction(o, input.edited),
+        pushed: o.pushed,
+        draft: o.draft,
+      };
+      if (o.error) entry.error = o.error;
+      return entry;
+    }),
+  };
+}
+
 /**
  * Check if a local branch is up-to-date with its remote counterpart.
  */
@@ -101,6 +190,20 @@ export default async function submit(args: string[]): Promise<void> {
   const draftFlag = args.includes("--draft") || args.includes("-d");
   const dryRun = args.includes("--dry-run");
   const restackFlag = args.includes("--restack");
+  const jsonMode = args.includes("--json");
+
+  // --json: stdout carries only the JSON document. Everything else (logs,
+  // errors, the chained restack) goes to stderr, without spinners or color.
+  let writeStdout: ((text: string) => void) | null = null;
+  if (jsonMode) {
+    p.setPlain(true);
+    writeStdout = p.reserveStdout();
+  }
+
+  if (jsonMode && dryRun) {
+    p.cancel("--json can't be combined with --dry-run: --json reports what submit did.");
+    process.exit(1);
+  }
 
   // Parse value flags
   let titleFlag: string | undefined;
@@ -126,7 +229,9 @@ export default async function submit(args: string[]): Promise<void> {
     }
   }
 
-  const noEdit = args.includes("--no-edit") || args.includes("-n") || isAutoYes() || !!titleFlag;
+  // --json callers are scripts and agents: nothing can answer a title prompt.
+  const noEdit =
+    args.includes("--no-edit") || args.includes("-n") || isAutoYes() || !!titleFlag || jsonMode;
 
   // Read metadata, or start with an empty in-memory store. submit self-heals,
   // so a missing metadata file is fine — we'll build the stack from local
@@ -228,10 +333,23 @@ export default async function submit(args: string[]): Promise<void> {
   let created = 0;
   let existing = 0;
   let metadataChanged = false;
+  const outcomes: BranchOutcome[] = [];
 
   for (const branchName of scope) {
     const branchMeta = stack.branches[branchName]!;
     const parentBranch = branchMeta.parent;
+    const outcome: BranchOutcome = {
+      branch: branchName,
+      parent: parentBranch,
+      pr: null,
+      url: null,
+      pushed: false,
+      created: false,
+      baseChanged: false,
+      draft: null,
+      error: null,
+    };
+    outcomes.push(outcome);
 
     // ── Push (skip if already up-to-date) ──
     if (dryRun) {
@@ -245,10 +363,30 @@ export default async function submit(args: string[]): Promise<void> {
       if (ok) {
         s.stop(`Pushed ${pc.blue(branchName)}`);
         pushed++;
+        outcome.pushed = true;
       } else {
         s.stop(pc.red(`Failed to push ${branchName}`));
         p.cancel(`Push failed for ${pc.blue(branchName)}. Aborting.`);
-        process.exit(1);
+        // Report what happened up to the failure, so a caller still learns the
+        // PRs created for the branches below it.
+        if (writeStdout) {
+          outcome.pr = branchMeta.pr ?? null;
+          outcome.error = `push to origin/${branchName} failed`;
+          writeStdout(
+            formatJson(
+              buildSubmitJson({
+                stackName,
+                currentBranch: branch,
+                stack,
+                outcomes,
+                edited: new Set(),
+                nwo: await getRepoNwo(),
+              }),
+            ),
+          );
+        }
+        process.exitCode = 1;
+        return;
       }
     }
 
@@ -264,6 +402,8 @@ export default async function submit(args: string[]): Promise<void> {
       }
     }
 
+    outcome.pr = prNumber;
+
     if (prNumber) {
       // ── Existing PR: update base only if the parent actually changed ──
       existing++;
@@ -277,6 +417,7 @@ export default async function submit(args: string[]): Promise<void> {
             await $`gh pr edit ${prNumber} --base ${parentBranch}`.quiet();
             branchMeta.prBase = parentBranch;
             metadataChanged = true;
+            outcome.baseChanged = true;
           } catch {
             // Best effort — base might already be correct
           }
@@ -338,6 +479,10 @@ export default async function submit(args: string[]): Promise<void> {
           const prUrl = output.trim();
           const prNumMatch = prUrl.match(/\/pull\/(\d+)/);
           const newPrNumber = prNumMatch ? parseInt(prNumMatch[1]!, 10) : null;
+          outcome.created = true;
+          outcome.draft = draftFlag;
+          outcome.pr = newPrNumber;
+          outcome.url = prUrl || null;
 
           if (newPrNumber) {
             branchMeta.pr = newPrNumber;
@@ -353,6 +498,7 @@ export default async function submit(args: string[]): Promise<void> {
           const stderr = await new Response(proc.stderr).text();
           s.stop(pc.red(`Failed to create PR for ${branchName}`));
           p.log.error(stderr.trim());
+          outcome.error = stderr.trim() || "gh pr create failed";
         }
       }
     }
@@ -401,10 +547,29 @@ export default async function submit(args: string[]): Promise<void> {
     ),
   );
 
+  // ── --json: print the result before any restack, so a restack conflict
+  // can't cost the caller the PR numbers this run produced. ──
+  if (writeStdout) {
+    const result = buildSubmitJson({
+      stackName,
+      currentBranch: branch,
+      stack,
+      outcomes,
+      edited: new Set([...titles.updatedBranches, ...viz.updatedBranches]),
+      nwo: await getRepoNwo(),
+    });
+    writeStdout(formatJson(result));
+    if (result.branches.some((b) => b.action === "failed")) process.exitCode = 1;
+  }
+
   // ── --restack: propagate a downstack fix up to the children ──
   // submit owns DOWNSTACK (trunk → current); restack owns UPSTACK (the branches
   // above current). Running both from one branch syncs the whole stack.
   if (restackFlag) await maybeRestack(stack, branch, false);
+}
+
+function formatJson(result: SubmitJson): string {
+  return JSON.stringify(result, null, 2) + "\n";
 }
 
 /**

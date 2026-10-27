@@ -96,6 +96,30 @@ export const log = {
   step: (msg: string) => (_plain ? console.log(strip(msg)) : clack.log.step(msg)),
 };
 
+// ── stdout reservation (for --json) ──
+
+const toStderr = (...args: unknown[]) => console.error(...args);
+
+/**
+ * Route everything that would reach stdout to stderr instead, and return a
+ * writer for the real stdout. `--json` modes use it so stdout carries the JSON
+ * document and nothing else, even when they call into code that logs (a chained
+ * `restack`, clack prompts, raw console.log). Both channels need patching: Bun's
+ * console.log writes to fd 1 directly, not through process.stdout.write.
+ * There is no undo: it lasts for the rest of the process (one CLI command), so
+ * tests exercise it through a spawned CLI rather than in-process.
+ */
+export function reserveStdout(): (text: string) => void {
+  const realWrite = process.stdout.write.bind(process.stdout);
+  console.log = toStderr;
+  console.info = toStderr;
+  console.debug = toStderr;
+  process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
+  return (text) => {
+    realWrite(text);
+  };
+}
+
 // ── Spinner ──
 export interface Spinner {
   start: (msg?: string) => void;

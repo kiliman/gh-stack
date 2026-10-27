@@ -112,8 +112,8 @@ describe("tags", () => {
   test("create and verify tag", async () => {
     const sha = (await $`git rev-parse HEAD`.text()).trim();
     await git.createTag("test-tag", sha);
-    expect(await git.tagExists("test-tag")).toBe(true);
-    expect(await git.tagExists("nonexistent")).toBe(false);
+    expect(await git.refExists("test-tag")).toBe(true);
+    expect(await git.refExists("nonexistent")).toBe(false);
   });
 
   test("delete tags matching pattern", async () => {
@@ -126,9 +126,9 @@ describe("tags", () => {
 
     await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
-    expect(await git.tagExists(tag1)).toBe(false);
-    expect(await git.tagExists(tag2)).toBe(false);
-    expect(await git.tagExists("other-tag")).toBe(true);
+    expect(await git.refExists(tag1)).toBe(false);
+    expect(await git.refExists(tag2)).toBe(false);
+    expect(await git.refExists("other-tag")).toBe(true);
   });
 });
 

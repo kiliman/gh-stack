@@ -564,6 +564,55 @@ async function handleReroot(
   }
 }
 
+/**
+ * Push one branch under restack's conventions: confirm, `--force-with-lease`,
+ * never publish a local-only branch, and do nothing under `--no-push`. Exported
+ * for `join` (#32), which syncs the incoming branch itself and publishes it
+ * before retargeting PRs onto it.
+ */
+export async function publishBranch(
+  meta: StackMetadata,
+  branch: string,
+  opts: { noPush: boolean },
+): Promise<void> {
+  await withNoPush(opts.noPush, () => pushBranchRef(meta, branch));
+}
+
+/**
+ * Restack `chain` from `startIndex`: the same loop `restack` and `--resume` run,
+ * including the conflict stop (exit 2, resumable with `restack --resume`).
+ * Exported for `join` (#32). Returns the branches it rebased and touched.
+ */
+export async function restackChain(
+  meta: StackMetadata,
+  stackName: string,
+  chain: string[],
+  startIndex: number,
+  opts: { noPush: boolean; verbose: boolean },
+): Promise<{ rebased: string[]; touched: string[] }> {
+  const rebased: string[] = [];
+  const touched: string[] = [];
+  await withNoPush(opts.noPush, () =>
+    processChain(meta, stackName, chain, startIndex, rebased, touched, false, opts.verbose),
+  );
+  return { rebased, touched };
+}
+
+/**
+ * Run `fn` with the module-level `noPush` set, restoring it afterwards. The
+ * exported entry points take `noPush` as a parameter; this scopes it instead of
+ * threading it through processChain/pushBranchRef, which restack() also drives.
+ */
+async function withNoPush<T>(value: boolean, fn: () => Promise<T>): Promise<T> {
+  const saved = noPush;
+  noPush = value;
+  try {
+    return await fn();
+  } finally {
+    noPush = saved;
+  }
+}
+
 async function processChain(
   meta: StackMetadata,
   stackName: string,

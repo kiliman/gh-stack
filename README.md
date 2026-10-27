@@ -132,17 +132,23 @@ submit [-d|--draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file
     --body-file reads the body from a file. In --yes mode without --title,
     titles are auto-generated from branch names.
 
-    --json prints the result as one JSON document on stdout, so a script
-    or agent gets the PR it just created without a follow-up `gh pr view`:
+    --json prints the result as one JSON document on stdout, on every
+    exit, so a script or agent gets the PR it just created without a
+    follow-up `gh pr view`:
       { stack, current_branch,
         branches: [{ branch, parent, pr, url, title, action, pushed,
-                     draft, error? }] }
+                     draft, error? }],
+        error: null | { message } }
     branches is the submit scope (trunk → current) in stack order. action
     is created (new PR), updated (pushed, or base/title/description
-    edited), unchanged, or failed (see error). draft is true/false for
-    PRs created this run, null otherwise. Logs go to stderr, plain.
-    Implies --no-edit; exits 1 if any branch failed; can't be combined
-    with --dry-run. With --restack, the JSON is printed before restacking.
+    edited), unchanged, or failed (see the entry's error). draft is
+    true/false for PRs created this run, null otherwise. The top-level
+    error is set when the run stopped early (bad flags, nothing to
+    submit, a push failure): branches then lists what happened before
+    it, and stack/current_branch may be null. Exits 1 if error is set or
+    any branch failed. Logs go to stderr, plain and uncolored. Implies
+    --no-edit; can't be combined with --dry-run or --restack (run
+    `gh-stack restack` separately).
 ```
 
 ### Stack Navigation

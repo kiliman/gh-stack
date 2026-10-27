@@ -16,6 +16,7 @@ import {
   createBranch,
   createTempRepo,
   makeCommit,
+  readMetadata,
   setupRemote,
 } from "./helpers.ts";
 
@@ -87,6 +88,7 @@ describe("buildSubmitJson", () => {
       ],
       edited: new Set(),
       nwo: "acme/widgets",
+      error: null,
     });
 
     expect(result).toEqual({
@@ -114,6 +116,7 @@ describe("buildSubmitJson", () => {
           draft: true,
         },
       ],
+      error: null,
     });
   });
 
@@ -128,6 +131,7 @@ describe("buildSubmitJson", () => {
       ],
       edited: new Set(),
       nwo: null,
+      error: null,
     });
 
     expect(result.branches[0]!.url).toBeNull();
@@ -142,17 +146,47 @@ describe("buildSubmitJson", () => {
   });
 });
 
+describe("buildSubmitJson for an early exit", () => {
+  test("keeps the same shape: nulls, no branches, and the message under error", () => {
+    expect(
+      buildSubmitJson({
+        stackName: null,
+        currentBranch: null,
+        stack: null,
+        outcomes: [],
+        edited: new Set(),
+        nwo: null,
+        error: "Could not read body file: nope.md",
+      }),
+    ).toEqual({
+      stack: null,
+      current_branch: null,
+      branches: [],
+      error: { message: "Could not read body file: nope.md" },
+    });
+  });
+});
+
 // ── End to end: real CLI, stub gh ──
 
 const cliPath = new URL("../index.ts", import.meta.url).pathname;
 
-// Answers the gh calls submit makes. `pr list` finds no PRs, `pr create` hands
+// Answers the gh calls submit makes. `pr list` finds no PRs (except the one
+// named by GH_EXISTING_PR), `pr create` hands
 // out PR numbers from 101 up (or fails when GH_FAIL_CREATE is set), description
 // edits fail when GH_FAIL_BODY_EDIT is set, and every call is appended to $GH_LOG.
 const GH_STUB = `#!/bin/sh
 echo "$*" >> "$GH_LOG"
 case "$1 $2" in
   "repo view") echo "acme/widgets" ;;
+  "pr list")
+    # GH_EXISTING_PR=<branch>=<number>: that branch already has a PR.
+    head=""; prev=""
+    for a in "$@"; do [ "$prev" = "--head" ] && head="$a"; prev="$a"; done
+    if [ -n "$GH_EXISTING_PR" ] && [ "\${GH_EXISTING_PR%%=*}" = "$head" ]; then
+      echo "\${GH_EXISTING_PR#*=}"
+    fi
+    ;;
   "pr create")
     if [ -n "$GH_FAIL_CREATE" ]; then echo "GraphQL: something broke" >&2; exit 1; fi
     n=$(cat "$GH_STATE" 2>/dev/null || echo 100)
@@ -189,17 +223,20 @@ afterEach(async () => {
   await cleanup(tmpDir, remoteDir, stubDir);
 });
 
-async function runSubmit(args: string[], env: Record<string, string> = {}) {
+/** Run `gh-stack submit`. An `env` value of undefined removes that variable. */
+async function runSubmit(args: string[], env: Record<string, string | undefined> = {}) {
+  const merged: Record<string, string | undefined> = {
+    ...process.env,
+    PATH: `${stubDir}:${process.env.PATH}`,
+    GH_LOG: `${stubDir}/calls.log`,
+    GH_STATE: `${stubDir}/next-pr`,
+    GH_STACK_NO_COLOR: "1",
+    ...env,
+  };
+  for (const key of Object.keys(merged)) if (merged[key] === undefined) delete merged[key];
   const proc = Bun.spawn(["bun", "run", cliPath, "submit", ...args], {
     cwd: tmpDir,
-    env: {
-      ...process.env,
-      PATH: `${stubDir}:${process.env.PATH}`,
-      GH_LOG: `${stubDir}/calls.log`,
-      GH_STATE: `${stubDir}/next-pr`,
-      GH_STACK_NO_COLOR: "1",
-      ...env,
-    },
+    env: merged as Record<string, string>,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -275,28 +312,60 @@ describe("submit --json (CLI)", () => {
     expect(result.branches[0]!.error).toContain("something broke");
   }, 30_000);
 
-  test("a push failure still prints the branches handled so far, then exits 1", async () => {
-    await Bun.$`git -C ${tmpDir} remote set-url origin ${tmpDir}/no-such-remote`.quiet();
+  test("a push failure reports the branches so far, saves their PRs, and exits 1", async () => {
+    // The remote rejects feat-b only, so feat-a is pushed and gets its PR first.
+    const hook = `${remoteDir}/hooks/pre-receive`;
+    await Bun.write(hook, "#!/bin/sh\ngrep -q refs/heads/feat-b && exit 1\nexit 0\n");
+    await fs.chmod(hook, 0o755);
 
-    const { stdout, exitCode } = await runSubmit(["--json", "-t", "Add things"]);
+    const { stdout, exitCode } = await runSubmit(["--json", "-t", "Add things"], {
+      GH_EXISTING_PR: "feat-b=77",
+    });
 
     expect(exitCode).toBe(1);
     const result = JSON.parse(stdout) as SubmitJson;
-    expect(result.branches).toHaveLength(1);
-    expect(result.branches[0]).toMatchObject({
-      branch: "feat-a",
-      action: "failed",
-      pushed: false,
-      error: "push to origin/feat-a failed",
-    });
+    expect(result.error?.message).toContain("Push failed for feat-b");
+    expect(result.branches.map((b) => [b.branch, b.action, b.pr])).toEqual([
+      ["feat-a", "created", 101],
+      ["feat-b", "failed", 77],
+    ]);
+    expect(result.branches[1]!.error).toBe("push to origin/feat-b failed");
+
+    // Both PRs (created, and found by lookup) were saved before the abort.
+    const meta = await readMetadata(tmpDir);
+    const stack = Object.values(meta.stacks)[0]!;
+    expect([stack.branches["feat-a"]!.pr, stack.branches["feat-b"]!.pr]).toEqual([101, 77]);
   }, 30_000);
 
-  test("--json with --dry-run is refused before doing anything", async () => {
-    const { stdout, stderr, exitCode } = await runSubmit(["--json", "--dry-run"]);
+  // Every refusal still writes a JSON document to stdout, before any gh call.
+  for (const [name, args, message] of [
+    ["--dry-run", ["--json", "--dry-run"], "--dry-run"],
+    ["--restack", ["--json", "--restack"], "gh-stack restack"],
+    ["an unreadable --body-file", ["--json", "--body-file", "/no/such/body.md"], "body file"],
+  ] as const) {
+    test(`${name} exits 1 with an error document`, async () => {
+      const { stdout, exitCode } = await runSubmit([...args]);
+
+      expect(exitCode).toBe(1);
+      const result = JSON.parse(stdout) as SubmitJson;
+      expect(result.branches).toEqual([]);
+      expect(result.error?.message).toContain(message);
+      expect(await Bun.file(`${stubDir}/calls.log`).exists()).toBe(false);
+    }, 30_000);
+  }
+
+  test("on trunk: an error document naming the branch, with no color codes", async () => {
+    await checkout(tmpDir, "main");
+
+    // FORCE_COLOR turns picocolors on unless NO_COLOR is set before it loads,
+    // which --json does. (Bun's own console.error may still color stderr.)
+    const env = { FORCE_COLOR: "1", NO_COLOR: undefined, GH_STACK_NO_COLOR: undefined };
+    const { stdout, exitCode } = await runSubmit(["--json"], env);
 
     expect(exitCode).toBe(1);
-    expect(stdout).toBe("");
-    expect(stderr).toContain("--dry-run");
-    expect(await Bun.file(`${stubDir}/calls.log`).exists()).toBe(false);
+    const result = JSON.parse(stdout) as SubmitJson;
+    expect(result).toMatchObject({ stack: null, current_branch: "main", branches: [] });
+    expect(result.error?.message).toContain("You're on main");
+    expect(stdout).not.toContain("\x1b[");
   }, 30_000);
 });

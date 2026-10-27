@@ -41,7 +41,8 @@ OPTIONS
                        one onto it (propagate a downstack fix up to children)
       --json           Print the result as JSON on stdout: each branch's PR
                        number, URL, and action (created/updated/unchanged/failed).
-                       Logs go to stderr. Implies --no-edit and --plain
+                       Logs go to stderr, uncolored. Implies --no-edit.
+                       Not combinable with --restack or --dry-run
       --dry-run        Show what would happen without doing anything
 
 Updating an existing PR: -t / -b also update the PR for the branch you're on
@@ -49,17 +50,22 @@ if it already exists — the title keeps its (N/M) stack position, and the body
 is replaced with the "Stacked on" block re-merged in. Use this instead of
 gh pr edit so the stack visualization is never clobbered.
 
-JSON output (--json): stdout is one JSON document, so a script or agent can
-capture the PRs it just created without a follow-up \`gh pr view\`:
+JSON output (--json): stdout is one JSON document on every exit, success or
+not, so a script or agent can capture the PRs it just created without a
+follow-up \`gh pr view\`:
   { "stack": "...", "current_branch": "...",
     "branches": [{ "branch", "parent", "pr", "url", "title",
-                   "action", "pushed", "draft", "error"? }] }
+                   "action", "pushed", "draft", "error"? }],
+    "error": null | { "message": "..." } }
 "branches" is the submit scope (trunk → current), in stack order. "action" is
 created (new PR), updated (pushed, or base/title/description edited),
-unchanged, or failed (PR creation or push failed; see "error"). "draft" is
-true/false for PRs created this run and null otherwise. Exits 1 if any branch
-failed. With --restack, the JSON is printed before the restack runs. Not
-available with --dry-run.
+unchanged, or failed (PR creation or push failed; see the entry's "error").
+"draft" is true/false for PRs created this run and null otherwise. The
+top-level "error" is set when the run stopped early (bad flags, nothing to
+submit, a push failure); "branches" then holds what happened before it, and
+"stack"/"current_branch" may be null. Exits 1 if "error" is set or any branch
+failed. Not available with --dry-run or --restack (run \`gh-stack restack\`
+separately).
 
 Restack after submit (--restack): submit covers DOWNSTACK (trunk → current);
 restack covers UPSTACK (the children above current). Together they sync the
@@ -109,9 +115,11 @@ export interface SubmitBranchJson {
 }
 
 export interface SubmitJson {
-  stack: string;
-  current_branch: string;
+  stack: string | null;
+  current_branch: string | null;
   branches: SubmitBranchJson[];
+  /** Set when the run stopped early: bad flags, nothing to submit, a push failure. */
+  error: { message: string } | null;
 }
 
 /**
@@ -126,34 +134,56 @@ export function submitAction(outcome: BranchOutcome, edited: ReadonlySet<string>
   return "unchanged";
 }
 
-/** Build the `submit --json` document. Pure, so the shape is unit-testable. */
-export function buildSubmitJson(input: {
-  stackName: string;
-  currentBranch: string;
-  stack: Stack;
+/**
+ * What a run has established so far. Filled in as submit goes, so an early
+ * exit can still report the stack, branch, and branches handled before it.
+ */
+export interface RunState {
+  stackName: string | null;
+  currentBranch: string | null;
+  stack: Stack | null;
   outcomes: BranchOutcome[];
+  /** Branches whose PR title or description was edited (reconcile + viz). */
   edited: ReadonlySet<string>;
-  nwo: string | null;
-}): SubmitJson {
+}
+
+/** Build the `submit --json` document. Pure, so the shape is unit-testable. */
+export function buildSubmitJson(
+  run: RunState & { error: string | null; nwo: string | null },
+): SubmitJson {
   return {
-    stack: input.stackName,
-    current_branch: input.currentBranch,
-    branches: input.outcomes.map((o) => {
+    stack: run.stackName,
+    current_branch: run.currentBranch,
+    branches: run.outcomes.map((o) => {
       const entry: SubmitBranchJson = {
         branch: o.branch,
         parent: o.parent,
         pr: o.pr,
-        url: o.url ?? (o.pr != null ? prUrlFor(input.nwo, o.pr) : null),
-        title: input.stack.branches[o.branch]?.prTitle ?? null,
-        action: submitAction(o, input.edited),
+        url: o.url ?? (o.pr != null ? prUrlFor(run.nwo, o.pr) : null),
+        title: run.stack?.branches[o.branch]?.prTitle ?? null,
+        action: submitAction(o, run.edited),
         pushed: o.pushed,
         draft: o.draft,
       };
       if (o.error) entry.error = o.error;
       return entry;
     }),
+    error: run.error ? { message: run.error } : null,
   };
 }
+
+/** Write the --json document to stdout, awaited so it's flushed before any exit. */
+async function emitJson(run: RunState, error: string | null): Promise<SubmitJson> {
+  // Only an existing PR (no URL from `gh pr create`) needs the repo's nwo, so
+  // an early refusal makes no gh call at all.
+  const needsNwo = run.outcomes.some((o) => o.pr != null && !o.url);
+  const result = buildSubmitJson({ ...run, error, nwo: needsNwo ? await getRepoNwo() : null });
+  await Bun.write(Bun.stdout, JSON.stringify(result, null, 2) + "\n");
+  return result;
+}
+
+/** Stops a run with a message for the user. In --json mode it becomes `error`. */
+class SubmitAbort extends Error {}
 
 /**
  * Check if a local branch is up-to-date with its remote counterpart.
@@ -187,22 +217,51 @@ export default async function submit(args: string[]): Promise<void> {
     return;
   }
 
+  // --json: logs and errors go to stderr (plain, and uncolored because index.ts
+  // sets NO_COLOR before picocolors loads), so stdout carries only the JSON.
+  const jsonMode = args.includes("--json");
+  if (jsonMode) p.setStderrOnly();
+
+  const run: RunState = {
+    stackName: null,
+    currentBranch: null,
+    stack: null,
+    outcomes: [],
+    edited: new Set(),
+  };
+  let error: string | null = null;
+  try {
+    await runSubmit(args, run, jsonMode);
+  } catch (err) {
+    if (!jsonMode && !(err instanceof SubmitAbort)) throw err;
+    if (!(err instanceof SubmitAbort)) console.error(err);
+    error = (err as Error).message;
+    p.cancel(error);
+    if (!jsonMode) process.exit(1);
+  }
+
+  if (jsonMode) {
+    const result = await emitJson(run, error);
+    if (result.error || result.branches.some((b) => b.action === "failed")) process.exitCode = 1;
+  }
+}
+
+async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Promise<void> {
   const draftFlag = args.includes("--draft") || args.includes("-d");
   const dryRun = args.includes("--dry-run");
   const restackFlag = args.includes("--restack");
-  const jsonMode = args.includes("--json");
-
-  // --json: stdout carries only the JSON document. Everything else (logs,
-  // errors, the chained restack) goes to stderr, without spinners or color.
-  let writeStdout: ((text: string) => void) | null = null;
-  if (jsonMode) {
-    p.setPlain(true);
-    writeStdout = p.reserveStdout();
-  }
 
   if (jsonMode && dryRun) {
-    p.cancel("--json can't be combined with --dry-run: --json reports what submit did.");
-    process.exit(1);
+    throw new SubmitAbort(
+      "--json can't be combined with --dry-run: --json reports what submit did.",
+    );
+  }
+  // restack runs git commands that write to stdout directly, so its output
+  // can't be kept off the JSON channel.
+  if (jsonMode && restackFlag) {
+    throw new SubmitAbort(
+      "--json can't be combined with --restack. Run `gh-stack restack` separately after submit.",
+    );
   }
 
   // Parse value flags
@@ -224,8 +283,7 @@ export default async function submit(args: string[]): Promise<void> {
     try {
       bodyFlag = await Bun.file(bodyFileFlag).text();
     } catch {
-      p.cancel(`Could not read body file: ${bodyFileFlag}`);
-      process.exit(1);
+      throw new SubmitAbort(`Could not read body file: ${bodyFileFlag}`);
     }
   }
 
@@ -242,6 +300,7 @@ export default async function submit(args: string[]): Promise<void> {
     stacks: {},
   };
   const branch = await git.currentBranch();
+  run.currentBranch = branch;
   let stackName = findStackForBranch(meta, branch);
 
   // ── Self-heal: branch isn't in any stack ──
@@ -253,18 +312,16 @@ export default async function submit(args: string[]): Promise<void> {
     const trunk = await git.trunkBranch();
 
     if (branch === trunk || branch === "main" || branch === "master") {
-      p.cancel(
+      throw new SubmitAbort(
         `You're on ${pc.blue(branch)} — nothing to submit.\n\n  Checkout a feature branch first.`,
       );
-      process.exit(1);
     }
 
     let resolution;
     try {
       resolution = await resolveOrCreateStack(meta, branch, trunk);
     } catch (err) {
-      p.cancel((err as Error).message);
-      process.exit(1);
+      throw new SubmitAbort((err as Error).message);
     }
 
     stackName = resolution.stackName;
@@ -281,6 +338,8 @@ export default async function submit(args: string[]): Promise<void> {
 
   const stack = meta.stacks[stackName]!;
   const ordered = getOrderedBranches(stack);
+  run.stackName = stackName;
+  run.stack = stack;
 
   // Determine downstack scope: branches from trunk up to and including current
   const currentIndex = ordered.indexOf(branch);
@@ -302,8 +361,8 @@ export default async function submit(args: string[]): Promise<void> {
       );
     }
 
-    console.log();
-    console.log(`  ${pc.dim(heal.base)}`);
+    p.print();
+    p.print(`  ${pc.dim(heal.base)}`);
     for (let i = 0; i < heal.chain.length; i++) {
       const b = heal.chain[i]!;
       const isLast = i === heal.chain.length - 1;
@@ -311,21 +370,21 @@ export default async function submit(args: string[]): Promise<void> {
       const isNew = heal.added.includes(b);
       const label = b === branch ? pc.yellow(b) + pc.dim(" (current)") : b;
       const tag = isNew ? pc.green(" +") : "";
-      console.log(`${tree} ${label}${tag}`);
-      if (!isLast) console.log("  ┃");
+      p.print(`${tree} ${label}${tag}`);
+      if (!isLast) p.print("  ┃");
     }
-    console.log();
+    p.print();
   }
 
   p.log.info(`Stack: ${pc.yellow(stackName)}`);
   p.log.info(
     `Scope: ${scope.length} of ${ordered.length} branch(es) (downstack from ${pc.blue(branch)})`,
   );
-  console.log();
+  p.print();
 
   if (dryRun) {
     p.log.info(pc.dim("Dry run — no changes will be made"));
-    console.log();
+    p.print();
   }
 
   // ── Phase 1: Push branches and create/update PRs ──
@@ -333,7 +392,21 @@ export default async function submit(args: string[]): Promise<void> {
   let created = 0;
   let existing = 0;
   let metadataChanged = false;
-  const outcomes: BranchOutcome[] = [];
+  const outcomes = run.outcomes;
+
+  // The branch's PR: recorded in metadata, else looked up on GitHub. A PR
+  // found that way (opened outside gh-stack) is recorded for next time.
+  const findPr = async (name: string): Promise<number | null> => {
+    const bm = stack.branches[name]!;
+    if (bm.pr) return bm.pr;
+    if (dryRun) return null;
+    const found = await getPrNumber(name);
+    if (found) {
+      bm.pr = found;
+      metadataChanged = true;
+    }
+    return found;
+  };
 
   for (const branchName of scope) {
     const branchMeta = stack.branches[branchName]!;
@@ -366,42 +439,17 @@ export default async function submit(args: string[]): Promise<void> {
         outcome.pushed = true;
       } else {
         s.stop(pc.red(`Failed to push ${branchName}`));
-        p.cancel(`Push failed for ${pc.blue(branchName)}. Aborting.`);
-        // Report what happened up to the failure, so a caller still learns the
-        // PRs created for the branches below it.
-        if (writeStdout) {
-          outcome.pr = branchMeta.pr ?? null;
-          outcome.error = `push to origin/${branchName} failed`;
-          writeStdout(
-            formatJson(
-              buildSubmitJson({
-                stackName,
-                currentBranch: branch,
-                stack,
-                outcomes,
-                edited: new Set(),
-                nwo: await getRepoNwo(),
-              }),
-            ),
-          );
-        }
-        process.exitCode = 1;
-        return;
+        outcome.error = `push to origin/${branchName} failed`;
+        outcome.pr = await findPr(branchName);
+        // Keep what this run learned (PRs created or discovered below this
+        // branch, and this branch's own PR) before aborting.
+        if (metadataChanged) await writeMetadata(meta);
+        throw new SubmitAbort(`Push failed for ${pc.blue(branchName)}. Aborting.`);
       }
     }
 
     // ── Check for existing PR ──
-    let prNumber = branchMeta.pr ?? null;
-
-    if (!prNumber && !dryRun) {
-      prNumber = await getPrNumber(branchName);
-      if (prNumber) {
-        // Found an existing PR not tracked in metadata — save it
-        branchMeta.pr = prNumber;
-        metadataChanged = true;
-      }
-    }
-
+    const prNumber = await findPr(branchName);
     outcome.pr = prNumber;
 
     if (prNumber) {
@@ -504,7 +552,7 @@ export default async function submit(args: string[]): Promise<void> {
     }
   }
 
-  console.log();
+  p.print();
 
   if (dryRun) {
     p.outro(
@@ -532,6 +580,8 @@ export default async function submit(args: string[]): Promise<void> {
     bodyOverrides: bodyFlag ? { [branch]: bodyFlag } : undefined,
   });
 
+  run.edited = new Set([...titles.updatedBranches, ...viz.updatedBranches]);
+
   // One persist for everything we cached this run (discovered PRs, base edits,
   // backfilled/renumbered titles, viz hashes).
   if (metadataChanged || titles.dirty || viz.dirty) {
@@ -539,7 +589,7 @@ export default async function submit(args: string[]): Promise<void> {
   }
 
   // ── Summary ──
-  console.log();
+  p.print();
   p.outro(
     pc.green(
       `Done! Pushed ${pushed} branch(es), created ${created} PR(s), updated ${viz.updated} description(s), ${titles.updated} title(s)` +
@@ -547,29 +597,10 @@ export default async function submit(args: string[]): Promise<void> {
     ),
   );
 
-  // ── --json: print the result before any restack, so a restack conflict
-  // can't cost the caller the PR numbers this run produced. ──
-  if (writeStdout) {
-    const result = buildSubmitJson({
-      stackName,
-      currentBranch: branch,
-      stack,
-      outcomes,
-      edited: new Set([...titles.updatedBranches, ...viz.updatedBranches]),
-      nwo: await getRepoNwo(),
-    });
-    writeStdout(formatJson(result));
-    if (result.branches.some((b) => b.action === "failed")) process.exitCode = 1;
-  }
-
   // ── --restack: propagate a downstack fix up to the children ──
   // submit owns DOWNSTACK (trunk → current); restack owns UPSTACK (the branches
   // above current). Running both from one branch syncs the whole stack.
   if (restackFlag) await maybeRestack(stack, branch, false);
-}
-
-function formatJson(result: SubmitJson): string {
-  return JSON.stringify(result, null, 2) + "\n";
 }
 
 /**
@@ -581,12 +612,12 @@ async function maybeRestack(stack: Stack, branch: string, dryRun: boolean): Prom
   // buildRebaseChain returns the current branch + all its descendants; a length
   // of 1 means it's the top of its line, so there's nothing above to restack.
   if (buildRebaseChain(stack, branch).length <= 1) {
-    console.log();
+    p.print();
     p.log.info(pc.dim(`--restack: nothing sits above ${pc.yellow(branch)} — nothing to restack.`));
     return;
   }
 
-  console.log();
+  p.print();
   const { default: restack } = await import("./restack.ts");
   await restack(dryRun ? ["--dry-run"] : []);
 }

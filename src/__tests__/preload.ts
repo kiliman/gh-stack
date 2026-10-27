@@ -8,11 +8,17 @@
 // `branch -M main` renames the pushed branch over local main,
 // `config user.*` writes a Test identity, and `init --bare` sets core.bare.
 //
-// Removing these variables from process.env before any test runs means each
-// spawned git finds its repository from its own working directory, as intended.
-// The list comes from git itself (`git rev-parse --local-env-vars`, the same set
-// git clears before recursing into a submodule), with a fallback in case that
-// call fails.
+// The pre-push hook clears these variables itself. This preload is the second
+// layer, for any other way the suite can be started from a git hook. It
+// removes them from process.env before any test runs, so each spawned git finds
+// its repository from its own working directory. The list comes from git itself
+// (`git rev-parse --local-env-vars`, the same set git clears before recursing
+// into a submodule), with a fallback in case that call fails.
+//
+// Deleting from process.env only reaches Bun's `$` and spawns that pass
+// `env: process.env`. A bare `Bun.spawn(cmd)` still uses the environment the
+// process started with, so Bun.spawn/spawnSync are wrapped below to default
+// `env` to the scrubbed process.env.
 
 const FALLBACK_LOCAL_ENV_VARS = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -45,3 +51,19 @@ for (const name of localEnvVars()) {
 for (const name of Object.keys(process.env)) {
   if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(name)) delete process.env[name];
 }
+
+// Both call shapes: spawn(cmd, options?) and spawn({ cmd, ...options }).
+// oxlint-disable-next-line typescript/no-explicit-any
+function withScrubbedEnv(args: any[]): any[] {
+  const [first, second] = args;
+  if (Array.isArray(first)) return [first, { ...second, env: second?.env ?? process.env }];
+  return [{ ...first, env: first?.env ?? process.env }];
+}
+const originalSpawn = Bun.spawn;
+const originalSpawnSync = Bun.spawnSync;
+Object.assign(Bun, {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  spawn: (...args: any[]) => (originalSpawn as any)(...withScrubbedEnv(args)),
+  // oxlint-disable-next-line typescript/no-explicit-any
+  spawnSync: (...args: any[]) => (originalSpawnSync as any)(...withScrubbedEnv(args)),
+});

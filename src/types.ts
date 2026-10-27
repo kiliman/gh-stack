@@ -98,7 +98,10 @@ export interface RestackState {
   stack_name: string;
   /** Branches the run covers, parents before children. */
   chain: string[];
-  /** Branches in `chain` the run pushes but never rebases (restack's trunk-parented roots, sync's root). */
+  /**
+   * Branches in `chain` with only their push left: never rebased by the run
+   * (restack's trunk-parented roots, sync's root) or already rebased by it.
+   */
   push_only: string[];
   /** First branch in `chain` not yet processed. */
   current_index: number;

@@ -34,8 +34,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 
 # Skill installs from dogfooding `gh-stack learn --skill`; the source is
-# src/lib/using-gh-stack.md. .cursor/ holds tracked project rules, so only the
-# installed skill is ignored there.
-.claude/
-.codex/
+# src/lib/using-gh-stack.md. Only the installed skill is ignored, so tracked
+# harness config (.cursor/rules/, project skills under .claude/skills/) is not.
+.claude/skills/using-gh-stack/
+.codex/skills/using-gh-stack/
 .cursor/skills/using-gh-stack/

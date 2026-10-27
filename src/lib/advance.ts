@@ -169,8 +169,13 @@ export async function advanceNewBottom(opts: {
 
   if (push) {
     // Push the rebased head first so the PR diff is clean before its base flips.
-    await git.pushStackedBranch(child);
-    if (childPr != null) {
+    // If it didn't land, leave the base alone: retargeting onto the trunk with
+    // the old head on origin would show the merged commits in the PR (#29).
+    if (!(await git.pushStackedBranch(child))) {
+      p.log.error(
+        `Push of ${pc.yellow(child)} failed — PR${childPr != null ? ` #${childPr}` : ""} left on its old base. Push it, then ${pc.green("gh-stack submit")} retargets it.`,
+      );
+    } else if (childPr != null) {
       const moved = await setPrBase(childPr, recordedBase);
       if (moved) {
         p.log.success(`PR #${childPr} base → ${pc.green(recordedBase)}`);

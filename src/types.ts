@@ -59,16 +59,71 @@ export interface Snapshot {
   baseTip?: string;
 }
 
-// Resume state for restack --resume
+/**
+ * One step of a restack/sync/join run, appended to the run's action log as it
+ * happens (#15), so an interrupted run can say what it finished and what's left.
+ */
+export interface RunLogEntry {
+  at: string; // ISO 8601
+  branch: string;
+  action:
+    | "rebased" // rebased onto `onto`
+    | "up-to-date" // already on its parent: nothing to rebase
+    | "rebase-declined"
+    | "pushed"
+    | "push-failed"
+    | "push-declined"
+    | "push-held" // not pushed: its parent isn't on origin at the commit it sits on
+    | "local-only"; // no remote and no PR: left for `submit`
+  onto?: string;
+  detail?: string;
+}
+
+/** A rebase that has started but not been seen to finish (a conflict stop, or a kill). */
+export interface InFlightRebase {
+  branch: string;
+  onto: string; // ref the branch is being rebased onto
+  onto_sha: string; // that ref's tip when the rebase started
+  pre_tip: string; // the branch's tip before the rebase (what `git rebase --abort` restores)
+  /** The `--onto` upstream (`git rebase --onto <onto> <boundary> <branch>`); null for a plain `git rebase <onto>`. */
+  boundary: string | null;
+}
+
+/** Bumped when RestackState changes shape; a file with another version is refused, not upgraded. */
+export const RUN_STATE_VERSION = 2;
+
+/**
+ * The saved state of a restack/sync/join run, at `.git/.gh-stack/restack-state.json`.
+ * Written when the run starts and after every step, and kept after it finishes
+ * (`finished_at` set) so `restack --resume` can report a completed run.
+ */
 export interface RestackState {
-  current_index: number;
+  version: typeof RUN_STATE_VERSION;
+  /** What started the run: "restack", "sync", "join" or "restack --onto". */
+  command: string;
   stack_name: string;
+  /** Branches the run covers, parents before children. */
   chain: string[];
   /**
-   * The interrupted run's push decision. `--resume` keeps it (a local-only run
-   * stays local) unless the resume passes --push/--no-push (#36, #39).
+   * Branches in `chain` with only their push left: never rebased by the run
+   * (restack's trunk-parented roots, sync's root) or already rebased by it.
+   */
+  push_only: string[];
+  /** First branch in `chain` not yet processed. */
+  current_index: number;
+  /** The rebase in progress at `chain[current_index]`, if any. */
+  rebase: InFlightRebase | null;
+  /** Branches whose rebase was declined: not done, so a resume offers them again. */
+  declined: string[];
+  /**
+   * The run's push decision. `--resume` keeps it (a local-only run stays
+   * local) unless the resume passes --push/--no-push (#36, #39).
    */
   push: boolean;
+  started_at: string;
+  /** Set once every step, pushes included, is done. */
+  finished_at: string | null;
+  log: RunLogEntry[];
 }
 
 // PR info from GitHub API

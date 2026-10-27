@@ -18,6 +18,7 @@ import * as git from "../lib/git.ts";
 import { saveRestackState, loadRestackState, clearRestackState } from "../lib/metadata.ts";
 import { takeSnapshot, getLastSnapshot, resolveRestackBoundary } from "../lib/snapshot.ts";
 import undo from "../commands/undo.ts";
+import { RUN_STATE_VERSION, type RestackState } from "../types.ts";
 import { setAutoYes } from "../lib/ui.ts";
 
 let tmpDir: string;
@@ -327,15 +328,30 @@ describe("tag stability across rebases", () => {
 // Resume state management
 // ────────────────────────────────────────────────────────
 
+function runState(chain: string[]): RestackState {
+  return {
+    version: RUN_STATE_VERSION,
+    command: "restack",
+    stack_name: "test-stack",
+    chain,
+    push_only: [],
+    current_index: 0,
+    rebase: null,
+    declined: [],
+    push: true,
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    log: [],
+  };
+}
+
 describe("restack state (resume support)", () => {
   test("save and load restack state", async () => {
     await createLinearStack(tmpDir);
 
     await saveRestackState({
+      ...runState(["pr1", "pr2", "pr3"]),
       current_index: 1,
-      push: true,
-      stack_name: "test-stack",
-      chain: ["pr1", "pr2", "pr3"],
     });
 
     const state = await loadRestackState();
@@ -348,12 +364,7 @@ describe("restack state (resume support)", () => {
   test("clear restack state removes file", async () => {
     await createLinearStack(tmpDir);
 
-    await saveRestackState({
-      current_index: 0,
-      push: true,
-      stack_name: "test-stack",
-      chain: ["pr1"],
-    });
+    await saveRestackState(runState(["pr1"]));
 
     await clearRestackState();
 

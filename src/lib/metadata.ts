@@ -11,6 +11,7 @@
 //   • A stack can never silently vanish — on write, a stale stack file is moved
 //     to `deleted/` (a recoverable tombstone), never just unlinked.
 import type { StackMetadata, Stack, Branch, RestackState } from "../types.ts";
+import { RUN_STATE_VERSION } from "../types.ts";
 import { mkdir, readdir, rename, unlink, stat } from "node:fs/promises";
 import {
   ghStackDir,
@@ -655,23 +656,49 @@ export async function updateLastBranch(
 // ── Restack state (for --resume) ──
 
 /**
- * Save restack state for resume.
+ * Save a run's state (resume point + action log). Written after every step, so
+ * it goes through a temp file and a rename: a kill mid-write leaves the
+ * previous state, never a truncated file.
  */
 export async function saveRestackState(state: RestackState): Promise<void> {
   await ensureDirs();
-  await Bun.write(await restackStateFile(), JSON.stringify(state, null, 2) + "\n");
+  const path = await restackStateFile();
+  const tmp = `${path}.tmp`;
+  await Bun.write(tmp, JSON.stringify(state, null, 2) + "\n");
+  await rename(tmp, path);
 }
 
 /**
- * Load restack state for resume.
- * Returns null if no state file exists.
+ * Load the saved run state. Returns null if there is none. A file that can't
+ * be parsed, or was written by another version of gh-stack, throws
+ * InvalidRunStateError: it is never guessed at or upgraded.
  */
 export async function loadRestackState(): Promise<RestackState | null> {
-  const file = Bun.file(await restackStateFile());
+  const path = await restackStateFile();
+  const file = Bun.file(path);
   if (!(await file.exists())) {
     return null;
   }
-  return file.json();
+  let raw: Partial<RestackState>;
+  try {
+    raw = await file.json();
+  } catch {
+    throw new InvalidRunStateError(path, "it isn't valid JSON");
+  }
+  if (raw?.version !== RUN_STATE_VERSION) {
+    throw new InvalidRunStateError(path, "it was written by an older gh-stack");
+  }
+  return raw as RestackState;
+}
+
+/** The saved run state exists but can't be used (unreadable, or another version's shape). */
+export class InvalidRunStateError extends Error {
+  constructor(
+    readonly path: string,
+    readonly reason: string,
+  ) {
+    super(`The saved run state at ${path} can't be used: ${reason}.`);
+  }
 }
 
 /**

@@ -14,6 +14,7 @@ import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { getBranchRefSha, getPrInfo, getPrMergeState, resyncPrHead } from "../lib/github.ts";
 import { confirmAction } from "../lib/ui.ts";
+import { ensureNoPendingRun } from "./restack.ts";
 import {
   planMerges,
   advanceNewBottom,
@@ -293,6 +294,10 @@ OPTIONS
 `);
     return;
   }
+
+  // A pending restack/sync may have left branches un-pushed or half-rebased;
+  // merging (or re-rooting) them now would land that stale state.
+  if (!dryRun) await ensureNoPendingRun("merge");
 
   if (baseOnly) {
     await mergeBaseOnly(deleteFlag, dryRun);

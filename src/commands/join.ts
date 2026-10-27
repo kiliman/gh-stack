@@ -36,7 +36,13 @@ import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib
 import { takeSnapshot, resolveRestackBoundary } from "../lib/snapshot.ts";
 import { findOpenPrForBranch, setPrBase } from "../lib/github.ts";
 import { confirmAction, renderStackTree } from "../lib/ui.ts";
-import { findStaleRefs, publishBranch, resolvePush, restackChain } from "./restack.ts";
+import {
+  ensureNoPendingRun,
+  findStaleRefs,
+  publishBranch,
+  resolvePush,
+  restackChain,
+} from "./restack.ts";
 import type { Branch, Stack, StackMetadata } from "../types.ts";
 
 const HELP = `
@@ -144,6 +150,7 @@ export default async function join(args: string[]): Promise<void> {
     );
   }
   await ensureCleanWorkingTree();
+  if (!dryRun) await ensureNoPendingRun("join");
 
   const meta = await ensureMetadata();
   const startBranch = await git.currentBranch().catch(() => null);
@@ -286,7 +293,14 @@ export default async function join(args: string[]): Promise<void> {
       console.log(`  ${pc.yellow("↑")} ${branch}  local ${short(local)}  origin ${remote}`);
     }
     console.log();
-    console.log(`  Publish and retarget PRs with: ${pc.green("gh-stack submit")}`);
+    if (noPush) {
+      console.log(`  Publish and retarget PRs with: ${pc.green("gh-stack submit")}`);
+    } else {
+      // The join's restack run stays pending until these pushes land, and a
+      // pending run blocks merge/join; --resume is what retries and clears it.
+      console.log(`  Retry the pushes (parents first): ${pc.green("gh-stack restack --resume")}`);
+      console.log(`  Then retarget any PR bases it couldn't: ${pc.green("gh-stack submit")}`);
+    }
     if (!noPush) {
       p.outro(pc.red("Join finished with un-pushed refs"));
       process.exit(1);

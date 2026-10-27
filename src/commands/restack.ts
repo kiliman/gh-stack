@@ -1,5 +1,11 @@
 // gh-stack restack — Rebase children onto updated parents
 // Port of reference/gh-stack-sync.sh — the most critical command
+//
+// Every run (restack, sync, join's restack, restack --onto) keeps its state in
+// `.git/.gh-stack/restack-state.json` from its first step until its last push,
+// with an action log of what it did (#15). `restack --resume` continues from
+// that state, and a bare `restack`/`sync` offers to resume a pending run
+// instead of starting a different one on top of it (#29).
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import * as git from "../lib/git.ts";
@@ -9,16 +15,26 @@ import {
   buildRebaseChain,
   getOrderedBranches,
   saveRestackState,
-  loadRestackState,
   clearRestackState,
   readMetadata,
   writeMetadata,
 } from "../lib/metadata.ts";
+import { restackStateFile } from "../lib/paths.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot, resolveRestackBoundary, findRecordedBaseTip } from "../lib/snapshot.ts";
-import { confirmAction } from "../lib/ui.ts";
+import { confirmAction, isAutoYes } from "../lib/ui.ts";
 import { describeSource, flagSetting, resolveFlag, type Resolved } from "../lib/config.ts";
-import type { StackMetadata } from "../types.ts";
+import {
+  describeRun,
+  findPendingRun,
+  formatRunLog,
+  loadRunState,
+  outstandingPushes,
+  remainingSteps,
+  stoppedAt,
+} from "../lib/run-log.ts";
+import { RUN_STATE_VERSION } from "../types.ts";
+import type { RestackState, RunLogEntry, Stack, StackMetadata } from "../types.ts";
 
 /**
  * `--no-push` / `GH_STACK_NO_PUSH=1` / `[restack] push = false`: rebase
@@ -29,6 +45,39 @@ import type { StackMetadata } from "../types.ts";
 let noPush = false;
 /** Why pushing is off, for the local-only summary (e.g. "--no-push"). */
 let noPushReason = "--no-push";
+
+/**
+ * The run in progress. Its state is saved after every step, so an interrupted
+ * run can be resumed and can report what it did. Null in a dry run.
+ */
+let run: RestackState | null = null;
+
+/** What one invocation accumulates while it walks a chain. */
+interface ChainContext {
+  /** Branches rebased by this invocation. */
+  rebased: string[];
+  /** Every branch this invocation is responsible for publishing; verified at the end. */
+  touched: string[];
+  /** Branches whose push failed, was declined or held: their children are held too. */
+  unpublished: Set<string>;
+  /** Branch tips on origin (one `ls-remote` per run, kept current as we push). */
+  remote: Map<string, string> | null;
+  dryRun: boolean;
+  verbose: boolean;
+}
+
+function newContext(dryRun: boolean, verbose: boolean): ChainContext {
+  return { rebased: [], touched: [], unpublished: new Set(), remote: null, dryRun, verbose };
+}
+
+/**
+ * Origin's branch tips, read from the remote itself (not remote-tracking refs,
+ * which can be stale — #23) on first use.
+ */
+async function remoteTips(ctx: ChainContext): Promise<Map<string, string>> {
+  ctx.remote ??= await git.remoteHeads();
+  return ctx.remote;
+}
 
 /**
  * Whether restack/sync push, from `--push`/`--no-push`, `GH_STACK_NO_PUSH`, or
@@ -51,6 +100,7 @@ function pushReason(push: Resolved): string {
 export default async function restack(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const resume = args.includes("--resume");
+  const fresh = args.includes("--fresh");
   const verbose = args.includes("--verbose") || args.includes("-v");
 
   // --onto <branch>: re-root the current stack onto a new base (e.g. move a
@@ -75,10 +125,24 @@ OPTIONS
               or \`[restack] push = false\` in config; see gh-stack config).
               Wins over --yes for pushes; rebases are still auto-accepted
   --push      Push even when a config default or env var says not to
-  --resume    Resume after resolving rebase conflicts. Keeps the interrupted
-              run's push decision unless --push/--no-push is passed
+  --resume    Continue an interrupted restack/sync (after a conflict, a
+              failed push, or a kill). Keeps the interrupted run's push
+              decision unless --push/--no-push is passed. If the run had
+              finished, prints what it did
+  --fresh     Discard an interrupted run instead of resuming it, then
+              restack from the current branch
   --dry-run   Show what would happen without executing
   --verbose   Show diagnostic info (snapshot vs merge-base)
+
+INTERRUPTED RUNS
+  A restack or sync saves its progress after every rebase and push. If one
+  was interrupted, a bare \`gh-stack restack\` (or \`sync\`) asks whether to
+  resume it; with --yes it resumes. It never starts a different run on top
+  of an unfinished one unless you pass --fresh.
+
+  A branch whose parent's push failed (or was declined) is not pushed:
+  its PR would be diffed against the parent's old history. Run
+  \`gh-stack restack --resume\` to retry the pushes, parents first.
 
 EXAMPLES
   gh-stack restack              Interactive (prompts before each rebase)
@@ -95,34 +159,51 @@ ALIASES
     return;
   }
 
-  // A resume keeps the push decision of the run it resumes (unless this
-  // command passes --push/--no-push), so it's settled in handleResume.
-  if (!resume) {
-    const push = await resolvePush(args);
-    noPush = !push.value;
-    noPushReason = pushReason(push);
-  }
+  run = null;
 
-  // Reject if a git rebase is already in progress (unless we're resuming).
-  // Letting commands run on top of a half-finished rebase produces deeply
-  // confusing state — better to make the user finish or abort first.
-  if (!resume && (await git.isRebaseInProgress())) {
-    p.cancel(
-      `Git rebase already in progress.\n\n  Finish or abort it first:\n    ${pc.green("git rebase --continue")}\n    ${pc.red("git rebase --abort")}\n\n  Then re-run ${pc.green("gh-stack restack")} (or ${pc.green("gh-stack restack --resume")} to continue).`,
-    );
+  if (resume && (fresh || ontoFlag)) {
+    p.cancel(`--resume can't be combined with ${fresh ? "--fresh" : "--onto"}.`);
     process.exit(1);
   }
 
-  // Ensure clean working tree (unless resuming)
+  // Reject if a git rebase is already in progress (unless we're resuming,
+  // which reports it itself). Letting commands run on top of a half-finished
+  // rebase produces deeply confusing state.
+  if (!resume && (await git.isRebaseInProgress())) {
+    await refuseRebaseInProgress("restack");
+  }
+
+  // An interrupted run is pending: resume it (or, on request, discard it)
+  // rather than silently starting a different run on top of it (#29).
+  let resuming = resume;
   if (!resume) {
+    if (dryRun) await notePendingRun();
+    else {
+      const preflight = async () => {
+        await ensureCleanWorkingTree();
+        await resolveFlag("restack.push", args); // a bad setting stops here
+        const meta = await ensureMetadata();
+        if (!ontoFlag) {
+          const branch = await git.currentBranch();
+          if (!findStackForBranch(meta, branch)) refuseNotInStack(branch);
+        }
+      };
+      resuming =
+        (await routePendingRun("restack", { fresh, onto: ontoFlag, preflight })) === "resume";
+    }
+  }
+
+  // A resume keeps the push decision of the run it resumes (unless this
+  // command passes --push/--no-push), so it's settled in handleResume.
+  if (!resuming) {
+    const push = await resolvePush(args);
+    noPush = !push.value;
+    noPushReason = pushReason(push);
     await ensureCleanWorkingTree();
   }
 
   const meta = await ensureMetadata();
-  const rebasedBranches: string[] = [];
-  // Every branch restack is responsible for this run (rebased OR already
-  // up to date) — we push each one and verify its ref landed at the end.
-  const touched: string[] = [];
+  const ctx = newContext(dryRun, verbose);
 
   p.intro(pc.cyan("Git Stack Restack"));
 
@@ -131,60 +212,75 @@ ALIASES
   await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
   if (ontoFlag) {
-    await handleReroot(meta, ontoFlag, rebasedBranches, touched, dryRun, verbose);
-  } else if (resume) {
-    await handleResume(meta, rebasedBranches, touched, verbose, flagSetting("restack.push", args));
+    await handleReroot(meta, ontoFlag, ctx);
+  } else if (resuming) {
+    const outcome = await handleResume(meta, ctx, flagSetting("restack.push", args));
+    if (outcome === "already-finished") return;
   } else {
-    await handleFreshRestack(meta, rebasedBranches, touched, dryRun, verbose);
+    await handleFreshRestack(meta, ctx);
   }
 
-  // Summary
+  await finishRun(meta, ctx, "Stack Restack Complete!");
+}
+
+/**
+ * End of a run: print its action log, verify every ref it touched landed on
+ * origin, and mark the saved state finished — or leave it pending (exit 1)
+ * when pushes are outstanding, so `restack --resume` retries them.
+ */
+async function finishRun(
+  meta: StackMetadata,
+  ctx: ChainContext,
+  doneMessage: string,
+): Promise<void> {
   console.log();
-  if (rebasedBranches.length === 0) {
+  if (run && run.log.length > 0) {
+    p.log.info(`Run log (${describeRun(run)}):`);
+    for (const line of formatRunLog(run)) console.log(line);
+  } else if (ctx.rebased.length === 0) {
     p.log.warn("No branches were rebased");
-  } else {
-    p.log.success("Rebased branches:");
-    for (const branch of rebasedBranches) {
-      console.log(`  ${pc.green("✓")} ${branch}`);
-    }
+  }
+
+  if (ctx.dryRun) {
+    p.outro(pc.green(doneMessage));
+    return;
   }
 
   // Verification pass: assert every touched branch's ref actually landed on
   // origin. Fail loudly (listing the stale ones) rather than reporting success
   // when a push didn't take. (#12)
-  if (!dryRun) {
-    const stale = await findStaleRefs(touched, meta);
-    if (stale.length > 0 && noPush) {
-      // Expected under --no-push: report what's ahead of origin so a later
-      // submit/restack knows what to publish, but don't fail the run.
-      console.log();
-      p.log.info(`Not pushed (${noPushReason}) — these refs are ahead of origin:`);
-      for (const { branch, local, remote } of stale) {
-        console.log(`  ${pc.yellow("↑")} ${branch}  local ${local.slice(0, 8)}  origin ${remote}`);
-      }
-      console.log();
-      console.log(
-        `  Publish when ready: ${pc.green("gh-stack restack --push")} or ${pc.green("gh-stack submit")}`,
-      );
-      p.outro(pc.green("Stack Restack Complete (local only)"));
-      return;
+  const stale = await findStaleRefs(ctx.touched, meta, await remoteTips(ctx));
+  if (stale.length > 0 && noPush) {
+    // Expected under --no-push: report what's ahead of origin so a later
+    // submit/restack knows what to publish, but don't fail the run.
+    console.log();
+    p.log.info(`Not pushed (${noPushReason}) — these refs are ahead of origin:`);
+    for (const { branch, local, remote } of stale) {
+      console.log(`  ${pc.yellow("↑")} ${branch}  local ${local.slice(0, 8)}  origin ${remote}`);
     }
-    if (stale.length > 0) {
-      console.log();
-      p.log.error("Some branch refs are NOT in sync with origin:");
-      for (const { branch, local, remote } of stale) {
-        console.log(`  ${pc.red("✗")} ${branch}  local ${local.slice(0, 8)}  origin ${remote}`);
-      }
-      console.log();
-      console.log(
-        `  Reconcile with: ${pc.green("gh-stack restack")} (re-runs the push for stale refs)`,
-      );
-      p.outro(pc.red("Restack finished with un-pushed refs"));
-      process.exit(1);
+    console.log();
+    console.log(
+      `  Publish when ready: ${pc.green("gh-stack restack --push")} or ${pc.green("gh-stack submit")}`,
+    );
+    await markRunFinished();
+    p.outro(pc.green(`${doneMessage.replace(/!$/, "")} (local only)`));
+    return;
+  }
+  if (stale.length > 0) {
+    console.log();
+    p.log.error("Some branch refs are NOT in sync with origin:");
+    for (const { branch, local, remote } of stale) {
+      console.log(`  ${pc.red("✗")} ${branch}  local ${local.slice(0, 8)}  origin ${remote}`);
     }
+    console.log();
+    console.log(`  Retry the pushes (parents first): ${pc.green("gh-stack restack --resume")}`);
+    if (run) await saveRun(); // stays pending: the pushes are what's left
+    p.outro(pc.red("Restack finished with un-pushed refs"));
+    process.exit(1);
   }
 
-  p.outro(pc.green("Stack Restack Complete!"));
+  await markRunFinished();
+  p.outro(pc.green(doneMessage));
 }
 
 /**
@@ -207,10 +303,11 @@ ALIASES
 export async function findStaleRefs(
   branches: string[],
   meta: StackMetadata,
+  remote?: Map<string, string>,
 ): Promise<{ branch: string; local: string; remote: string }[]> {
   const stale: { branch: string; local: string; remote: string }[] = [];
   const seen = new Set<string>();
-  const remoteHeads = await git.remoteHeads();
+  const remoteHeads = remote ?? (await git.remoteHeads());
   for (const branch of branches) {
     if (seen.has(branch) || branch === "main" || branch === "master") continue;
     seen.add(branch);
@@ -231,109 +328,398 @@ export async function findStaleRefs(
   return stale;
 }
 
-async function handleResume(
-  meta: StackMetadata,
-  rebasedBranches: string[],
-  touched: string[],
-  verbose: boolean,
-  explicitPush: Resolved | null,
-): Promise<void> {
-  p.log.warn("Resuming from saved state...");
+// ── Interrupted runs (#29) ──
 
-  const state = await loadRestackState();
-  if (!state) {
-    p.cancel("No saved state found. Nothing to resume.");
+/**
+ * A rebase is in progress, so no new run may start. When it's the conflict a
+ * gh-stack run stopped on, say so and give that run's way forward.
+ */
+export async function refuseRebaseInProgress(command: string): Promise<never> {
+  const state = await loadRunState();
+  if (state && !state.finished_at && state.rebase) {
+    p.cancel(
+      `An interrupted ${state.command} stopped on a conflict rebasing ${pc.yellow(state.rebase.branch)} onto ${pc.yellow(state.rebase.onto)}, and that rebase is still in progress.\n\n` +
+        `  Resolve the conflicts, then finish the ${state.command}:\n` +
+        `    ${pc.green("git add <files>")}\n` +
+        `    ${pc.green("git rebase --continue")}\n` +
+        `    ${pc.green("gh-stack restack --resume")}\n\n` +
+        `  Or give up on it: ${pc.red("git rebase --abort")}`,
+    );
+  } else {
+    p.cancel(
+      `Git rebase already in progress.\n\n  Finish or abort it first:\n    ${pc.green("git rebase --continue")}\n    ${pc.red("git rebase --abort")}\n\n  Then re-run ${pc.green(`gh-stack ${command}`)}.`,
+    );
+  }
+  process.exit(1);
+}
+
+/** Print what an interrupted run did and what it has left. */
+function describePendingRun(state: RestackState): void {
+  console.log(`  ${pc.dim("Stack:")} ${state.stack_name}`);
+  if (state.log.length > 0) {
+    console.log(`  ${pc.dim("Done so far:")}`);
+    for (const line of formatRunLog(state)) console.log(`  ${line}`);
+  }
+  const left = remainingSteps(state);
+  if (left.length > 0) {
+    console.log(`  ${pc.dim("Left to do:")}`);
+    for (const step of left) console.log(`    ${pc.dim("→")} ${step}`);
+  }
+}
+
+/**
+ * Before a fresh restack/sync: if an interrupted run is pending, decide what
+ * to do about it. Interactive: ask (resume / start fresh / cancel). Under
+ * --yes: resume, never start fresh. `--fresh` discards it (also the way out
+ * of a state file gh-stack can't read).
+ *
+ * `preflight` is the new run's own preconditions (clean tree, valid push
+ * setting, the current branch in a stack, ...). It runs before anything is
+ * discarded, so a command that's going to refuse anyway leaves the
+ * interrupted run intact.
+ */
+export async function routePendingRun(
+  command: "restack" | "sync",
+  opts: { fresh: boolean; onto?: string; preflight: () => Promise<void> },
+): Promise<"resume" | "fresh"> {
+  if (opts.fresh) await opts.preflight();
+  const state = await findPendingRun({ discard: opts.fresh });
+  if (!state) return "fresh";
+
+  if (opts.fresh) {
+    p.log.warn(
+      `--fresh: discarding the interrupted ${describeRun(state)} (stopped at ${stoppedAt(state)}).`,
+    );
+    describePendingRun(state);
+    await clearRestackState();
+    return "fresh";
+  }
+
+  if (opts.onto) {
+    p.cancel(
+      `An interrupted ${state.command} is pending (stopped at ${stoppedAt(state)}).\n\n` +
+        `  Finish it first:   ${pc.green("gh-stack restack --resume")}\n` +
+        `  Or discard it:     ${pc.green(`gh-stack restack --onto ${opts.onto} --fresh`)}`,
+    );
     process.exit(1);
   }
+
+  const message = `An interrupted ${state.command} was detected (stopped at ${stoppedAt(state)}). Resume it?`;
+  if (isAutoYes()) {
+    p.log.warn(`${message} ${pc.dim("(auto-yes: resuming)")}`);
+    describePendingRun(state);
+    return "resume";
+  }
+
+  p.log.warn(`An interrupted ${describeRun(state)} was detected.`);
+  describePendingRun(state);
+  const choice = await p.select({
+    message,
+    options: [
+      { value: "resume", label: "Resume it", hint: "recommended" },
+      {
+        value: "fresh",
+        label: `Discard it and start a new ${command}`,
+        hint: "same as --fresh",
+      },
+      { value: "cancel", label: "Cancel" },
+    ],
+  });
+  if (p.isCancel(choice) || choice === "cancel") {
+    p.cancel("Cancelled — the interrupted run is still saved.");
+    process.exit(0);
+  }
+  if (choice === "fresh") {
+    await opts.preflight();
+    await clearRestackState();
+    return "fresh";
+  }
+  return "resume";
+}
+
+/** Dry run: mention a pending run (a real run would offer to resume it), change nothing. */
+export async function notePendingRun(): Promise<void> {
+  const state = await findPendingRun();
+  if (!state) return;
+  p.log.warn(
+    `An interrupted ${state.command} is pending (stopped at ${stoppedAt(state)}). A real run would offer to resume it (or pass --fresh to discard it).`,
+  );
+}
+
+/**
+ * For commands that rewrite or merge the stack outside a restack run (merge,
+ * join): refuse while a run is pending. Its un-pushed branches would otherwise
+ * be merged, or rebased again, in their stale state.
+ */
+export async function ensureNoPendingRun(command: string): Promise<void> {
+  const state = await findPendingRun();
+  if (!state) return;
+  // One run can be pending per worktree, and `command` restacks internally,
+  // which would overwrite this run's state: so this is global, not per stack.
+  const meta = await readMetadata();
+  const branch = await git.currentBranch().catch(() => null);
+  const here = meta && branch ? findStackForBranch(meta, branch) : null;
+  const pending = state.stack_name;
+  const freshEffect = !here
+    ? `it drops ${pending}'s remaining steps; run it from a branch of the stack you want restacked`
+    : here === pending
+      ? `it drops the remaining steps and restacks ${here} from the current branch`
+      : `it drops ${pending}'s remaining steps, then restacks ${here} (the current branch's stack), not ${pending}`;
+  p.cancel(
+    `An interrupted ${state.command} of stack ${pc.yellow(pending)} is pending (stopped at ${stoppedAt(state)}). Only one run can be pending, and ${command} would start another.\n\n` +
+      `  Finish it (from any branch):\n    ${pc.green("gh-stack restack --resume")}\n\n` +
+      `  Or discard it:\n    ${pc.green("gh-stack restack --fresh")}   ${pc.dim(`(${freshEffect})`)}`,
+  );
+  process.exit(1);
+}
+
+// ── Run state ──
+
+async function saveRun(): Promise<void> {
+  if (run) await saveRestackState(run);
+}
+
+async function beginRun(init: {
+  command: string;
+  stackName: string;
+  chain: string[];
+  pushOnly: string[];
+  startIndex?: number;
+}): Promise<void> {
+  run = {
+    version: RUN_STATE_VERSION,
+    command: init.command,
+    stack_name: init.stackName,
+    chain: init.chain,
+    push_only: init.pushOnly,
+    current_index: init.startIndex ?? 0,
+    rebase: null,
+    declined: [],
+    push: !noPush,
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    log: [],
+  };
+  await saveRun();
+}
+
+async function record(entry: Omit<RunLogEntry, "at">): Promise<void> {
+  if (!run) return;
+  run.log.push({ at: new Date().toISOString(), ...entry });
+  await saveRun();
+}
+
+async function markRunFinished(): Promise<void> {
+  if (!run) return;
+  run.rebase = null;
+  run.finished_at = new Date().toISOString();
+  await saveRun();
+}
+
+/**
+ * Record a rebase about to start (with what it takes to run it again), so a
+ * resume can tell a finished rebase from one that never ran or was aborted.
+ */
+async function startRebase(
+  branch: string,
+  onto: string,
+  preTip: string,
+  boundary: string | null,
+): Promise<void> {
+  if (!run) return;
+  run.rebase = { branch, onto, onto_sha: await git.revParse(onto), pre_tip: preTip, boundary };
+  await saveRun();
+}
+
+/** The rebase succeeded: what's left for this branch is its push. */
+async function finishRebase(branch: string, onto: string, ctx: ChainContext): Promise<void> {
+  ctx.rebased.push(branch);
+  ctx.unpublished.delete(branch); // a declined rebase that's now done; a failed push re-adds it
+  if (!run) return;
+  run.rebase = null;
+  run.declined = run.declined.filter((b) => b !== branch);
+  if (!run.push_only.includes(branch)) run.push_only.push(branch);
+  await record({ branch, action: "rebased", onto });
+}
+
+/** Stop on a rebase conflict, leaving the run resumable (exit 2). */
+function conflictStop(): never {
+  console.log();
+  console.log(pc.red("━".repeat(40)));
+  console.log(pc.red("  Rebase Conflict"));
+  console.log(pc.red("━".repeat(40)));
+  console.log();
+  console.log(pc.yellow("Conflicts detected during rebase."));
+  console.log();
+  console.log("  Please resolve the conflicts, then:");
+  console.log(`    ${pc.green("git rebase --continue")}`);
+  console.log(`    ${pc.green("gh-stack restack --resume")}`);
+  console.log();
+  console.log("  Or give up on the run:");
+  console.log(`    ${pc.red("git rebase --abort")}`);
+  console.log(
+    `    ${pc.red("gh-stack restack --fresh")}   ${pc.dim("(a resume would run this rebase again)")}`,
+  );
+  process.exit(2);
+}
+
+/** The chain's branches that are, or sit above, one of `roots`. */
+function withDescendants(stack: Stack, chain: string[], roots: string[]): Set<string> {
+  const out = new Set(roots);
+  for (const branch of chain) {
+    const parent = stack.branches[branch]?.parent;
+    if (parent && out.has(parent)) out.add(branch);
+  }
+  return out;
+}
+
+async function handleResume(
+  meta: StackMetadata,
+  ctx: ChainContext,
+  explicitPush: Resolved | null,
+): Promise<"resumed" | "already-finished"> {
+  const state = await loadRunState();
+  if (!state) {
+    p.cancel(
+      `Nothing to resume: there's no saved run state (${await restackStateFile()}).\n\n` +
+        `  If a rebase is in progress, finish it first: ${pc.green("git rebase --continue")}\n` +
+        `  Then reconcile the stack from the branch to restack from:\n` +
+        `    ${pc.green("gh-stack restack")}\n` +
+        `  It's safe to re-run: branches already on their parent aren't rebased again,\n` +
+        `  and refs that differ from origin are pushed.`,
+    );
+    process.exit(1);
+  }
+
+  if (state.finished_at) {
+    p.log.success(
+      `Nothing left to resume — the last run (${describeRun(state)}) finished every step.`,
+    );
+    for (const line of formatRunLog(state)) console.log(line);
+    p.outro(pc.green("Nothing to resume"));
+    return "already-finished";
+  }
+
   // Keep the interrupted run's push decision, so a local-only run stays local
-  // even if the config changed meanwhile. An explicit flag on --resume wins.
+  // even if the config changed meanwhile. An explicit flag on --resume wins,
+  // and becomes the run's decision for any later resume too.
   if (explicitPush) {
     noPush = !explicitPush.value;
     noPushReason = "--no-push";
+    state.push = explicitPush.value;
   } else {
     noPush = !state.push;
     noPushReason = "resumed a local-only run; its push decision is kept";
   }
 
-  // Check if rebase is still in progress
   if (await git.isRebaseInProgress()) {
     p.cancel(
       `Rebase still in progress.\n\n  Complete it first:\n    ${pc.green("git rebase --continue")}\n\n  Or abort:\n    ${pc.red("git rebase --abort")}`,
     );
     process.exit(1);
   }
+  await ensureCleanWorkingTree();
 
-  const currentBranch = await git.currentBranch();
-  const expectedBranch = state.chain[state.current_index]!;
-
-  // Check for branch mismatch (likely means rebase was aborted)
-  if (currentBranch !== expectedBranch) {
-    p.log.warn("Branch mismatch detected");
-    p.log.info(`Expected: ${pc.blue(expectedBranch)}`);
-    p.log.info(`Current:  ${pc.blue(currentBranch)}`);
-    console.log();
-    p.log.info("This likely means the rebase was aborted. Cleaning up stale state...");
-    await clearRestackState();
-    console.log();
-    console.log(`  State cleared. To sync the stack, run from the desired branch:`);
-    console.log(`    ${pc.green("gh-stack restack")}`);
-    return;
+  // The world may have changed since: refuse rather than resume a chain that
+  // no longer matches the stack.
+  const saved = meta.stacks[state.stack_name];
+  let problem: string | null = saved ? null : `stack ${state.stack_name} no longer exists`;
+  for (const branch of state.chain) {
+    if (problem) break;
+    if (!saved!.branches[branch]) problem = `${branch} is no longer in stack ${state.stack_name}`;
+    else if (!(await git.localBranchExists(branch))) problem = `branch ${branch} no longer exists`;
   }
-
-  // Rebase completed successfully
-  p.log.success("Rebase completed successfully");
-  rebasedBranches.push(expectedBranch);
-  touched.push(expectedBranch);
-  await clearRestackState();
-
-  // Prompt to push the resumed branch
-  await pushBranchRef(meta, expectedBranch);
-
-  // Continue with remaining branches in chain
-  const stackName = state.stack_name;
-  const stack = meta.stacks[stackName];
-  if (!stack) return;
-
-  const chain = state.chain;
-  const currentIndex = state.current_index + 1;
-
-  if (currentIndex < chain.length) {
-    await processChain(
-      meta,
-      stackName,
-      chain,
-      currentIndex,
-      rebasedBranches,
-      touched,
-      false,
-      verbose,
-    );
-  }
-}
-
-async function handleFreshRestack(
-  meta: StackMetadata,
-  rebasedBranches: string[],
-  touched: string[],
-  dryRun: boolean,
-  verbose: boolean,
-): Promise<void> {
-  const currentBranch = await git.currentBranch();
-  const stackName = findStackForBranch(meta, currentBranch);
-
-  if (!stackName) {
+  if (problem) {
     p.cancel(
-      `Branch ${pc.blue(currentBranch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}`,
+      `Can't resume the interrupted ${state.command}: ${problem}.\n\n` +
+        `  Discard it and restack from the current branch:\n    ${pc.green("gh-stack restack --fresh")}`,
     );
     process.exit(1);
   }
+
+  p.log.warn(`Resuming the interrupted ${describeRun(state)} (stopped at ${stoppedAt(state)})`);
+  if (state.log.length > 0) {
+    p.log.info("Done before the interruption:");
+    for (const line of formatRunLog(state)) console.log(line);
+  }
+
+  // A dry run reads the state but never writes it: `run` stays null, so
+  // nothing below records or saves.
+  if (!ctx.dryRun) {
+    run = state;
+    await saveRun(); // persists a --push/--no-push override
+  }
+
+  // Branches the run already got past only need their pushes reconciled
+  // (failed or held ones are retried, parents first); the rest restack as usual.
+  // A declined rebase isn't done, and neither is anything above it: those are
+  // offered again, and pushed only once they sit on their parents.
+  const stack = meta.stacks[state.stack_name]!;
+  const redo = withDescendants(stack, state.chain, state.declined);
+  for (const b of state.declined) ctx.unpublished.add(b);
+  const pushOnly = new Set(
+    [...state.push_only, ...state.chain.slice(0, state.current_index)].filter((b) => !redo.has(b)),
+  );
+
+  if (state.rebase) {
+    const r = state.rebase;
+    const tip = await git.revParse(r.branch);
+    if (await git.isAncestor(r.onto_sha, tip)) {
+      p.log.success(`Rebase of ${pc.yellow(r.branch)} onto ${pc.yellow(r.onto)} completed`);
+      await finishRebase(r.branch, r.onto, ctx);
+      pushOnly.add(r.branch);
+    } else if (tip === r.pre_tip) {
+      // Saved as started, but the branch never moved: the run was killed
+      // before git began, or the user aborted the rebase. Either way the step
+      // isn't done, so run it again. An abort just meets its conflict again
+      // (and `--fresh` discards the run).
+      p.log.warn(
+        `The rebase of ${pc.yellow(r.branch)} onto ${pc.yellow(r.onto)} didn't happen (interrupted before it started, or aborted). Running it again.`,
+      );
+      if (ctx.dryRun) {
+        p.log.warn(`[DRY RUN] Would rebase ${r.branch} onto ${r.onto}`);
+      } else {
+        await git.checkout(r.branch);
+        const ok = r.boundary
+          ? await git.rebaseOnto(r.onto, r.boundary, r.branch)
+          : await git.rebase(r.onto);
+        if (!ok) conflictStop();
+        p.log.success("Rebase successful");
+        await finishRebase(r.branch, r.onto, ctx);
+      }
+      pushOnly.add(r.branch);
+    } else {
+      p.cancel(
+        `${pc.yellow(r.branch)} moved since the ${state.command} stopped: it isn't rebased onto ${r.onto} (${r.onto_sha.slice(0, 8)}), and it isn't back at its pre-rebase tip ${r.pre_tip.slice(0, 8)} either. Not guessing what happened.\n\n` +
+          `  Put ${r.branch} on ${r.onto} yourself, then: ${pc.green("gh-stack restack --resume")}\n` +
+          `  Or discard the run:                    ${pc.green("gh-stack restack --fresh")}`,
+      );
+      process.exit(1);
+    }
+  }
+
+  await processChain(meta, state.stack_name, state.chain, 0, pushOnly, ctx);
+  return "resumed";
+}
+
+function refuseNotInStack(branch: string): never {
+  p.cancel(
+    `Branch ${pc.blue(branch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}`,
+  );
+  process.exit(1);
+}
+
+async function handleFreshRestack(meta: StackMetadata, ctx: ChainContext): Promise<void> {
+  const currentBranch = await git.currentBranch();
+  const stackName = findStackForBranch(meta, currentBranch);
+  if (!stackName) refuseNotInStack(currentBranch);
 
   const stack = meta.stacks[stackName]!;
   await ensureValidStack(meta, stackName);
 
   // Build the rebase chain from current branch
   p.log.info("Building rebase chain...");
-  let chain = buildRebaseChain(stack, currentBranch);
+  const chain = buildRebaseChain(stack, currentBranch);
 
   if (chain.length === 0) {
     p.cancel("Could not build rebase chain");
@@ -351,10 +737,12 @@ async function handleFreshRestack(
   // Skip the stack's root branch (parent = base) when the base is the trunk —
   // rebasing onto trunk is `sync`'s job, not restack's. For a split stack
   // whose base is a sibling branch, the root SHOULD be rebased onto that base
-  // so changes propagate, so we don't skip it.
+  // so changes propagate, so we don't skip it. A skipped root is still pushed:
+  // if you committed on it, its ref is stale on origin (#12).
   const base = stackBase(stack);
   const baseIsTrunk = base === "main" || base === "master";
   const baseBranches = baseIsTrunk ? chain.filter((b) => stack.branches[b]?.parent === base) : [];
+  const toRebase = chain.filter((b) => !baseBranches.includes(b));
   if (baseBranches.length > 0) {
     p.log.warn(`Skipping base branch(es) (parent: ${base}):`);
     for (const baseBranch of baseBranches) {
@@ -367,41 +755,27 @@ async function handleFreshRestack(
     );
     console.log();
 
-    chain = chain.filter((b) => stack.branches[b]?.parent !== base);
-
-    // We don't rebase the base branch, but if you committed on it its ref is
-    // now stale on origin — push it so the PR reflects the new commit. (#12)
-    if (!dryRun) {
-      for (const baseBranch of baseBranches) {
-        if (await git.localBranchExists(baseBranch)) {
-          touched.push(baseBranch);
-          await pushBranchRef(meta, baseBranch);
-        }
+    if (toRebase.length === 0) {
+      p.log.info("No child branches to rebase — reconciling the base branch ref.");
+    } else {
+      p.log.success(`Processing ${toRebase.length} branch(es):`);
+      for (const branch of toRebase) {
+        const parent = stack.branches[branch]?.parent || "(unknown)";
+        console.log(`  ${pc.yellow("→")} ${branch} ${pc.blue(`(parent: ${parent})`)}`);
       }
+      console.log();
     }
-
-    if (chain.length === 0) {
-      p.log.info("No child branches to rebase — base branch ref reconciled above.");
-      return;
-    }
-
-    p.log.success(`Processing ${chain.length} branch(es):`);
-    for (const branch of chain) {
-      const parent = stack.branches[branch]?.parent || "(unknown)";
-      console.log(`  ${pc.yellow("→")} ${branch} ${pc.blue(`(parent: ${parent})`)}`);
-    }
-    console.log();
   }
 
-  if (!dryRun) {
+  if (!ctx.dryRun) {
     // Take snapshot before destructive operation. This preserves the current
     // tip of every branch so subsequent restacks (after a parent is rewritten)
     // can find the correct rebase base.
-    await takeSnapshot(meta, stackName, "restack");
+    if (toRebase.length > 0) await takeSnapshot(meta, stackName, "restack");
+    await beginRun({ command: "restack", stackName, chain, pushOnly: baseBranches });
   }
 
-  // Process the chain
-  await processChain(meta, stackName, chain, 0, rebasedBranches, touched, dryRun, verbose);
+  await processChain(meta, stackName, chain, 0, new Set(baseBranches), ctx);
 }
 
 /**
@@ -447,10 +821,7 @@ async function resolveRerootBoundary(
 async function handleReroot(
   meta: StackMetadata,
   newBase: string,
-  rebasedBranches: string[],
-  touched: string[],
-  dryRun: boolean,
-  verbose: boolean,
+  ctx: ChainContext,
 ): Promise<void> {
   const currentBranch = await git.currentBranch();
   const stackName = findStackForBranch(meta, currentBranch);
@@ -508,12 +879,12 @@ async function handleReroot(
 
   p.log.info(`Re-rooting ${pc.yellow(stackName)}: ${pc.dim(oldBase)} → ${pc.green(newBase)}`);
   p.log.info(`Root branch: ${pc.yellow(root)}`);
-  if (verbose) {
+  if (ctx.verbose) {
     p.log.info(`Rebase base: ${oldBaseTip.slice(0, 8)} (${oldBaseSource})`);
   }
   console.log();
 
-  if (dryRun) {
+  if (ctx.dryRun) {
     p.log.warn(`[DRY RUN] Would rebase ${root} onto ${newBase} (from ${oldBaseTip.slice(0, 8)})`);
     const children = ordered.slice(1);
     if (children.length > 0) {
@@ -536,32 +907,21 @@ async function handleReroot(
   stack.branches[root]!.parent = newBase;
   await writeMetadata(meta);
 
+  // The root first, then everything above it (parents before children).
+  const chain = buildRebaseChain(stack, root);
+  await beginRun({ command: "restack --onto", stackName, chain, pushOnly: [] });
+
   // Rebase the root onto the new base, dropping the old base's commits.
   p.log.info(`Checking out ${pc.yellow(root)}...`);
   await git.checkout(root);
   p.log.info(`Rebasing ${pc.yellow(root)} onto ${pc.yellow(newBase)}...`);
-  const ok = await git.rebaseOnto(newBase, oldBaseTip, root);
+  await startRebase(root, newBase, await git.revParse(root), oldBaseTip);
+  if (!(await git.rebaseOnto(newBase, oldBaseTip, root))) conflictStop();
 
-  if (!ok) {
-    console.log();
-    p.log.error("Rebase conflict — resolve and run:");
-    console.log(`  ${pc.green("git rebase --continue")}`);
-    console.log(
-      `  ${pc.green("gh-stack restack")}   ${pc.dim("(from the first child, to restack the rest)")}`,
-    );
-    process.exit(2);
-  }
+  await finishRebase(root, newBase, ctx);
 
-  rebasedBranches.push(root);
-  touched.push(root);
-  await pushBranchRef(meta, root);
-
-  // Restack the children onto the moved root.
-  const children = ordered.slice(1);
-  if (children.length > 0) {
-    const chain = buildRebaseChain(stack, children[0]!);
-    await processChain(meta, stackName, chain, 0, rebasedBranches, touched, false, verbose);
-  }
+  // Push the moved root, then restack the children onto it.
+  await processChain(meta, stackName, chain, 0, new Set([root]), ctx);
 }
 
 /**
@@ -575,13 +935,14 @@ export async function publishBranch(
   branch: string,
   opts: { noPush: boolean },
 ): Promise<void> {
-  await withNoPush(opts.noPush, () => pushBranchRef(meta, branch));
+  await withNoPush(opts.noPush, () => pushBranchRef(meta, branch, newContext(false, false)));
 }
 
 /**
  * Restack `chain` from `startIndex`: the same loop `restack` and `--resume` run,
  * including the conflict stop (exit 2, resumable with `restack --resume`).
- * Exported for `join` (#32). Returns the branches it rebased and touched.
+ * The branches before `startIndex` are taken as done. Exported for `join`
+ * (#32). Returns the branches it rebased and touched.
  */
 export async function restackChain(
   meta: StackMetadata,
@@ -590,12 +951,85 @@ export async function restackChain(
   startIndex: number,
   opts: { noPush: boolean; verbose: boolean },
 ): Promise<{ rebased: string[]; touched: string[] }> {
-  const rebased: string[] = [];
-  const touched: string[] = [];
-  await withNoPush(opts.noPush, () =>
-    processChain(meta, stackName, chain, startIndex, rebased, touched, false, opts.verbose),
-  );
-  return { rebased, touched };
+  const ctx = newContext(false, opts.verbose);
+  await withNoPush(opts.noPush, async () => {
+    const done = chain.slice(0, startIndex);
+    await beginRun({ command: "join", stackName, chain, pushOnly: done, startIndex });
+    await processChain(meta, stackName, chain, startIndex, new Set(done), ctx);
+    if (outstandingPushes(run!).length === 0) await markRunFinished();
+  });
+  return { rebased: ctx.rebased, touched: ctx.touched };
+}
+
+/**
+ * sync's rebase phase, under the same saved state and action log as restack:
+ * rebase the stack's root onto `trunkRef`, push it, then restack every branch
+ * above it. A conflict stops with exit 2, resumable with `restack --resume`.
+ * The caller has fetched the trunk and taken the snapshot.
+ */
+export async function syncChain(
+  meta: StackMetadata,
+  stackName: string,
+  ordered: string[],
+  opts: { trunkRef: string; push: Resolved },
+): Promise<void> {
+  noPush = !opts.push.value;
+  noPushReason = pushReason(opts.push);
+  run = null;
+  const ctx = newContext(false, false);
+  const root = ordered[0]!;
+  const { trunkRef } = opts;
+
+  await beginRun({ command: "sync", stackName, chain: ordered, pushOnly: [root] });
+
+  // Step 1: Rebase the root onto the trunk
+  console.log();
+  console.log(pc.cyan("━".repeat(40)));
+  console.log(`${pc.blue("Step 1:")} Rebase ${pc.yellow(root)} onto ${trunkRef}`);
+  console.log(pc.cyan("━".repeat(40)));
+  console.log();
+
+  if (await git.isAncestor(trunkRef, root)) {
+    p.log.success(`${root} is already up to date with ${trunkRef}`);
+    await record({ branch: root, action: "up-to-date", onto: trunkRef });
+  } else {
+    const confirmed = await confirmAction(`Rebase ${pc.yellow(root)} onto ${trunkRef}?`);
+    if (!confirmed) {
+      await clearRestackState(); // nothing happened: no run to resume
+      run = null;
+      p.cancel("Cancelled");
+      process.exit(0);
+    }
+
+    p.log.info(`Checking out ${pc.yellow(root)}...`);
+    await git.checkout(root);
+    await startRebase(root, trunkRef, await git.revParse(root), null);
+
+    p.log.info(`Rebasing onto ${trunkRef}...`);
+    if (!(await git.rebase(trunkRef))) conflictStop();
+    p.log.success("Base branch rebased onto main");
+    await finishRebase(root, trunkRef, ctx);
+  }
+
+  // Push the root, whether it was rebased or already current: a commit made on
+  // it since the last push is stale on origin too. Its children are held back
+  // if this push doesn't land.
+  ctx.touched.push(root);
+  await pushStep(meta, stackName, root, ctx);
+  run!.current_index = 1;
+  await saveRun();
+
+  // Step 2: Restack the rest of the stack
+  const children = ordered.slice(1);
+  if (children.length > 0) {
+    console.log();
+    console.log(pc.cyan("━".repeat(40)));
+    console.log(`${pc.blue("Step 2:")} Restack ${children.length} child branch(es)`);
+    console.log(pc.cyan("━".repeat(40)));
+    await processChain(meta, stackName, ordered, 1, new Set([root]), ctx);
+  }
+
+  await finishRun(meta, ctx, "Sync complete!");
 }
 
 /**
@@ -613,21 +1047,40 @@ async function withNoPush<T>(value: boolean, fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Walk `chain` from `startIndex`: rebase each branch onto its parent (unless
+ * it's in `pushOnly`), then push it. The run state is saved before each rebase
+ * and after each step, so an interruption anywhere leaves a resumable run.
+ */
 async function processChain(
   meta: StackMetadata,
   stackName: string,
   chain: string[],
   startIndex: number,
-  rebasedBranches: string[],
-  touched: string[],
-  dryRun: boolean,
-  verbose: boolean,
+  pushOnly: Set<string>,
+  ctx: ChainContext,
 ): Promise<void> {
   const stack = meta.stacks[stackName]!;
+  const { dryRun, verbose } = ctx;
 
   for (let i = startIndex; i < chain.length; i++) {
     const branch = chain[i]!;
     const parent = stack.branches[branch]?.parent;
+    if (run && !dryRun) {
+      run.current_index = i;
+      run.rebase = null;
+      await saveRun();
+    }
+
+    // Done already (rebased earlier, or a root restack doesn't rebase): only
+    // its ref needs to reach origin.
+    if (pushOnly.has(branch)) {
+      if (!dryRun && (await git.localBranchExists(branch))) {
+        ctx.touched.push(branch);
+        await pushStep(meta, stackName, branch, ctx);
+      }
+      continue;
+    }
 
     if (!parent) {
       p.log.warn(`Skipping ${branch} (no parent defined)`);
@@ -648,8 +1101,9 @@ async function processChain(
     if (await git.isAncestor(parent, branch)) {
       p.log.success("Already up to date with parent");
       if (!dryRun) {
-        touched.push(branch);
-        await pushBranchRef(meta, branch);
+        await record({ branch, action: "up-to-date", onto: parent });
+        ctx.touched.push(branch);
+        await pushStep(meta, stackName, branch, ctx);
       }
       continue;
     }
@@ -664,6 +1118,11 @@ async function processChain(
     const confirmed = await confirmAction(`Rebase ${pc.yellow(branch)} onto ${pc.yellow(parent)}?`);
     if (!confirmed) {
       p.log.warn("Skipping rebase");
+      // Not done: a resume offers it again, and nothing above it is pushed
+      // until it sits on its parent.
+      ctx.unpublished.add(branch);
+      if (run && !run.declined.includes(branch)) run.declined.push(branch);
+      await record({ branch, action: "rebase-declined", onto: parent });
       continue;
     }
 
@@ -702,7 +1161,7 @@ async function processChain(
       console.log("  Rebase it manually with an explicit boundary:");
       console.log(`    ${pc.green(`git rebase --onto ${parent} <old-parent-tip> ${branch}`)}`);
       console.log();
-      console.log(`  Then re-run ${pc.green("gh-stack restack")} to continue the chain.`);
+      console.log(`  Then re-run ${pc.green("gh-stack restack --resume")} to continue the chain.`);
       process.exit(1);
     }
 
@@ -710,16 +1169,11 @@ async function processChain(
     p.log.info(`Checking out ${pc.yellow(branch)}...`);
     await git.checkout(branch);
 
-    // Save state for resume
-    await saveRestackState({
-      current_index: i,
-      stack_name: stackName,
-      chain,
-      push: !noPush,
-    });
-
     let success: boolean;
     const branchTip = await git.revParse(branch);
+    // Saved before the rebase starts, so a conflict (or a kill) leaves a
+    // resumable run that knows whether this rebase finished or must run again.
+    await startRebase(branch, parent, branchTip, boundary.sha);
     if (boundary.sha === branchTip) {
       // The child has no commits of its own (a placeholder branch created off
       // the parent before any work landed). Nothing to replay — move the ref
@@ -745,38 +1199,24 @@ async function processChain(
 
     if (success) {
       p.log.success("Rebase successful");
-      rebasedBranches.push(branch);
-      touched.push(branch);
-      await clearRestackState();
+      await finishRebase(branch, parent, ctx);
+      ctx.touched.push(branch);
 
       // Push immediately (don't batch) so an interrupt can't leave later
       // branches un-pushed.
-      await pushBranchRef(meta, branch);
+      await pushStep(meta, stackName, branch, ctx);
     } else {
-      // Conflict!
-      console.log();
-      console.log(pc.red("━".repeat(40)));
-      console.log(pc.red("  Rebase Conflict"));
-      console.log(pc.red("━".repeat(40)));
-      console.log();
-      console.log(pc.yellow("Conflicts detected during rebase."));
-      console.log();
-      console.log("  Please resolve the conflicts, then:");
-      console.log(`    ${pc.green("git rebase --continue")}`);
-      console.log(`    ${pc.green("gh-stack restack --resume")}`);
-      console.log();
-      console.log("  Or abort the rebase:");
-      console.log(`    ${pc.red("git rebase --abort")}`);
-      process.exit(2);
+      conflictStop();
     }
+  }
+
+  if (run && !dryRun) {
+    run.current_index = chain.length;
+    run.rebase = null;
+    await saveRun();
   }
 }
 
-/**
- * Reconcile a single branch's ref with origin. Pushes when the local tip
- * differs from origin OR the remote branch doesn't exist yet (so a branch
- * that was never pushed still lands). No-op when already in sync. (#12)
- */
 /**
  * Whether a branch has been published — it has a PR recorded in metadata.
  * restack/sync keep published branches' remotes in sync after a rebase, but must
@@ -789,13 +1229,107 @@ function branchHasPr(meta: StackMetadata, branch: string): boolean {
   return meta.stacks[stackName]?.branches[branch]?.pr != null;
 }
 
-async function pushBranchRef(meta: StackMetadata, branch: string): Promise<void> {
-  if (branch === "main" || branch === "master") return;
+/**
+ * The parent `branch` must not be pushed onto, if any: one whose push failed,
+ * was declined or held this run, or whose origin copy doesn't contain the
+ * local tip `branch` was rebased onto (#29). A child pushed onto such a parent
+ * gets its PR diffed against the parent's old history — the "1000+ files
+ * changed" PR. A parent merely behind origin is fine: the PR's merge-base is
+ * still the commit the child sits on. The trunk and a parent with no remote
+ * copy are never held against.
+ */
+async function unpublishedParent(
+  branch: string,
+  parent: string | undefined,
+  ctx: ChainContext,
+): Promise<string | null> {
+  if (!parent || parent === "main" || parent === "master" || parent === branch) return null;
+  if (ctx.unpublished.has(parent)) return parent;
+  const remote = (await remoteTips(ctx)).get(parent);
+  if (!remote || !(await git.localBranchExists(parent))) return null;
+  const local = await git.revParse(parent);
+  if (local === remote || (await git.isAncestor(local, remote))) return null;
+  return parent;
+}
+
+/** Whether pushing `branch` would change origin (it differs, or a published branch is missing). */
+async function needsPush(meta: StackMetadata, branch: string, ctx: ChainContext): Promise<boolean> {
+  const remote = (await remoteTips(ctx)).get(branch);
+  if (!remote) return branchHasPr(meta, branch);
+  return remote !== (await git.revParse(branch));
+}
+
+/**
+ * Push one branch as a step of the run: held back when its parent isn't
+ * published (#29), otherwise pushed, with the outcome recorded in the log.
+ */
+async function pushStep(
+  meta: StackMetadata,
+  stackName: string,
+  branch: string,
+  ctx: ChainContext,
+): Promise<void> {
+  if (noPush || branch === "main" || branch === "master") return;
+  const parent = meta.stacks[stackName]?.branches[branch]?.parent;
+
+  const heldBy = await unpublishedParent(branch, parent, ctx);
+  if (heldBy) {
+    if (await needsPush(meta, branch, ctx)) {
+      p.log.warn(
+        `Not pushing ${pc.yellow(branch)}: its parent ${pc.yellow(heldBy)} isn't on origin at the commit ${branch} sits on, so its PR would be diffed against ${heldBy}'s old history. Push ${heldBy} first — ${pc.green("gh-stack restack --resume")} retries both, parent first.`,
+      );
+      ctx.unpublished.add(branch);
+      await record({ branch, action: "push-held", detail: `${heldBy} not on origin` });
+    }
+    return;
+  }
+
+  const outcome = await pushBranchRef(meta, branch, ctx);
+  switch (outcome) {
+    case "pushed":
+      (await remoteTips(ctx)).set(branch, await git.revParse(branch));
+      await record({ branch, action: "pushed" });
+      break;
+    case "failed":
+      ctx.unpublished.add(branch);
+      await record({ branch, action: "push-failed" });
+      break;
+    case "declined":
+      ctx.unpublished.add(branch);
+      await record({ branch, action: "push-declined" });
+      break;
+    case "local-only":
+      await record({ branch, action: "local-only" });
+      break;
+    default:
+      break; // already in sync, or pushing is off
+  }
+}
+
+type PushOutcome = "no-push" | "in-sync" | "local-only" | "pushed" | "failed" | "declined";
+
+/**
+ * Reconcile a single branch's ref with origin. Pushes when the local tip
+ * differs from origin OR the remote branch doesn't exist yet (so a branch
+ * that was never pushed still lands). No-op when already in sync. (#12)
+ *
+ * "In sync" is judged from the run's view of origin (`ls-remote`, kept current
+ * as we push), the same view the hold check and the end-of-run check use. A
+ * stale remote-tracking ref (#23) must not make one of them say "in sync"
+ * while another says "not pushed": the run would retry forever.
+ */
+async function pushBranchRef(
+  meta: StackMetadata,
+  branch: string,
+  ctx: ChainContext,
+): Promise<PushOutcome> {
+  if (branch === "main" || branch === "master") return "in-sync";
   // --no-push: leave origin alone; the end-of-run summary lists what's ahead.
-  if (noPush) return;
+  if (noPush) return "no-push";
 
   const localSha = await git.revParse(branch);
-  const hasRemote = await git.remoteBranchExists(branch);
+  const remoteSha = (await remoteTips(ctx)).get(branch) ?? null;
+  const hasRemote = remoteSha !== null;
 
   // Don't publish an unsubmitted branch. A local-only branch (no remote AND no
   // PR) is intentionally not on origin — restack/sync rebase it locally but
@@ -806,12 +1340,10 @@ async function pushBranchRef(meta: StackMetadata, branch: string): Promise<void>
     p.log.info(
       `Skipping push of ${pc.yellow(branch)} — local-only (not submitted). Run ${pc.green("gh-stack submit")} to open its PR.`,
     );
-    return;
+    return "local-only";
   }
 
-  const remoteSha = hasRemote ? await git.revParse(`origin/${branch}`).catch(() => null) : null;
-
-  if (hasRemote && remoteSha === localSha) return; // already in sync — nothing to do
+  if (remoteSha === localSha) return "in-sync";
 
   console.log();
   console.log(pc.cyan("━".repeat(40)));
@@ -832,15 +1364,28 @@ async function pushBranchRef(meta: StackMetadata, branch: string): Promise<void>
   const confirmed = await confirmAction(
     hasRemote ? "Push with --force-with-lease?" : `Push ${branch} to origin?`,
   );
-  if (confirmed) {
-    p.log.info(`Pushing ${branch}...`);
-    const ok = await git.pushStackedBranch(branch);
-    if (ok) {
-      p.log.success("Pushed successfully");
-    } else {
-      p.log.error("Push failed — you may need to push manually later");
-    }
-  } else {
+  if (!confirmed) {
     p.log.warn("Skipping push (you'll need to push manually)");
+    return "declined";
   }
+  p.log.info(`Pushing ${branch}...`);
+  if (await git.pushStackedBranch(branch)) {
+    p.log.success("Pushed successfully");
+    return "pushed";
+  }
+  p.log.error(`Push of ${branch} failed — branches above it won't be pushed onto it`);
+  // --force-with-lease compares against the remote-tracking ref. If that's
+  // behind what origin really has, the lease refuses: say why, and how to see
+  // what's there before overwriting it.
+  const tracking = await git.revParse(`refs/remotes/origin/${branch}`).catch(() => null);
+  if (remoteSha && tracking !== remoteSha) {
+    console.log(
+      `  origin/${branch} is ${remoteSha.slice(0, 8)}, but your last fetch saw ${tracking ? tracking.slice(0, 8) : "nothing"}, so the lease refused.`,
+    );
+    console.log(
+      `  Look at what's there first: ${pc.green(`git fetch origin ${branch} && git log ${branch}..origin/${branch}`)}`,
+    );
+    console.log(`  Then: ${pc.green("gh-stack restack --resume")}`);
+  }
+  return "failed";
 }

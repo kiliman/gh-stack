@@ -85,7 +85,12 @@ export interface InFlightRebase {
   onto: string; // ref the branch is being rebased onto
   onto_sha: string; // that ref's tip when the rebase started
   pre_tip: string; // the branch's tip before the rebase (what `git rebase --abort` restores)
+  /** The `--onto` upstream (`git rebase --onto <onto> <boundary> <branch>`); null for a plain `git rebase <onto>`. */
+  boundary: string | null;
 }
+
+/** Bumped when RestackState changes shape; a file with another version is refused, not upgraded. */
+export const RUN_STATE_VERSION = 2;
 
 /**
  * The saved state of a restack/sync/join run, at `.git/.gh-stack/restack-state.json`.
@@ -93,6 +98,7 @@ export interface InFlightRebase {
  * (`finished_at` set) so `restack --resume` can report a completed run.
  */
 export interface RestackState {
+  version: typeof RUN_STATE_VERSION;
   /** What started the run: "restack", "sync", "join" or "restack --onto". */
   command: string;
   stack_name: string;
@@ -107,6 +113,8 @@ export interface RestackState {
   current_index: number;
   /** The rebase in progress at `chain[current_index]`, if any. */
   rebase: InFlightRebase | null;
+  /** Branches whose rebase was declined: not done, so a resume offers them again. */
+  declined: string[];
   /**
    * The run's push decision. `--resume` keeps it (a local-only run stays
    * local) unless the resume passes --push/--no-push (#36, #39).

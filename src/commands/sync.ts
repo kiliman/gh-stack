@@ -15,7 +15,7 @@ import { takeSnapshot } from "../lib/snapshot.ts";
 import { getPrInfo } from "../lib/github.ts";
 import { planMerges, advanceNewBottom, type BranchReview } from "../lib/advance.ts";
 import type { StackMetadata } from "../types.ts";
-import {
+import restack, {
   notePendingRun,
   refuseRebaseInProgress,
   resolvePush,
@@ -56,9 +56,9 @@ If an interrupted restack or sync is pending, sync asks whether to resume it
   // Only explicit push flags carry over to a resume: it otherwise keeps the
   // push decision of the run it resumes.
   const pushFlags = args.filter((a) => a === "--push" || a === "--no-push");
+  const resumeRun = () => restack(["--resume", ...pushFlags]);
   if (args.includes("--resume")) {
-    const { default: restack } = await import("./restack.ts");
-    await restack(["--resume", ...pushFlags]);
+    await resumeRun();
     return;
   }
 
@@ -74,8 +74,7 @@ If an interrupted restack or sync is pending, sync asks whether to resume it
   if (dryRun) {
     await notePendingRun();
   } else if ((await routePendingRun("sync", { fresh })) === "resume") {
-    const { default: restack } = await import("./restack.ts");
-    await restack(["--resume", ...pushFlags]);
+    await resumeRun();
     return;
   }
 

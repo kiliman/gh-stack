@@ -212,9 +212,13 @@ restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--verbose]
     `restack` or `sync` with an interrupted run pending asks whether to
     resume it (with --yes it resumes) instead of starting a different
     run on top of it. `--fresh` discards the interrupted run and starts
-    over. A run whose conflict you `git rebase --abort`ed is over: its
-    saved state is dropped. `merge` and `join` refuse to run while a
-    restack/sync is pending, and `undo` discards the run it rolls back.
+    over. `git rebase --abort` ends the rebase, not the run: a resume
+    runs that rebase again (so does one killed before git started it),
+    and earlier branches' failed or held pushes stay queued. To abandon
+    the run, use `--fresh`. A state file from an older gh-stack is
+    refused with that same pointer, never upgraded. `merge` and `join`
+    refuse to run while a restack/sync is pending, and `undo` discards
+    the run it rolls back.
 
     A branch is never pushed onto a parent that isn't on origin at the
     commit the branch sits on (the parent's push failed or was declined,

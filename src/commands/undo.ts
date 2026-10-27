@@ -75,7 +75,7 @@ a destructive operation (restack, merge, sync, remove).
 
   // An unfinished run on this stack was rewriting the branches just restored;
   // resuming it would push the restored tips as if they were its results.
-  const run = await loadRestackState();
+  const run = await loadRestackState().catch(() => null); // an unusable state is left for --fresh
   if (run && !run.finished_at && run.stack_name === snapshot.stack) {
     await clearRestackState();
     p.log.info(

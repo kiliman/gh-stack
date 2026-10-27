@@ -17,7 +17,7 @@ import {
   pushAllBranches,
   setupRemote,
 } from "./helpers.ts";
-import type { RestackState } from "../types.ts";
+import { RUN_STATE_VERSION, type RestackState } from "../types.ts";
 
 // Each test builds repos and spawns the CLI several times; 5 s flakes under load.
 setDefaultTimeout(60_000);
@@ -238,23 +238,56 @@ describe("a bare restack/sync with an interrupted run pending (#29)", () => {
     await $`git -C ${tmpDir} rebase --abort`.quiet();
   }
 
-  test("after git rebase --abort, the run is over: --resume says so and drops it", async () => {
+  test("after git rebase --abort, --resume runs that rebase again; the run is kept", async () => {
     await syncStoppedOnConflictThenAborted();
 
     const resume = await runCli(["restack", "--resume"]);
-    expect(resume.exitCode).toBe(1);
-    expect(resume.out).toContain("was aborted");
-    expect(await savedState()).toBeNull();
+    expect(resume.exitCode).toBe(2); // the same conflict, met again
+    expect(resume.out).toContain("didn't happen (interrupted before it started, or aborted)");
+    const state = await savedState();
+    expect(state?.finished_at).toBeNull();
+    expect(state?.rebase?.branch).toBe("pr1");
   });
 
-  test("after git rebase --abort, a bare restack drops the stale run and starts fresh", async () => {
+  test("after git rebase --abort, a bare restack resumes too; only --fresh discards", async () => {
     await syncStoppedOnConflictThenAborted();
 
     const res = await runCli(["restack"]);
-    expect(res.exitCode).toBe(0);
-    expect(res.out).toContain("its rebase of pr1 was aborted");
-    expect(res.out).not.toContain("Resuming");
+    expect(res.exitCode).toBe(2);
+    expect(res.out).toContain("Resuming the interrupted sync");
+    await $`git -C ${tmpDir} rebase --abort`.quiet();
+
+    const fresh = await runCli(["restack", "--fresh"]);
+    expect(fresh.exitCode).toBe(0);
+    expect(fresh.out).toContain("--fresh: discarding the interrupted sync");
     expect((await savedState())?.command).toBe("restack");
+  });
+
+  test("an abort keeps earlier branches' failed and held pushes; nothing is lost", async () => {
+    // pr1's push is rejected (pr2 is held), then pr3's rebase conflicts.
+    await createLinearStack(tmpDir);
+    remoteDir = await setupRemote(tmpDir);
+    await pushAllBranches(tmpDir);
+    await checkout(tmpDir, "pr1");
+    await makeCommit(tmpDir, "pr3.txt", "from pr1\n", "pr1: conflicting pr3.txt");
+    await setPreReceive(rejectRef("pr1"));
+    expect((await runCli(["restack"])).exitCode).toBe(2);
+    await $`git -C ${tmpDir} rebase --abort`.quiet();
+
+    const again = await runCli(["restack", "--resume"]);
+    expect(again.exitCode).toBe(2);
+    const actions = (await savedState())!.log.map((e) => `${e.action} ${e.branch}`);
+    expect(actions).toContain("push-failed pr1");
+    expect(actions).toContain("push-held pr2");
+
+    // Resolve it and let origin accept pushes again: everything lands.
+    await setPreReceive(null);
+    await Bun.write(`${tmpDir}/pr3.txt`, "resolved\n");
+    await $`git -C ${tmpDir} add pr3.txt`.quiet();
+    await $`git -C ${tmpDir} rebase --continue`.env({ ...process.env, GIT_EDITOR: "true" }).quiet();
+    const done = await runCli(["restack", "--resume"]);
+    expect(done.exitCode).toBe(0);
+    for (const b of ["pr1", "pr2", "pr3"]) expect(await remoteSha(b)).toBe(await sha(b));
   });
 
   test("undo discards the run it rolled back, so nothing offers to resume it", async () => {
@@ -415,5 +448,154 @@ exit 0
     expect(res.exitCode).toBe(0);
     expect(res.out).toContain("Resuming the interrupted restack");
     expect(await remoteSha("pr2")).toBe(pr2Remote);
+  });
+});
+
+/** Write a saved run directly, for states that are hard to reach by interrupting a real run. */
+async function writeState(state: Partial<RestackState>): Promise<void> {
+  const full: RestackState = {
+    version: RUN_STATE_VERSION,
+    command: "restack",
+    stack_name: "test-stack",
+    chain: ["pr1", "pr2", "pr3"],
+    push_only: ["pr1"],
+    current_index: 1,
+    rebase: null,
+    declined: [],
+    push: true,
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    log: [],
+    ...state,
+  };
+  await Bun.write(
+    `${tmpDir}/.git/.gh-stack/restack-state.json`,
+    JSON.stringify(full, null, 2) + "\n",
+  );
+}
+
+describe("review fixes (#49)", () => {
+  test("--resume --dry-run writes nothing; the real resume still restacks pr2..pr3", async () => {
+    await syncStoppedOnConflictThenContinued();
+    const path = `${tmpDir}/.git/.gh-stack/restack-state.json`;
+    const before = await Bun.file(path).text();
+
+    const dry = await runCli(["restack", "--resume", "--dry-run"]);
+    expect(dry.exitCode).toBe(0);
+    expect(await Bun.file(path).text()).toBe(before);
+
+    const res = await runCli(["restack", "--resume"]);
+    expect(res.exitCode).toBe(0);
+    expect(await isAncestor("pr1", "pr2")).toBe(true);
+    expect(await isAncestor("pr2", "pr3")).toBe(true);
+    for (const b of ["pr1", "pr2", "pr3"]) expect(await remoteSha(b)).toBe(await sha(b));
+  });
+
+  test("a stale remote-tracking ref can't wedge the run: in-sync is judged from origin itself", async () => {
+    await stackNeedingRestack();
+    expect((await runCli(["restack"])).exitCode).toBe(0);
+    // origin/pr3 really is at local pr3, but the tracking ref lags (#23).
+    await $`git -C ${tmpDir} update-ref refs/remotes/origin/pr3 ${await sha("pr3~1")}`.quiet();
+    await checkout(tmpDir, "pr2");
+
+    const res = await runCli(["restack"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(res.out).not.toContain("Push of pr3 failed");
+    expect((await savedState())?.finished_at).toBeTruthy();
+  });
+
+  test("a declined rebase isn't pushed on resume: it and its children are restacked first", async () => {
+    await stackNeedingRestack(); // pr1 has a new commit
+    await checkout(tmpDir, "pr2");
+    await makeCommit(tmpDir, "pr2-local.txt", "local\n", "pr2: unpushed work");
+    // The run rebased nothing above pr1: pr2's rebase was declined.
+    await writeState({
+      current_index: 3,
+      declined: ["pr2"],
+      log: [
+        { at: new Date().toISOString(), branch: "pr2", action: "rebase-declined", onto: "pr1" },
+      ],
+    });
+
+    const res = await runCli(["restack", "--resume"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(await isAncestor("pr1", "pr2")).toBe(true);
+    expect(await isAncestor("pr2", "pr3")).toBe(true);
+    expect(await isAncestor(await sha("pr1"), await remoteSha("pr2"))).toBe(true);
+    expect((await savedState())?.declined).toEqual([]);
+  });
+
+  test("a --push override on --resume is kept by a later plain --resume", async () => {
+    // pr1 gains files that conflict with both pr2 and pr3, so the run stops twice.
+    await createLinearStack(tmpDir);
+    remoteDir = await setupRemote(tmpDir);
+    await pushAllBranches(tmpDir);
+    await checkout(tmpDir, "pr1");
+    await Bun.write(`${tmpDir}/pr2.txt`, "from pr1\n");
+    await makeCommit(tmpDir, "pr3.txt", "from pr1\n", "pr1: conflicting pr2.txt and pr3.txt");
+    await $`git -C ${tmpDir} add pr2.txt`.quiet();
+    await $`git -C ${tmpDir} commit -q --amend --no-edit`.quiet();
+    const resolve = async (file: string) => {
+      await Bun.write(`${tmpDir}/${file}`, "resolved\n");
+      await $`git -C ${tmpDir} add ${file}`.quiet();
+      await $`git -C ${tmpDir} rebase --continue`
+        .env({ ...process.env, GIT_EDITOR: "true" })
+        .quiet();
+    };
+
+    expect((await runCli(["restack", "--no-push"])).exitCode).toBe(2);
+    await resolve("pr2.txt");
+    expect((await runCli(["restack", "--resume", "--push"])).exitCode).toBe(2);
+    expect((await savedState())?.push).toBe(true);
+    await resolve("pr3.txt");
+
+    const res = await runCli(["restack", "--resume"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(await remoteSha("pr3")).toBe(await sha("pr3"));
+  });
+
+  test("killed after saving the rebase but before git started it: --resume runs it", async () => {
+    await stackNeedingRestack();
+    await writeState({
+      rebase: {
+        branch: "pr2",
+        onto: "pr1",
+        onto_sha: await sha("pr1"),
+        pre_tip: await sha("pr2"),
+        boundary: await sha("pr1~1"),
+      },
+    });
+
+    const res = await runCli(["restack", "--resume"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(await isAncestor("pr1", "pr2")).toBe(true);
+    expect(await isAncestor("pr2", "pr3")).toBe(true);
+    for (const b of ["pr1", "pr2", "pr3"]) expect(await remoteSha(b)).toBe(await sha(b));
+  });
+
+  test("a state file from an older gh-stack is refused, not upgraded; --fresh discards it", async () => {
+    await stackNeedingRestack();
+    await Bun.write(
+      `${tmpDir}/.git/.gh-stack/restack-state.json`,
+      JSON.stringify({
+        current_index: 1,
+        stack_name: "test-stack",
+        chain: ["pr1", "pr2"],
+        push: true,
+      }),
+    );
+
+    const res = await runCli(["restack"]);
+    expect(res.exitCode).toBe(1);
+    expect(res.out).toContain("written by an older gh-stack");
+    expect(res.out).toContain("gh-stack restack --fresh");
+
+    const fresh = await runCli(["restack", "--fresh"]);
+    expect(fresh.exitCode).toBe(0);
+    expect((await savedState())?.version).toBe(RUN_STATE_VERSION);
   });
 });

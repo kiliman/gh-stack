@@ -284,7 +284,8 @@ then `gh-stack restack --resume` to finish the remaining branches. That's the
 command even when the conflict came from `sync`. If you forget `--resume`, a
 bare `restack`/`sync` notices the interrupted run and, under `--yes`, resumes
 it. Don't pass `--fresh` unless you were asked to abandon the run: it discards
-the run's remaining steps.
+the run's remaining steps. `git rebase --abort` does not end the run; a resume
+runs that rebase again.
 
 **Interrupted or partly pushed run** (killed, timed out, or a push failed):
 run `gh-stack restack --resume`. It continues from the saved state and retries

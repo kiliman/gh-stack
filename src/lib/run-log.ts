@@ -5,30 +5,44 @@
 // This module only interprets it, so `restack`, `sync`, `merge`, `join` and
 // `undo` agree on what "an interrupted run" means.
 import pc from "picocolors";
-import * as git from "./git.ts";
-import { loadRestackState } from "./metadata.ts";
+import * as p from "./output.ts";
+import { InvalidRunStateError, clearRestackState, loadRestackState } from "./metadata.ts";
 import type { RestackState, RunLogEntry } from "../types.ts";
 
 /**
- * A saved run that hasn't finished.
- *
- * - `pending`: it can be resumed (a conflict, a kill, or pushes that failed).
- * - `aborted`: it stopped on a conflict and the user ran `git rebase --abort`
- *   (the branch is back at its pre-rebase tip). That's the user ending the run,
- *   so its state is stale rather than resumable.
+ * The saved run state, or null. A state that can't be used (unreadable, or
+ * from another gh-stack version) is never upgraded: with `discard` (the
+ * `--fresh` path) it's deleted with a note, otherwise this exits 1 saying how
+ * to discard it.
  */
-export type PendingRun = { state: RestackState; status: "pending" | "aborted" };
-
-export async function findPendingRun(): Promise<PendingRun | null> {
-  const state = await loadRestackState();
-  if (!state || state.finished_at) return null;
-  if (state.rebase && !(await git.isRebaseInProgress())) {
-    const tip = await git.revParse(state.rebase.branch).catch(() => null);
-    if (tip === state.rebase.pre_tip && !(await git.isAncestor(state.rebase.onto_sha, tip))) {
-      return { state, status: "aborted" };
+export async function loadRunState(opts: { discard?: boolean } = {}): Promise<RestackState | null> {
+  try {
+    return await loadRestackState();
+  } catch (err) {
+    if (!(err instanceof InvalidRunStateError)) throw err;
+    if (opts.discard) {
+      p.log.warn(`Discarding the saved run state at ${err.path}: ${err.reason}.`);
+      await clearRestackState();
+      return null;
     }
+    p.cancel(
+      `${err.message}\n\n  Discard it and restack from the current branch:\n    ${pc.green("gh-stack restack --fresh")}`,
+    );
+    process.exit(1);
   }
-  return { state, status: "pending" };
+}
+
+/**
+ * A saved run that hasn't finished: a conflict stop, a kill, failed or held
+ * pushes, or a rebase that was saved as started but never ran (or was
+ * aborted). All of them are resumable; nothing is inferred from the branch
+ * position, since a kill before the rebase started looks just like an abort.
+ */
+export async function findPendingRun(
+  opts: { discard?: boolean } = {},
+): Promise<RestackState | null> {
+  const state = await loadRunState(opts);
+  return state && !state.finished_at ? state : null;
 }
 
 /** Branches whose push failed, was declined or held, and hasn't succeeded since. */
@@ -93,10 +107,11 @@ export function formatRunLog(state: RestackState): string[] {
 }
 
 /** "sync, started 2026-10-27 14:03" (local time) */
+const two = (n: number) => String(n).padStart(2, "0");
+
 export function describeRun(state: RestackState): string {
   const at = state.started_at ? new Date(state.started_at) : null;
   if (!at || Number.isNaN(at.getTime())) return state.command;
-  const two = (n: number) => String(n).padStart(2, "0");
   const when = `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`;
   return `${state.command}, started ${when}`;
 }

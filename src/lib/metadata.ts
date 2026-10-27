@@ -11,6 +11,7 @@
 //   • A stack can never silently vanish — on write, a stale stack file is moved
 //     to `deleted/` (a recoverable tombstone), never just unlinked.
 import type { StackMetadata, Stack, Branch, RestackState } from "../types.ts";
+import { RUN_STATE_VERSION } from "../types.ts";
 import { mkdir, readdir, rename, unlink, stat } from "node:fs/promises";
 import {
   ghStackDir,
@@ -668,8 +669,9 @@ export async function saveRestackState(state: RestackState): Promise<void> {
 }
 
 /**
- * Load the saved run state. Returns null if there is none, or if the file
- * can't be parsed (reported on stderr).
+ * Load the saved run state. Returns null if there is none. A file that can't
+ * be parsed, or was written by another version of gh-stack, throws
+ * InvalidRunStateError: it is never guessed at or upgraded.
  */
 export async function loadRestackState(): Promise<RestackState | null> {
   const path = await restackStateFile();
@@ -681,23 +683,22 @@ export async function loadRestackState(): Promise<RestackState | null> {
   try {
     raw = await file.json();
   } catch {
-    console.error(`gh-stack: ignoring unreadable run state at ${path}`);
-    return null;
+    throw new InvalidRunStateError(path, "it isn't valid JSON");
   }
-  // A state written before the action log existed (#15) lacks these fields.
-  return {
-    command: "restack",
-    push_only: [],
-    rebase: null,
-    started_at: "",
-    finished_at: null,
-    log: [],
-    stack_name: "",
-    chain: [],
-    current_index: 0,
-    push: true,
-    ...raw,
-  };
+  if (raw?.version !== RUN_STATE_VERSION) {
+    throw new InvalidRunStateError(path, "it was written by an older gh-stack");
+  }
+  return raw as RestackState;
+}
+
+/** The saved run state exists but can't be used (unreadable, or another version's shape). */
+export class InvalidRunStateError extends Error {
+  constructor(
+    readonly path: string,
+    readonly reason: string,
+  ) {
+    super(`The saved run state at ${path} can't be used: ${reason}.`);
+  }
 }
 
 /**

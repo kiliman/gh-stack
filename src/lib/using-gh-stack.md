@@ -264,7 +264,7 @@ needed.
 - **Never force-pushes trunk.**
 - **Metadata is local and never committed:** per-stack files under
   `.git/.gh-stack/` plus git branch config. Inspect it via `gh-stack stacks
---json`, not by reading the store. (`gh-stack doctor` migrates the old v2
+  --json`, not by reading the store. (`gh-stack doctor` migrates the old v2
   `.git/gh-stack-metadata.json` monolith.)
 
 ## Don'ts

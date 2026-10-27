@@ -341,6 +341,7 @@ export async function refuseRebaseInProgress(command: string): Promise<never> {
 
 /** Print what an interrupted run did and what it has left. */
 function describePendingRun(state: RestackState): void {
+  console.log(`  ${pc.dim("Stack:")} ${state.stack_name}`);
   if (state.log.length > 0) {
     console.log(`  ${pc.dim("Done so far:")}`);
     for (const line of formatRunLog(state)) console.log(`  ${line}`);

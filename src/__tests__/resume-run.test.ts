@@ -227,7 +227,7 @@ describe("a bare restack/sync with an interrupted run pending (#29)", () => {
     expect(res.out).toContain("gh-stack restack --resume");
   });
 
-  test("after git rebase --abort, the run is over: resume says so, bare restack starts fresh", async () => {
+  async function syncStoppedOnConflictThenAborted(): Promise<void> {
     await createLinearStack(tmpDir, { conflicting: true });
     remoteDir = await setupRemote(tmpDir);
     await pushAllBranches(tmpDir);
@@ -236,11 +236,25 @@ describe("a bare restack/sync with an interrupted run pending (#29)", () => {
     await checkout(tmpDir, "pr1");
     expect((await runCli(["sync"])).exitCode).toBe(2);
     await $`git -C ${tmpDir} rebase --abort`.quiet();
+  }
+
+  test("after git rebase --abort, the run is over: --resume says so and drops it", async () => {
+    await syncStoppedOnConflictThenAborted();
 
     const resume = await runCli(["restack", "--resume"]);
     expect(resume.exitCode).toBe(1);
     expect(resume.out).toContain("was aborted");
     expect(await savedState()).toBeNull();
+  });
+
+  test("after git rebase --abort, a bare restack drops the stale run and starts fresh", async () => {
+    await syncStoppedOnConflictThenAborted();
+
+    const res = await runCli(["restack"]);
+    expect(res.exitCode).toBe(0);
+    expect(res.out).toContain("its rebase of pr1 was aborted");
+    expect(res.out).not.toContain("Resuming");
+    expect((await savedState())?.command).toBe("restack");
   });
 
   test("undo discards the run it rolled back, so nothing offers to resume it", async () => {

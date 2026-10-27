@@ -6,7 +6,7 @@
 //     archived/<stack>.json        merged/closed stacks
 //     deleted/<stack>.json         tombstones (recoverable)
 //     snapshots/<ts>__<stack>.json append-only pre-operation branch tips
-//     restack-state.json           in-flight restack/sync resume state
+//     restack-state.json           last restack/sync/join run: resume point + action log
 //
 // Everything lives inside `.git/` and is never committed — gh-stack is a
 // single-developer tool, so there's no need to share metadata across clones.

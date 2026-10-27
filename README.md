@@ -187,7 +187,7 @@ ls
 ### Stack Management
 
 ```
-restack [--resume] [--dry-run] [--no-push|--push] [--verbose]
+restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--verbose]
     Rebase the current branch and all descendants onto their parents.
     Uses metadata snapshots to recover the correct rebase base even
     after a parent's history has been rewritten.
@@ -204,6 +204,25 @@ restack [--resume] [--dry-run] [--no-push|--push] [--verbose]
         git rebase --continue
         gh-stack restack --resume
 
+    Interrupted runs: restack and sync save their progress (and a log
+    of every rebase and push) in .git/.gh-stack/restack-state.json
+    after each step, until the last push. `--resume` continues from
+    there: after a conflict, a kill, or failed pushes. If the run had
+    already finished, it prints the run's log and exits 0. A bare
+    `restack` or `sync` with an interrupted run pending asks whether to
+    resume it (with --yes it resumes) instead of starting a different
+    run on top of it. `--fresh` discards the interrupted run and starts
+    over. A run whose conflict you `git rebase --abort`ed is over: its
+    saved state is dropped. `merge` and `join` refuse to run while a
+    restack/sync is pending, and `undo` discards the run it rolls back.
+
+    A branch is never pushed onto a parent that isn't on origin at the
+    commit the branch sits on (the parent's push failed or was declined,
+    or it has unpushed commits): its PR would be diffed against the
+    parent's old history. It's held back, the run exits 1 listing the
+    refs that aren't in sync, and `--resume` retries the pushes, parents
+    first.
+
     (alias: rebase)
 
 restack --onto <ref>
@@ -212,9 +231,9 @@ restack --onto <ref>
     onto main once the parent stack has merged — only the stack's own
     commits replay onto the new base.
 
-sync [--dry-run] [--no-push|--push]
-    Fetch main, rebase the base branch onto main, then restack all
-    children. Snapshots every branch's pre-sync tip so children can be
+sync [--dry-run] [--no-push|--push] [--resume | --fresh]
+    Fetch main, rebase the base branch onto main, push it, then restack
+    all children (every branch above it, in one resumable run). Snapshots every branch's pre-sync tip so children can be
     correctly rebased even though their parent's history was rewritten.
     If the bottom PR(s) already merged on main outside gh-stack (e.g.
     the GitHub web UI), sync detects this and advances the stack past
@@ -224,7 +243,8 @@ sync [--dry-run] [--no-push|--push]
 
     --no-push / --push (and their defaults): as for restack. Also skips
     retargeting a PR's base after advancing past a merged bottom;
-    the next `submit` pushes and retargets together.
+    the next `submit` pushes and retargets together. --resume and
+    --fresh: as for restack (`sync --resume` is `restack --resume`).
 
 merge [--dry-run] [-d|--delete-branch] [--collapse]
 merge --approved [--collapse] [--dry-run] [-d|--delete-branch]
@@ -564,7 +584,7 @@ per-stack files plus git-native branch config, rather than a single JSON blob:
   archived/<stack>.json        merged/closed stacks
   deleted/<stack>.json         tombstones (recoverable)
   snapshots/<ts>__<stack>.json append-only, retained per-stack
-  restack-state.json           in-flight restack/sync resume state
+  restack-state.json           the last restack/sync/join run: resume point + action log
 ```
 
 A single `active/<stack>.json` looks like:

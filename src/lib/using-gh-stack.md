@@ -280,7 +280,19 @@ edit several branches then restack once at the end (only the last branch ends
 up pushed).
 
 **On rebase conflict:** resolve, `git add <files>`, `git rebase --continue`,
-then `gh-stack restack --resume` to finish the remaining branches.
+then `gh-stack restack --resume` to finish the remaining branches. That's the
+command even when the conflict came from `sync`. If you forget `--resume`, a
+bare `restack`/`sync` notices the interrupted run and, under `--yes`, resumes
+it. Don't pass `--fresh` unless you were asked to abandon the run: it discards
+the run's remaining steps.
+
+**Interrupted or partly pushed run** (killed, timed out, or a push failed):
+run `gh-stack restack --resume`. It continues from the saved state and retries
+the pushes, parents first. If everything already finished it prints the run's
+log and exits 0. A branch whose parent didn't reach origin is never pushed onto
+it (its PR would be diffed against the parent's old history); the run lists it
+as held and exits 1 until `--resume` gets the parent pushed. `merge` and `join`
+refuse to run while a restack/sync is pending.
 
 **`sync` is self-correcting:** if you merged the bottom PR in the GitHub UI,
 `sync` detects it and advances the stack past the merged branch (re-rooting onto

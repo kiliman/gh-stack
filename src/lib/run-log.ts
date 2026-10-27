@@ -92,10 +92,11 @@ export function formatRunLog(state: RestackState): string[] {
   return state.log.map((e) => `  ${formatLogEntry(e)}`);
 }
 
-/** "sync, started 2026-10-27 14:03" */
+/** "sync, started 2026-10-27 14:03" (local time) */
 export function describeRun(state: RestackState): string {
-  const when = state.started_at
-    ? `, started ${state.started_at.slice(0, 16).replace("T", " ")}`
-    : "";
-  return `${state.command}${when}`;
+  const at = state.started_at ? new Date(state.started_at) : null;
+  if (!at || Number.isNaN(at.getTime())) return state.command;
+  const two = (n: number) => String(n).padStart(2, "0");
+  const when = `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`;
+  return `${state.command}, started ${when}`;
 }

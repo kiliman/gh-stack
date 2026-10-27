@@ -440,34 +440,34 @@ describe("join: incoming branch not on origin (#46 review)", () => {
   });
 });
 
-describe("join: child cut from an earlier tip of the incoming branch (#46 review)", () => {
-  /** incoming = a, b on main; pr1 is cut from that tip and adds p. Stack: pr1 alone. */
-  async function childOfIncoming(): Promise<string> {
-    await createBranch(tmpDir, "incoming", "main");
-    await makeCommit(tmpDir, "a.txt", "a\n", "incoming: a");
-    const tip = await makeCommit(tmpDir, "b.txt", "b1\n", "incoming: b");
-    await createBranch(tmpDir, "pr1", "incoming");
-    await makeCommit(tmpDir, "p.txt", "p\n", "pr1: p");
-    await writeMetadata(tmpDir, {
-      version: 2,
-      current_stack: "test-stack",
-      stacks: {
-        "test-stack": {
-          description: "",
-          last_branch: "pr1",
-          branches: { pr1: { parent: "main", pr: 11 } },
-        },
+/** incoming = a, b on main; pr1 is cut from that tip and adds p. Stack: pr1 alone. */
+async function childOfIncoming(): Promise<string> {
+  await createBranch(tmpDir, "incoming", "main");
+  await makeCommit(tmpDir, "a.txt", "a\n", "incoming: a");
+  const tip = await makeCommit(tmpDir, "b.txt", "b1\n", "incoming: b");
+  await createBranch(tmpDir, "pr1", "incoming");
+  await makeCommit(tmpDir, "p.txt", "p\n", "pr1: p");
+  await writeMetadata(tmpDir, {
+    version: 2,
+    current_stack: "test-stack",
+    stacks: {
+      "test-stack": {
+        description: "",
+        last_branch: "pr1",
+        branches: { pr1: { parent: "main", pr: 11 } },
       },
-    });
-    return tip;
-  }
+    },
+  });
+  return tip;
+}
 
-  async function publishAndStandOnPr1(): Promise<void> {
-    remoteDir = await setupRemote(tmpDir);
-    await pushAllBranches(tmpDir);
-    await checkout(tmpDir, "pr1");
-  }
+async function publishAndStandOnPr1(): Promise<void> {
+  remoteDir = await setupRemote(tmpDir);
+  await pushAllBranches(tmpDir);
+  await checkout(tmpDir, "pr1");
+}
 
+describe("join: child cut from an earlier tip of the incoming branch (#46 review)", () => {
   test("refuses when incoming was rewritten after the child was cut, with the exact fix", async () => {
     const oldTip = await childOfIncoming();
     // Rewrite incoming's b with different content: pr1 still carries old b.

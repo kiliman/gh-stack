@@ -269,9 +269,19 @@ join <branch> [--above <branch>] [--dry-run] [--no-push] [--verbose]
 
     A stack named after its old bottom branch is renamed after the new
     bottom (the old stack file is tombstoned under deleted/); a custom
-    name is kept. A branch alone in its own one-branch stack (what
-    `submit` makes of a standalone PR) is absorbed; a branch in a larger
-    stack is refused.
+    name, or a name already used by another active or archived stack,
+    is kept. A branch alone in its own one-branch stack (what `submit`
+    makes of a standalone PR) is absorbed; a branch in a larger stack
+    is refused.
+
+    Without --no-push the incoming branch must already be on origin
+    (`git push -u origin <branch>` first), and if its push is declined
+    or rejected, join stops before touching anything above it. A branch
+    above the insertion point that was cut from an older, since-
+    rewritten version of the incoming branch is refused, with the
+    `git rebase --onto` that drops its stale copies. (A child cut from
+    an earlier tip that was only appended to is handled automatically.)
+    Unknown options are an error.
 
     --dry-run   Show the resulting stack and, for every affected PR,
                 its projected commits / files changed vs its new parent,

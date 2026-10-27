@@ -136,7 +136,11 @@ diffs. Run `--dry-run` first and check each PR's commit/file count. A conflict
 syncing the incoming branch leaves the stack untouched (resolve,
 `git rebase --continue`, re-run the join); a conflict restacking above it resumes
 with `gh-stack restack --resume`. A branch alone in its own one-branch stack is
-absorbed; one in a larger stack is refused.
+absorbed; one in a larger stack is refused. Unless you pass `--no-push`, the
+incoming branch must already be on origin (`git push -u origin <branch>`). If a
+child was cut from an older, since-rewritten version of the incoming branch,
+join refuses and prints the `git rebase --onto` that drops the stale copies: run
+it, then re-run the join.
 
 ### 2. Push & create PRs — `submit`
 

@@ -203,18 +203,6 @@ async function isBranchUpToDate(branch: string): Promise<boolean> {
   }
 }
 
-/**
- * Push a branch to origin with upstream tracking and force-with-lease.
- */
-async function pushBranch(branch: string): Promise<boolean> {
-  try {
-    await $`git push -u --force-with-lease origin ${branch}`.quiet();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export default async function submit(args: string[]): Promise<void> {
   if (args.includes("--help")) {
     console.log(HELP);
@@ -442,13 +430,14 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
     } else {
       const s = p.spinner();
       s.start(`Pushing ${pc.blue(branchName)}...`);
-      const ok = await pushBranch(branchName);
-      if (ok) {
+      const result = await git.forcePushWithLease(branchName);
+      if (result.ok) {
         s.stop(`Pushed ${pc.blue(branchName)}`);
         pushed++;
         outcome.pushed = true;
       } else {
         s.stop(pc.red(`Failed to push ${branchName}`));
+        for (const line of git.pushFailureHint(branchName, result)) p.log.warn(line);
         outcome.error = `push to origin/${branchName} failed`;
         outcome.pr = await findPr(branchName);
         // Keep what this run learned (PRs created or discovered below this

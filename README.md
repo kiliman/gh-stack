@@ -187,7 +187,7 @@ ls
 ### Stack Management
 
 ```
-restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--verbose]
+restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--overwrite-remote] [--verbose]
     Rebase the current branch and all descendants onto their parents.
     Uses metadata snapshots to recover the correct rebase base even
     after a parent's history has been rewritten.
@@ -227,6 +227,29 @@ restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--verbose]
     refs that aren't in sync, and `--resume` retries the pushes, parents
     first.
 
+    Commits only on origin: before rewriting anything, restack and sync
+    check each branch's copy on origin. If it has commits the local
+    branch never had, e.g. the squash commit `merge --collapse` adds to
+    a parent PR's branch on GitHub, rewriting would drop them from the
+    PR, so the run stops, names them, and prints the pull or
+    cherry-pick that brings them in. Earlier versions of local commits
+    left on origin by a --no-push or interrupted run (found in the
+    branch's reflog or a snapshot, or patch-equivalent) don't count, and
+    neither do commits from origin's main (GitHub's "Update branch").
+    A branch whose origin copy couldn't be checked at all (not fetched,
+    or git failed) is treated the same way, never as clean. Interactive
+    runs ask; --yes stops. --overwrite-remote rewrites anyway, dropping
+    them. Sync skips bottom branches whose PRs already merged: it
+    advances past them rather than rewriting them. When an advance past
+    a merged bottom can't push the new bottom, its PR keeps its old base
+    until a later push of that branch lands, which retargets it.
+
+    Every gh-stack force-push (restack, sync, merge, submit, join) uses
+    --force-with-lease --force-if-includes: git refuses to overwrite an
+    origin tip you fetched but never brought into the local branch, and
+    gh-stack explains the refusal. A tip the check above cleared is
+    pushed with an explicit lease on exactly that commit instead.
+
     (alias: rebase)
 
 restack --onto <ref>
@@ -235,7 +258,7 @@ restack --onto <ref>
     onto main once the parent stack has merged — only the stack's own
     commits replay onto the new base.
 
-sync [--dry-run] [--no-push|--push] [--resume | --fresh]
+sync [--dry-run] [--no-push|--push] [--resume | --fresh] [--overwrite-remote]
     Fetch main, rebase the base branch onto main, push it, then restack
     all children (every branch above it, in one resumable run). Snapshots every branch's pre-sync tip so children can be
     correctly rebased even though their parent's history was rewritten.
@@ -249,8 +272,9 @@ sync [--dry-run] [--no-push|--push] [--resume | --fresh]
     retargeting a PR's base after advancing past a merged bottom;
     the next `submit` pushes and retargets together. --resume and
     --fresh: as for restack (`sync --resume` is `restack --resume`).
+    Commits only on origin / --overwrite-remote: as for restack.
 
-merge [--dry-run] [-d|--delete-branch] [--collapse]
+merge [--dry-run] [-d|--delete-branch] [--collapse] [--skip-collapse-check]
 merge --approved [--collapse] [--dry-run] [-d|--delete-branch]
 merge --base [--dry-run] [-d|--delete-branch]
     Default (top-down collapse): squash-merge the whole stack top-down
@@ -265,6 +289,26 @@ merge --base [--dry-run] [-d|--delete-branch]
     real conflict with main stops the merge (the stack is left intact —
     resolve with `gh-stack sync`, then re-run), while merely waiting on
     pending checks is fine (auto-merge gates on them).
+
+    Collapse check: before the base PR goes to main (and at the end of
+    --collapse), merge checks that each collapsed child's squash commit
+    is still in what it was squashed into: the base branch on origin,
+    or the parent PR's head when it merged. A rebased copy (same
+    patch-id) counts, and so does a base tree holding every file the
+    squash commit wrote. It fails closed:
+      - proven missing (the base has every file the squash commit
+        touched exactly as before it): merge stops (exit 2), names the
+        PR, and prints how to put the commit back (via its patch from
+        GitHub when the commit itself can't be fetched);
+      - anything it can't establish (a GitHub or fetch failure, a
+        shallow clone, content that matches neither version): the PR is
+        UNVERIFIED, not called missing. Interactive runs ask (default
+        stop, with a retry when the failure looks transient); --yes
+        stops (exit 2) with the checks to run by hand.
+    `merge --base` runs the same check when the base PR carries PRs
+    collapsed into it by an earlier `merge --collapse` (found from
+    GitHub: merged PRs whose base was their stack parent).
+    --skip-collapse-check turns the check off.
 
     --approved  Collapse only the approved run. Walks approval from the
                 BASE up and stops at the first PR that isn't approved

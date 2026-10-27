@@ -20,7 +20,7 @@ import * as p from "./output.ts";
 import pc from "picocolors";
 import * as git from "./git.ts";
 import type { StackMetadata } from "../types.ts";
-import { removeBranchFromStack } from "./metadata.ts";
+import { removeBranchFromStack, writeMetadata } from "./metadata.ts";
 import { resolveRestackBoundary } from "./snapshot.ts";
 import { setPrBase } from "./github.ts";
 
@@ -148,9 +148,15 @@ export async function advanceNewBottom(opts: {
   recordedBase: string;
   /** false = `--no-push`: rebase + metadata only, leave origin and the PR alone (#36). */
   push?: boolean;
+  /**
+   * The child's origin tip as the remote guard checked and cleared it: the
+   * push leases on exactly that sha (see git.forcePushWithLease).
+   */
+  expect?: string;
 }): Promise<AdvanceResult> {
   const { meta, stackName, mergedBranch, child, childPr, targetRef, recordedBase } = opts;
   const push = opts.push ?? true;
+  let retargeted = false;
 
   const forkPoint = await resolveForkPoint(meta, mergedBranch, child);
   if (!forkPoint) return { ok: false, reason: "no-fork-point" };
@@ -171,16 +177,21 @@ export async function advanceNewBottom(opts: {
     // Push the rebased head first so the PR diff is clean before its base flips.
     // If it didn't land, leave the base alone: retargeting onto the trunk with
     // the old head on origin would show the merged commits in the PR (#29).
-    if (!(await git.pushStackedBranch(child))) {
+    const pushed = await git.forcePushWithLease(child, { expect: opts.expect });
+    if (!pushed.ok) {
       p.log.error(
-        `Push of ${pc.yellow(child)} failed — PR${childPr != null ? ` #${childPr}` : ""} left on its old base. Push it, then ${pc.green("gh-stack submit")} retargets it.`,
+        `Push of ${pc.yellow(child)} failed — PR${childPr != null ? ` #${childPr}` : ""} left on ${mergedBranch} for now. The next push of ${child} that lands (gh-stack restack --resume, sync) retargets it.`,
       );
+      for (const line of git.pushFailureHint(child, pushed)) console.log(`  ${line}`);
     } else if (childPr != null) {
       const moved = await setPrBase(childPr, recordedBase);
       if (moved) {
+        retargeted = true;
         p.log.success(`PR #${childPr} base → ${pc.green(recordedBase)}`);
       } else {
-        p.log.warn(`Could not retarget PR #${childPr} — set its base to ${recordedBase} manually`);
+        p.log.warn(
+          `Could not retarget PR #${childPr} — the next push of ${child} retries, or set its base to ${recordedBase} manually`,
+        );
       }
     }
   } else if (childPr != null) {
@@ -195,5 +206,14 @@ export async function advanceNewBottom(opts: {
   // parent (the trunk) and writes. Done after the git work succeeds so a failure
   // never leaves metadata describing a state git didn't reach.
   await removeBranchFromStack(meta, stackName, mergedBranch);
+
+  // Record where the child's PR really points. Until it's retargeted it still
+  // targets the merged branch, and the next successful push of the child
+  // retargets it (restack's pushStep), so it's never left there.
+  const entry = meta.stacks[stackName]?.branches[child];
+  if (entry && childPr != null) {
+    entry.prBase = retargeted ? recordedBase : mergedBranch;
+    await writeMetadata(meta);
+  }
   return { ok: true };
 }

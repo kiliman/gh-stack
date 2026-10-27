@@ -22,6 +22,8 @@ import {
 import { restackStateFile } from "../lib/paths.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot, resolveRestackBoundary, findRecordedBaseTip } from "../lib/snapshot.ts";
+import { guardRemoteContent } from "../lib/remote-guard.ts";
+import { setPrBase } from "../lib/github.ts";
 import { confirmAction, isAutoYes } from "../lib/ui.ts";
 import { describeSource, flagSetting, resolveFlag, type Resolved } from "../lib/config.ts";
 import {
@@ -51,6 +53,33 @@ let noPushReason = "--no-push";
  * run can be resumed and can report what it did. Null in a dry run.
  */
 let run: RestackState | null = null;
+
+/**
+ * `--overwrite-remote`: rewrite branches even when origin has commits they
+ * lack (#28). Off by default: such a run stops before touching anything.
+ */
+let overwriteRemote = false;
+
+/**
+ * Origin tips the remote guard checked and cleared for overwriting this run
+ * (they hold only earlier versions of local commits, or --overwrite-remote
+ * said so). Pushes over them use an explicit lease on that sha.
+ */
+let verifiedTips = new Map<string, string>();
+
+/** Stop before a run rewrites `branches` if origin holds content they lack (#28). */
+async function guardRemote(
+  meta: StackMetadata,
+  branches: string[],
+  dryRun: boolean,
+): Promise<void> {
+  const cleared = await guardRemoteContent((await readMetadata()) ?? meta, branches, {
+    command: "restack",
+    overwrite: overwriteRemote,
+    dryRun,
+  });
+  for (const [branch, sha] of cleared) verifiedTips.set(branch, sha);
+}
 
 /** What one invocation accumulates while it walks a chain. */
 interface ChainContext {
@@ -131,8 +160,19 @@ OPTIONS
               finished, prints what it did
   --fresh     Discard an interrupted run instead of resuming it, then
               restack from the current branch
+  --overwrite-remote
+              Rewrite branches even though origin has commits they lack
+              (see below). Those commits are dropped from origin
   --dry-run   Show what would happen without executing
   --verbose   Show diagnostic info (snapshot vs merge-base)
+
+COMMITS ONLY ON ORIGIN
+  Before rewriting anything, restack and sync check each branch's copy on
+  origin. If it has commits the local branch never had (e.g. the squash
+  commit \`merge --collapse\` adds to a parent PR's branch on GitHub), the run
+  stops and names them: pull or cherry-pick them first. Earlier versions of
+  local commits (left on origin by a --no-push or interrupted run) don't
+  count. Interactive runs ask; --yes stops.
 
 INTERRUPTED RUNS
   A restack or sync saves its progress after every rebase and push. If one
@@ -160,6 +200,8 @@ ALIASES
   }
 
   run = null;
+  overwriteRemote = args.includes("--overwrite-remote");
+  verifiedTips = new Map();
 
   if (resume && (fresh || ontoFlag)) {
     p.cancel(`--resume can't be combined with ${fresh ? "--fresh" : "--onto"}.`);
@@ -643,6 +685,9 @@ async function handleResume(
     for (const line of formatRunLog(state)) console.log(line);
   }
 
+  // Origin may have moved while the run was stopped.
+  await guardRemote(meta, state.chain, ctx.dryRun);
+
   // A dry run reads the state but never writes it: `run` stays null, so
   // nothing below records or saves.
   if (!ctx.dryRun) {
@@ -767,6 +812,9 @@ async function handleFreshRestack(meta: StackMetadata, ctx: ChainContext): Promi
     }
   }
 
+  // The base branches are force-pushed too, so they're checked with the rest.
+  await guardRemote(meta, chain, ctx.dryRun);
+
   if (!ctx.dryRun) {
     // Take snapshot before destructive operation. This preserves the current
     // tip of every branch so subsequent restacks (after a parent is rewritten)
@@ -885,6 +933,7 @@ async function handleReroot(
   console.log();
 
   if (ctx.dryRun) {
+    await guardRemote(meta, buildRebaseChain(stack, root), true);
     p.log.warn(`[DRY RUN] Would rebase ${root} onto ${newBase} (from ${oldBaseTip.slice(0, 8)})`);
     const children = ordered.slice(1);
     if (children.length > 0) {
@@ -900,6 +949,8 @@ async function handleReroot(
     p.cancel("Cancelled");
     process.exit(0);
   }
+
+  await guardRemote(meta, buildRebaseChain(stack, root), false);
 
   // Snapshot before rewriting, then commit the new base into metadata.
   await takeSnapshot(meta, stackName, "reroot");
@@ -971,11 +1022,12 @@ export async function syncChain(
   meta: StackMetadata,
   stackName: string,
   ordered: string[],
-  opts: { trunkRef: string; push: Resolved },
+  opts: { trunkRef: string; push: Resolved; verified: Map<string, string> },
 ): Promise<void> {
   noPush = !opts.push.value;
   noPushReason = pushReason(opts.push);
   run = null;
+  verifiedTips = opts.verified;
   const ctx = newContext(false, false);
   const root = ordered[0]!;
   const { trunkRef } = opts;
@@ -1289,6 +1341,10 @@ async function pushStep(
     case "pushed":
       (await remoteTips(ctx)).set(branch, await git.revParse(branch));
       await record({ branch, action: "pushed" });
+      await retargetIfStale(meta, stackName, branch);
+      break;
+    case "in-sync":
+      await retargetIfStale(meta, stackName, branch);
       break;
     case "failed":
       ctx.unpublished.add(branch);
@@ -1303,6 +1359,35 @@ async function pushStep(
       break;
     default:
       break; // already in sync, or pushing is off
+  }
+}
+
+/**
+ * A PR still targeting a branch that's no longer its parent (an advance past a
+ * merged bottom whose push, or retarget, failed): now that the branch is on
+ * origin, point the PR at its parent. Only acts on a recorded `prBase` that
+ * differs from the parent, so it never guesses a PR's base.
+ */
+async function retargetIfStale(
+  meta: StackMetadata,
+  stackName: string,
+  branch: string,
+): Promise<void> {
+  const entry = meta.stacks[stackName]?.branches[branch];
+  if (entry?.pr == null || !entry.prBase || entry.prBase === entry.parent) return;
+  if (!(await setPrBase(entry.pr, entry.parent))) {
+    p.log.warn(
+      `PR #${entry.pr} still targets ${entry.prBase}; couldn't retarget it to ${entry.parent}. ${pc.green("gh-stack submit")} retries.`,
+    );
+    return;
+  }
+  p.log.success(`PR #${entry.pr} base → ${pc.green(entry.parent)}`);
+  entry.prBase = entry.parent;
+  const fresh = await readMetadata();
+  const saved = fresh?.stacks[stackName]?.branches[branch];
+  if (fresh && saved) {
+    saved.prBase = entry.parent;
+    await writeMetadata(fresh);
   }
 }
 
@@ -1369,23 +1454,15 @@ async function pushBranchRef(
     return "declined";
   }
   p.log.info(`Pushing ${branch}...`);
-  if (await git.pushStackedBranch(branch)) {
+  // A tip the remote guard already checked (only earlier versions of local
+  // commits, or --overwrite-remote) gets an explicit lease on exactly that sha.
+  const result = await git.forcePushWithLease(branch, { expect: verifiedTips.get(branch) });
+  if (result.ok) {
     p.log.success("Pushed successfully");
     return "pushed";
   }
   p.log.error(`Push of ${branch} failed — branches above it won't be pushed onto it`);
-  // --force-with-lease compares against the remote-tracking ref. If that's
-  // behind what origin really has, the lease refuses: say why, and how to see
-  // what's there before overwriting it.
-  const tracking = await git.revParse(`refs/remotes/origin/${branch}`).catch(() => null);
-  if (remoteSha && tracking !== remoteSha) {
-    console.log(
-      `  origin/${branch} is ${remoteSha.slice(0, 8)}, but your last fetch saw ${tracking ? tracking.slice(0, 8) : "nothing"}, so the lease refused.`,
-    );
-    console.log(
-      `  Look at what's there first: ${pc.green(`git fetch origin ${branch} && git log ${branch}..origin/${branch}`)}`,
-    );
-    console.log(`  Then: ${pc.green("gh-stack restack --resume")}`);
-  }
+  for (const line of git.pushFailureHint(branch, result)) console.log(`  ${line}`);
+  console.log(`  Then: ${pc.green("gh-stack restack --resume")}`);
   return "failed";
 }

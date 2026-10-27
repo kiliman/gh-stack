@@ -518,16 +518,13 @@ describe("review fixes (#49)", () => {
     await $`git -C ${remoteDir} update-ref refs/heads/pr2 ${await sha("pr1~1")}`.quiet();
     await checkout(tmpDir, "pr2");
 
-    const first = await runCli(["restack"]);
-    expect(first.exitCode).toBe(1);
-    expect(first.out).toContain("Push of pr2 failed");
-    expect(first.out).toContain("so the lease refused");
-    expect(first.out).toContain("git fetch origin pr2");
-
-    // Following the hint gets the run through.
-    await $`git -C ${tmpDir} fetch -q origin`.quiet();
-    const resumed = await runCli(["restack", "--resume"]);
+    // The remote guard reads origin's pr2, sees it's an ancestor of local pr2
+    // (nothing new), and clears it: the push gets an explicit lease on that
+    // exact sha, so it lands without a fetch. (On #49 alone the implicit lease
+    // refused here and the hint said to fetch.)
+    const resumed = await runCli(["restack"]);
     expect(resumed.exitCode).toBe(0);
+    expect(resumed.out).toContain("Pushing pr2");
     for (const b of ["pr2", "pr3"]) expect(await remoteSha(b)).toBe(await sha(b));
   });
 

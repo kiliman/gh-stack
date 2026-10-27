@@ -363,4 +363,192 @@ describe("join refusals", () => {
     expect(metaAfter.stacks).toEqual(metaBefore.stacks);
     await $`git -C ${tmpDir} rebase --abort`.quiet();
   });
+
+  test("the re-run hint after a sync conflict keeps --above and --no-push", async () => {
+    await createLinearStack(tmpDir);
+    // incoming adds pr1.txt with other content: syncing it onto pr1 conflicts.
+    await createBranch(tmpDir, "incoming", "main");
+    await makeCommit(tmpDir, "pr1.txt", "incoming's pr1\n", "incoming: clash with pr1");
+    remoteDir = await setupRemote(tmpDir);
+    await pushAllBranches(tmpDir);
+    await checkout(tmpDir, "pr3");
+
+    const res = await runCli(["join", "incoming", "--above", "pr1", "--no-push"]);
+    expect(res.exitCode).toBe(2);
+    expect(res.out).toContain("gh-stack join incoming --above pr1 --no-push");
+    await $`git -C ${tmpDir} rebase --abort`.quiet();
+  });
+
+  test("an unknown flag or extra argument is a usage error, never a bottom join", async () => {
+    await behindMainScenario();
+    const before = await repoState();
+
+    const typo = await runCli(["join", "incoming", "--abvoe", "pr1"]);
+    expect(typo.exitCode).toBe(1);
+    expect(typo.out).toContain("Unknown option --abvoe");
+    expect(typo.out).toContain("Usage: gh-stack join <branch>");
+
+    const extra = await runCli(["join", "incoming", "pr1"]);
+    expect(extra.exitCode).toBe(1);
+    expect(extra.out).toContain("Unexpected argument pr1");
+
+    expect(await repoState()).toBe(before);
+  });
+});
+
+describe("join: incoming branch not on origin (#46 review)", () => {
+  test("push mode refuses a local-only incoming branch before touching anything", async () => {
+    await behindMainScenario();
+    await $`git -C ${tmpDir} push -q origin --delete incoming`.quiet();
+    const before = await repoState();
+
+    const res = await runCli(["join", "incoming"]);
+    expect(res.exitCode).toBe(1);
+    expect(res.out).toContain("isn't on origin");
+    expect(res.out).toContain("git push -u origin incoming");
+    expect(res.out).toContain("gh-stack join incoming --no-push");
+    expect(await repoState()).toBe(before);
+  });
+
+  test("--no-push joins a local-only incoming branch", async () => {
+    await behindMainScenario();
+    await $`git -C ${tmpDir} push -q origin --delete incoming`.quiet();
+
+    const res = await runCli(["join", "incoming", "--no-push"]);
+    expect(res.exitCode).toBe(0);
+    expect(await prFiles("incoming", "pr1")).toEqual(["pr1.txt"]);
+    expect(await remoteSha("incoming")).toBe("");
+  });
+
+  test("a rejected push of the incoming branch stops before any child moves", async () => {
+    await behindMainScenario();
+    const original = await git("rev-parse", "incoming");
+    // Someone else moved origin/incoming; our tracking ref still has the old tip,
+    // so the --force-with-lease push is rejected.
+    await $`git -C ${tmpDir} push -q -f origin main:incoming`.quiet();
+    await $`git -C ${tmpDir} update-ref refs/remotes/origin/incoming ${original}`.quiet();
+    const kids = { pr1: await git("rev-parse", "pr1"), pr2: await git("rev-parse", "pr2") };
+    const metaBefore = await readMetadata(tmpDir);
+
+    const res = await runCli(["join", "incoming"]);
+    expect(res.exitCode).toBe(1);
+    expect(res.out).toContain("isn't on origin at its synced tip");
+    expect(await git("rev-parse", "pr1")).toBe(kids.pr1);
+    expect(await git("rev-parse", "pr2")).toBe(kids.pr2);
+    expect((await readMetadata(tmpDir)).stacks).toEqual(metaBefore.stacks);
+    expect((await ghCalls()).some((c) => c.startsWith("pr edit"))).toBe(false);
+  });
+});
+
+describe("join: child cut from an earlier tip of the incoming branch (#46 review)", () => {
+  /** incoming = a, b on main; pr1 is cut from that tip and adds p. Stack: pr1 alone. */
+  async function childOfIncoming(): Promise<string> {
+    await createBranch(tmpDir, "incoming", "main");
+    await makeCommit(tmpDir, "a.txt", "a\n", "incoming: a");
+    const tip = await makeCommit(tmpDir, "b.txt", "b1\n", "incoming: b");
+    await createBranch(tmpDir, "pr1", "incoming");
+    await makeCommit(tmpDir, "p.txt", "p\n", "pr1: p");
+    await writeMetadata(tmpDir, {
+      version: 2,
+      current_stack: "test-stack",
+      stacks: {
+        "test-stack": {
+          description: "",
+          last_branch: "pr1",
+          branches: { pr1: { parent: "main", pr: 11 } },
+        },
+      },
+    });
+    return tip;
+  }
+
+  async function publishAndStandOnPr1(): Promise<void> {
+    remoteDir = await setupRemote(tmpDir);
+    await pushAllBranches(tmpDir);
+    await checkout(tmpDir, "pr1");
+  }
+
+  test("refuses when incoming was rewritten after the child was cut, with the exact fix", async () => {
+    const oldTip = await childOfIncoming();
+    // Rewrite incoming's b with different content: pr1 still carries old b.
+    await checkout(tmpDir, "incoming");
+    await Bun.write(`${tmpDir}/b.txt`, "b2\n");
+    await $`git -C ${tmpDir} commit -q -a --amend -m ${"incoming: b (reworked)"}`.quiet();
+    await publishAndStandOnPr1();
+    const before = await repoState();
+
+    const res = await runCli(["join", "incoming"]);
+    expect(res.exitCode).toBe(1);
+    expect(res.out).toContain("older version of incoming");
+    expect(res.out).toContain("incoming: b");
+    const fix = `git rebase --onto incoming ${oldTip.slice(0, 8)} pr1`;
+    expect(res.out).toContain(fix);
+    expect(await repoState()).toBe(before);
+
+    // Following the hint makes the join go through cleanly.
+    await $`git -C ${tmpDir} rebase -q --onto incoming ${oldTip} pr1`.quiet();
+    const again = await runCli(["join", "incoming"]);
+    expect(again.exitCode).toBe(0);
+    expect(await prFiles("incoming", "pr1")).toEqual(["p.txt"]);
+    expect(await git("show", "pr1:b.txt")).toBe("b2");
+  });
+
+  test("refuses a child carrying a copy of an incoming commit (patch-id)", async () => {
+    await createBranch(tmpDir, "incoming", "main");
+    const a = await makeCommit(tmpDir, "a.txt", "a\n", "incoming: a");
+    await createBranch(tmpDir, "pr1", "main");
+    // -x changes the message, so it's a new commit with the same patch (a plain
+    // cherry-pick within the same second can recreate the identical commit).
+    await $`git -C ${tmpDir} cherry-pick -x ${a}`.quiet();
+    await makeCommit(tmpDir, "p.txt", "p\n", "pr1: p");
+    await writeMetadata(tmpDir, {
+      version: 2,
+      current_stack: "test-stack",
+      stacks: {
+        "test-stack": {
+          description: "",
+          last_branch: "pr1",
+          branches: { pr1: { parent: "main", pr: 11 } },
+        },
+      },
+    });
+    await publishAndStandOnPr1();
+    const before = await repoState();
+
+    const res = await runCli(["join", "incoming"]);
+    expect(res.exitCode).toBe(1);
+    expect(res.out).toContain("1 stale commit(s)");
+    expect(res.out).toContain("incoming: a");
+    expect(await repoState()).toBe(before);
+  });
+
+  test("a child cut from an earlier tip that incoming only appended to joins cleanly", async () => {
+    await childOfIncoming();
+    await checkout(tmpDir, "incoming");
+    await makeCommit(tmpDir, "c.txt", "c\n", "incoming: c");
+    await publishAndStandOnPr1();
+
+    const res = await runCli(["join", "incoming"]);
+    expect(res.exitCode).toBe(0);
+    expect(await commitCount("incoming", "pr1")).toBe(1);
+    expect(await prFiles("incoming", "pr1")).toEqual(["p.txt"]);
+  });
+});
+
+describe("join: rename collision (#46 review)", () => {
+  test("keeps the old name when the new bottom's name belongs to an archived stack", async () => {
+    await behindMainScenario("pr1");
+    const meta0 = await readMetadata(tmpDir);
+    meta0.archive = {
+      incoming: { description: "old", last_branch: "x", branches: { x: { parent: "main" } } },
+    };
+    await writeMetadata(tmpDir, meta0);
+
+    const res = await runCli(["join", "incoming"]);
+    expect(res.exitCode).toBe(0);
+    const meta = await readMetadata(tmpDir);
+    expect(Object.keys(meta.stacks)).toEqual(["pr1"]);
+    expect(meta.stacks.pr1?.branches.incoming?.parent).toBe("main");
+    expect(meta.archive?.incoming?.description).toBe("old");
+  });
 });

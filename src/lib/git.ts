@@ -264,10 +264,10 @@ export async function deleteTagsMatching(pattern: string): Promise<void> {
 }
 
 /**
- * Check if a tag exists.
+ * Whether a ref (branch, tag, remote-tracking ref, or any revision) resolves.
  */
-export async function tagExists(name: string): Promise<boolean> {
-  const { exitCode } = await $`git rev-parse --verify ${name}`.nothrow().quiet();
+export async function refExists(ref: string): Promise<boolean> {
+  const { exitCode } = await $`git rev-parse --verify --quiet ${ref}`.nothrow().quiet();
   return exitCode === 0;
 }
 

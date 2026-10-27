@@ -605,9 +605,9 @@ describe("tag cleanup", () => {
 
     await git.deleteTagsMatching(git.STACK_SYNC_TAG_GLOB);
 
-    expect(await git.tagExists(git.tempBaseTagName("pr1"))).toBe(false);
-    expect(await git.tagExists(git.tempBaseTagName("pr2"))).toBe(false);
-    expect(await git.tagExists("keep-this-tag")).toBe(true);
+    expect(await git.refExists(git.tempBaseTagName("pr1"))).toBe(false);
+    expect(await git.refExists(git.tempBaseTagName("pr2"))).toBe(false);
+    expect(await git.refExists("keep-this-tag")).toBe(true);
   });
 
   test("deleteTagsMatching is safe when no tags exist", async () => {

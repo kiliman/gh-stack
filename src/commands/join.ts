@@ -64,9 +64,11 @@ OPTIONS
   --yes, -y         Skip confirmations
   --verbose, -v     Show rebase-boundary diagnostics
 
-The branch must exist locally. A branch alone in a one-branch stack (what
-${"`"}submit${"`"} makes of a standalone PR) is absorbed; a branch in a larger stack is
-refused.
+The branch must exist locally and, unless --no-push, on origin. A branch alone
+in a one-branch stack (what ${"`"}submit${"`"} makes of a standalone PR) is absorbed; a
+branch in a larger stack is refused. A branch above the insertion point that was
+cut from an older, since-rewritten version of the incoming branch is refused
+with the rebase that drops its stale copies.
 
 CONFLICTS
   Syncing the incoming branch: the stack is untouched until it succeeds.
@@ -130,18 +132,8 @@ export default async function join(args: string[]): Promise<void> {
     return;
   }
 
-  const dryRun = args.includes("--dry-run");
+  const { incoming, above, dryRun, verbose } = parseArgs(args);
   const noPush = wantsNoPush(args);
-  const verbose = args.includes("--verbose") || args.includes("-v");
-  let above: string | undefined;
-  let incoming: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--above") {
-      above = args[++i];
-      if (!above) fail("--above needs a branch name");
-    } else if (!args[i]!.startsWith("-")) incoming ??= args[i];
-  }
-  if (!incoming) fail(`Usage: ${pc.green("gh-stack join <branch> [--above <branch>]")}`);
 
   if (await git.isRebaseInProgress()) {
     fail(
@@ -160,7 +152,8 @@ export default async function join(args: string[]): Promise<void> {
   const trunk = await git.trunkBranch();
   if (!dryRun) await $`git fetch origin ${trunk}`.nothrow().quiet();
 
-  const plan = await buildPlan(meta, incoming, above, startBranch, trunk);
+  const plan = await buildPlan(meta, { incoming, above, noPush, startBranch, trunk });
+  const rerun = rerunCommand(incoming, above, noPush);
   printPlan(plan, startBranch);
 
   if (dryRun) {
@@ -192,7 +185,6 @@ export default async function join(args: string[]): Promise<void> {
     await git.checkout(plan.incoming);
     const ok = await git.rebaseOnto(plan.newParentTip, plan.incomingBoundary, plan.incoming);
     if (!ok) {
-      const rerun = `gh-stack join ${plan.incoming}${plan.position === "above" ? ` --above ${plan.newParent}` : ""}`;
       console.log();
       p.log.error(`Rebase conflict syncing ${pc.yellow(plan.incoming)} onto ${plan.newParentRef}.`);
       console.log("  The stack is unchanged. Resolve the conflicts, then re-run the join:");
@@ -230,11 +222,29 @@ export default async function join(args: string[]): Promise<void> {
     }
   }
 
+  // ── 3. Publish the incoming branch — and confirm it landed before anything
+  //       is built on it. Still before the metadata write: a declined or
+  //       rejected push leaves the stack unchanged.
+  await publishBranch(joined, plan.incoming, { noPush });
+  if (!noPush) {
+    const remote = (await git.remoteHeads()).get(plan.incoming);
+    if (remote !== (await git.revParse(plan.incoming))) {
+      p.log.error(
+        `${pc.yellow(plan.incoming)} isn't on origin at its synced tip (push declined or rejected), so nothing was built on it.`,
+      );
+      console.log("  The stack is unchanged. Publish it and re-run, or re-run locally only:");
+      console.log(`    ${pc.green(`git push --force-with-lease origin ${plan.incoming}`)}`);
+      console.log(`    ${pc.green(rerun)}`);
+      console.log(`    ${pc.green(rerunCommand(incoming, above, true))}`);
+      console.log(`  Or put ${plan.incoming} back: ${pc.green("gh-stack undo")}`);
+      process.exit(1);
+    }
+  }
+
   await writeMetadata(joined);
   const chain = buildRebaseChain(joined.stacks[stackName]!, plan.incoming);
 
-  // ── 3. Publish the incoming branch, then retarget PR bases onto it ──
-  await publishBranch(await freshMeta(), plan.incoming, { noPush });
+  // ── 4. Retarget PR bases onto it ──
   const retargeted = noPush ? [] : await retargetPrs(plan);
   if (noPush && expectedRetargets(plan) > 0) {
     p.log.info(
@@ -242,7 +252,7 @@ export default async function join(args: string[]): Promise<void> {
     );
   }
 
-  // ── 4. Restack everything above it (restack's own loop: conflicts → --resume) ──
+  // ── 5. Restack everything above it (restack's own loop: conflicts → --resume) ──
   let touched: string[] = [plan.incoming];
   if (chain.length > 1) {
     console.log();
@@ -253,7 +263,7 @@ export default async function join(args: string[]): Promise<void> {
     touched = [...touched, ...res.touched];
   }
 
-  // ── 5. Verify: no child carries more than its own commits ──
+  // ── 6. Verify: no child carries more than its own commits ──
   await verifyResult(plan);
 
   if (startBranch && startBranch !== (await git.currentBranch().catch(() => null))) {
@@ -295,17 +305,31 @@ export default async function join(args: string[]): Promise<void> {
 
 async function buildPlan(
   meta: StackMetadata,
-  incoming: string,
-  above: string | undefined,
-  startBranch: string | null,
-  trunk: string,
+  opts: {
+    incoming: string;
+    above: string | undefined;
+    noPush: boolean;
+    startBranch: string | null;
+    trunk: string;
+  },
 ): Promise<JoinPlan> {
+  const { incoming, above, noPush, startBranch, trunk } = opts;
   if (incoming === trunk || incoming === "main" || incoming === "master") {
     fail(`${pc.yellow(incoming)} is the trunk — it can't join a stack.`);
   }
   if (!(await git.localBranchExists(incoming))) {
     fail(
       `Branch ${pc.yellow(incoming)} doesn't exist locally.\n\n  Fetch it first:\n    ${pc.green(`git fetch origin ${incoming}:${incoming}`)}`,
+    );
+  }
+  // Pushing children onto a branch origin doesn't have would leave their PRs
+  // (and the incoming PR's base) pointing at nothing. Local-only is fine under
+  // --no-push, which publishes nothing.
+  if (!noPush && !(await git.remoteBranchExists(incoming))) {
+    fail(
+      `${pc.yellow(incoming)} isn't on origin, so the branches restacked onto it couldn't be pushed or retargeted.\n\n` +
+        `  Publish it first, then re-run:\n    ${pc.green(`git push -u origin ${incoming}`)}\n    ${pc.green(rerunCommand(incoming, above, false))}\n\n` +
+        `  Or join locally only:\n    ${pc.green(rerunCommand(incoming, above, true))}`,
     );
   }
 
@@ -376,9 +400,9 @@ async function buildPlan(
     }
   }
 
-  const trunkRef = (await refExists(`origin/${trunk}`)) ? `origin/${trunk}` : trunk;
+  const trunkRef = (await git.refExists(`origin/${trunk}`)) ? `origin/${trunk}` : trunk;
   const newParentRef = isTrunkName(newParent)
-    ? (await refExists(`origin/${newParent}`))
+    ? (await git.refExists(`origin/${newParent}`))
       ? `origin/${newParent}`
       : newParent
     : newParent;
@@ -406,11 +430,39 @@ async function buildPlan(
   const childPlans: ChildPlan[] = [];
   const upstack: string[] = [];
   for (const child of children) {
-    // A child already built on the incoming branch keeps those commits below its own.
-    const boundary = (await git.isAncestor(incomingTip, child))
-      ? incomingTip
-      : await git.mergeBase(child, newParentTip);
+    // A child built on (an earlier tip of) the incoming branch keeps those
+    // commits below its own: its fork point with incoming wins when higher.
+    // restack's resolver lands on the same commit (the guard checks).
+    const boundary = await higherOf(
+      await git.mergeBase(child, newParentTip),
+      await git.mergeBase(child, incomingTip),
+    );
     if (!boundary) fail(`${pc.yellow(child)} shares no history with ${pc.yellow(newParent)}.`);
+
+    const stale = await staleIncomingCommits(meta, {
+      child,
+      boundary,
+      incoming,
+      incomingTip,
+      incomingBoundary,
+    });
+    if (stale.commits.length > 0) {
+      const chain = buildRebaseChain(stack, child);
+      const linear = chain.every((b) => getChildren(stack, b).length <= 1);
+      const top = linear ? chain.at(-1)! : child;
+      const updateRefs = top !== child ? "--update-refs " : "";
+      const fix = stale.oldTip
+        ? `git rebase ${updateRefs}--onto ${incoming} ${short(stale.oldTip)} ${top}`
+        : `git rebase -i ${updateRefs}--onto ${incoming} ${short(boundary)} ${top}   ${pc.dim("(drop the commits above)")}`;
+      fail(
+        `${pc.yellow(child)} was cut from an older version of ${pc.yellow(incoming)} that has since been rewritten, and still carries ${stale.commits.length} stale commit(s) from it:\n` +
+          stale.commits.map((c) => `    ${pc.dim(c)}`).join("\n") +
+          `\n\n  Restacking would replay those old copies on top of the current ${incoming}.` +
+          `\n  Move ${child} onto the current ${incoming} first, then re-run the join:\n` +
+          `    ${pc.green(fix)}\n    ${pc.green(rerunCommand(incoming, above, noPush))}`,
+      );
+    }
+
     childPlans.push({
       branch: child,
       pr: stack.branches[child]!.pr ?? null,
@@ -421,22 +473,21 @@ async function buildPlan(
     upstack.push(...buildRebaseChain(stack, child).slice(1));
   }
 
-  // Renaming: a stack named after its old bottom branch follows the bottom.
+  // Renaming: a stack named after its old bottom branch follows the bottom —
+  // unless that name is taken by another active stack or an archived one
+  // (`archive --restore` would then collide).
   const oldRoot = getOrderedBranches(stack)[0];
-  const nameFree = !meta.stacks[incoming] || incoming === absorbedStack;
+  const nameFree =
+    (!meta.stacks[incoming] || incoming === absorbedStack) && !meta.archive?.[incoming];
   const finalName =
     position === "bottom" && stackName === oldRoot && nameFree ? incoming : stackName;
 
   const incomingPr = absorbedEntry?.pr ?? (await findOpenPrForBranch(incoming));
 
-  const resulting = structuredClone(stack);
-  for (const child of children) resulting.branches[child]!.parent = incoming;
-  resulting.branches[incoming] = {
-    ...absorbedEntry,
-    parent: newParent,
-    pr: incomingPr ?? undefined,
-  };
-  if (children.length === 0) resulting.last_branch = incoming;
+  const splice = { stackName, finalName, incoming, incomingPr, absorbedStack, newParent };
+  const preview = structuredClone(meta);
+  applyJoin(preview, { ...splice, children: childPlans });
+  const resulting = preview.stacks[finalName]!;
 
   return {
     stackName,
@@ -522,9 +573,25 @@ function printPlan(plan: JoinPlan, startBranch: string | null): void {
  */
 async function joinedMetadata(plan: JoinPlan): Promise<StackMetadata> {
   const meta = await freshMeta();
-  const stack = meta.stacks[plan.stackName];
-  if (!stack) fail(`Stack ${pc.yellow(plan.stackName)} disappeared — re-run the join.`);
+  if (!meta.stacks[plan.stackName]) {
+    fail(`Stack ${pc.yellow(plan.stackName)} disappeared — re-run the join.`);
+  }
+  applyJoin(meta, plan);
+  return meta;
+}
 
+/** What `applyJoin` needs from a plan. */
+type JoinSplice = Pick<
+  JoinPlan,
+  "stackName" | "finalName" | "incoming" | "incomingPr" | "absorbedStack" | "newParent"
+> & { children: { branch: string }[] };
+
+/**
+ * Apply the join to `meta` in place — no I/O. The dry-run preview and the real
+ * write both go through this, so what the preview shows is what gets written.
+ */
+export function applyJoin(meta: StackMetadata, plan: JoinSplice): void {
+  const stack = meta.stacks[plan.stackName]!;
   const entry: Branch = {
     ...(plan.absorbedStack ? meta.stacks[plan.absorbedStack]?.branches[plan.incoming] : {}),
     parent: plan.newParent,
@@ -546,7 +613,6 @@ async function joinedMetadata(plan: JoinPlan): Promise<StackMetadata> {
     meta.stacks[plan.finalName] = stack;
   }
   meta.current_stack = plan.finalName;
-  return meta;
 }
 
 interface Retarget {
@@ -572,21 +638,12 @@ function expectedRetargets(plan: JoinPlan): number {
 
 /**
  * Point the incoming PR at its new parent and each child PR at the incoming
- * branch. Only once the synced incoming branch is on origin: against the stale
- * remote copy a child PR's diff would show the very commits the sync dropped.
+ * branch. The caller has confirmed the synced incoming tip is on origin:
+ * against a stale remote copy a child PR's diff would show the very commits
+ * the sync dropped.
  */
 async function retargetPrs(plan: JoinPlan): Promise<Retarget[]> {
   const targets = plannedRetargets(plan);
-  if (targets.length === 0) return [];
-
-  const remote = (await git.remoteHeads()).get(plan.incoming);
-  if (remote !== (await git.revParse(plan.incoming))) {
-    p.log.warn(
-      `${pc.yellow(plan.incoming)} isn't on origin at its synced tip, so PR bases were left alone. Publish and retarget with ${pc.green("gh-stack submit")}.`,
-    );
-    return [];
-  }
-
   const done: Retarget[] = [];
   for (const t of targets) {
     if (await setPrBase(t.pr, t.base)) {
@@ -639,6 +696,42 @@ async function verifyResult(plan: JoinPlan): Promise<void> {
 
 // ── Helpers ──
 
+const USAGE = "gh-stack join <branch> [--above <branch>] [--dry-run] [--no-push] [--verbose]";
+
+/**
+ * Strict parsing: an unknown flag or a stray positional is an error, never
+ * ignored — a typo like `--abvoe pr1` must not quietly become a bottom join.
+ */
+export function parseArgs(args: string[]): {
+  incoming: string;
+  above: string | undefined;
+  dryRun: boolean;
+  verbose: boolean;
+} {
+  let incoming: string | undefined;
+  let above: string | undefined;
+  let dryRun = false;
+  let verbose = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--above") {
+      above = args[++i];
+      if (!above || above.startsWith("-")) usageError("--above needs a branch name.");
+    } else if (arg === "--dry-run") dryRun = true;
+    else if (arg === "--no-push") continue; // read by wantsNoPush
+    else if (arg === "--verbose" || arg === "-v") verbose = true;
+    else if (arg.startsWith("-")) usageError(`Unknown option ${pc.yellow(arg)}.`);
+    else if (incoming === undefined) incoming = arg;
+    else usageError(`Unexpected argument ${pc.yellow(arg)} — join takes one branch.`);
+  }
+  if (!incoming) usageError("Which branch should join the stack?");
+  return { incoming, above, dryRun, verbose };
+}
+
+function usageError(message: string): never {
+  fail(`${message}\n\n  Usage: ${pc.green(USAGE)}\n  See ${pc.green("gh-stack join --help")}.`);
+}
+
 function fail(message: string): never {
   p.cancel(message);
   process.exit(1);
@@ -658,17 +751,90 @@ async function freshMeta(): Promise<StackMetadata> {
   return meta;
 }
 
-async function refExists(ref: string): Promise<boolean> {
-  const { exitCode } = await $`git rev-parse --verify --quiet ${ref}`.nothrow().quiet();
-  return exitCode === 0;
-}
-
 /** Of two commits, the one that descends from the other (the safer rebase boundary). */
 async function higherOf(a: string | null, b: string | null): Promise<string | null> {
   if (!a || !b || a === b) return a ?? b;
   if (await git.isAncestor(a, b)) return b;
   if (await git.isAncestor(b, a)) return a;
-  return a; // unrelated forks: the trunk fork point (`a`) is the defined one
+  return a; // unrelated forks: the first (the parent/trunk fork point) is the defined one
+}
+
+/** The join command to re-run, with the user's own --above / --no-push kept. */
+function rerunCommand(incoming: string, above: string | undefined, noPush: boolean): string {
+  return `gh-stack join ${incoming}${above !== undefined ? ` --above ${above}` : ""}${noPush ? " --no-push" : ""}`;
+}
+
+/**
+ * Commits in `boundary..child` that are stale copies of the incoming branch's
+ * history: the child was cut from incoming, then incoming was rewritten.
+ * Restacking would replay them on top of the rewritten incoming.
+ *
+ * Two signals: an old incoming tip (from its reflog, origin/<incoming>'s
+ * reflog, or a snapshot) that the child contains beyond its boundary — which
+ * also pins the right fork point — and commits whose patch-id matches one of
+ * incoming's own commits (rewritten history with no surviving old tip).
+ */
+async function staleIncomingCommits(
+  meta: StackMetadata,
+  s: {
+    child: string;
+    boundary: string;
+    incoming: string;
+    incomingTip: string;
+    incomingBoundary: string;
+  },
+): Promise<{ oldTip: string | null; commits: string[] }> {
+  const tips = new Set<string>();
+  for (const ref of [`refs/heads/${s.incoming}`, `refs/remotes/origin/${s.incoming}`]) {
+    const { stdout } = await $`git reflog show --format=%H ${ref}`.nothrow().quiet();
+    for (const sha of stdout.toString().split("\n").filter(Boolean).slice(0, 100)) tips.add(sha);
+  }
+  for (const snap of meta.snapshots ?? []) {
+    const sha = snap.branches[s.incoming];
+    if (sha) tips.add(sha);
+  }
+  tips.delete(s.incomingTip);
+
+  let oldTip: string | null = null;
+  for (const tip of tips) {
+    if (!(await git.isAncestor(tip, s.child)) || (await git.isAncestor(tip, s.boundary))) continue;
+    if (!oldTip || (await git.isAncestor(oldTip, tip))) oldTip = tip;
+  }
+
+  const commits: string[] = [];
+  const seen = new Set<string>();
+  if (oldTip) {
+    const { stdout } = await $`git log --reverse --format=${"%h %s"} ${s.boundary}..${oldTip}`
+      .nothrow()
+      .quiet();
+    for (const line of stdout.toString().split("\n").filter(Boolean)) {
+      commits.push(line);
+      seen.add(line.split(" ")[0]!);
+    }
+  }
+
+  const incomingPatches = new Set((await patchIds(s.incomingBoundary, s.incomingTip)).keys());
+  for (const [patch, sha] of await patchIds(s.boundary, s.child)) {
+    if (!incomingPatches.has(patch)) continue;
+    const { stdout } = await $`git log -1 --format=${"%h %s"} ${sha}`.nothrow().quiet();
+    const line = stdout.toString().trim();
+    if (line && !seen.has(line.split(" ")[0]!)) commits.push(line);
+  }
+  return { oldTip, commits };
+}
+
+/** patch-id → commit sha for the non-merge commits in `from..to`, oldest first. */
+async function patchIds(from: string, to: string): Promise<Map<string, string>> {
+  const { stdout } =
+    await $`git log -p --reverse --no-merges ${from}..${to} | git patch-id --stable`
+      .nothrow()
+      .quiet();
+  const ids = new Map<string, string>();
+  for (const line of stdout.toString().split("\n").filter(Boolean)) {
+    const [patch, sha] = line.split(" ");
+    if (patch && sha && !ids.has(patch)) ids.set(patch, sha);
+  }
+  return ids;
 }
 
 /** Commits and diff size of `from..to` — what a branch's PR shows vs its parent. */

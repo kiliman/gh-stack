@@ -540,8 +540,7 @@ export async function publishBranch(
   branch: string,
   opts: { noPush: boolean },
 ): Promise<void> {
-  noPush = opts.noPush;
-  await pushBranchRef(meta, branch);
+  await withNoPush(opts.noPush, () => pushBranchRef(meta, branch));
 }
 
 /**
@@ -556,11 +555,27 @@ export async function restackChain(
   startIndex: number,
   opts: { noPush: boolean; verbose: boolean },
 ): Promise<{ rebased: string[]; touched: string[] }> {
-  noPush = opts.noPush;
   const rebased: string[] = [];
   const touched: string[] = [];
-  await processChain(meta, stackName, chain, startIndex, rebased, touched, false, opts.verbose);
+  await withNoPush(opts.noPush, () =>
+    processChain(meta, stackName, chain, startIndex, rebased, touched, false, opts.verbose),
+  );
   return { rebased, touched };
+}
+
+/**
+ * Run `fn` with the module-level `noPush` set, restoring it afterwards. The
+ * exported entry points take `noPush` as a parameter; this scopes it instead of
+ * threading it through processChain/pushBranchRef, which restack() also drives.
+ */
+async function withNoPush<T>(value: boolean, fn: () => Promise<T>): Promise<T> {
+  const saved = noPush;
+  noPush = value;
+  try {
+    return await fn();
+  } finally {
+    noPush = saved;
+  }
 }
 
 async function processChain(

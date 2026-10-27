@@ -327,9 +327,21 @@ learn [--skill] [--harness <name>] [--global] [--force]
       Claude Code  <root>/.claude/skills/using-gh-stack/SKILL.md
       Codex        <root>/.codex/skills/using-gh-stack/SKILL.md
       Cursor       <root>/.cursor/skills/using-gh-stack/SKILL.md
-    --harness  claude | codex | cursor (skips the interactive prompt)
+    --harness  claude | codex | cursor | all, or a comma list such as
+               claude,codex (skips the interactive prompt). Each target
+               is checked and installed on its own.
     --global   Install under ~/.<harness>/ instead of the project root
-    --force    Overwrite an existing skill file without confirming
+    --force    Overwrite an existing skill file without confirming, and
+               write through a symlinked skill dir or SKILL.md
+    If the skill dir or SKILL.md is a symlink (say, into a skills repo
+    you keep under version control), the install refuses and names the
+    link target. Only --force writes through it; --yes / GH_STACK_YES
+    does not. A dangling link is never written through: remove it to
+    install there. Harnesses that resolve to the same SKILL.md (a linked
+    skill dir or a shared skills/ dir) are written once and reported as
+    installed via the first. Cancelling an overwrite prompt lists what
+    was installed and what was not attempted, and exits non-zero. The
+    closing refresh hint repeats the --global and --harness you used.
 ```
 
 ## Global Options
@@ -530,6 +542,7 @@ and gotchas straight from the binary:
 # Teach an agent the current API (always in sync with the installed version)
 gh-stack learn                              # print the skill to stdout
 gh-stack learn --skill --harness claude     # install it for Claude Code
+gh-stack learn --skill -g --harness all     # every harness, in your home dir
 ```
 
 ```bash

@@ -11,6 +11,7 @@ import {
   writeMetadata,
 } from "../lib/metadata.ts";
 import { isAutoYes } from "../lib/ui.ts";
+import { ConfigError, describeSource, resolveFlag } from "../lib/config.ts";
 import type { Stack, StackMetadata } from "../types.ts";
 import { getPrNumber, getRepoNwo, prUrlFor } from "../lib/github.ts";
 import { resolveOrCreateStack } from "../lib/chain.ts";
@@ -32,7 +33,9 @@ submit auto-detects the branch chain from trunk → current, registers
 chain. You never need to run \`gh-stack init\` first.
 
 OPTIONS
-  -d, --draft          Create new PRs as drafts
+  -d, --draft          Create new PRs as drafts (default: [submit] draft in
+                       config, or GH_STACK_DRAFT; see gh-stack config)
+      --no-draft       Create new PRs ready for review, overriding a draft default
   -n, --no-edit        Don't prompt for PR titles (auto-generate from branch name)
   -t, --title <title>  Set the PR title (current branch) — creates or updates
   -b, --body <body>    Set the PR body (current branch) — creates or updates
@@ -79,6 +82,7 @@ EXAMPLES
   gh-stack submit -t "My PR" -b "Description"  # Explicit title and body
   gh-stack submit --restack                    # Submit, then restack children onto it
   gh-stack submit --draft                      # Create new PRs as drafts
+  gh-stack submit --no-draft                   # Ready for review despite a draft default
   gh-stack submit --json -t "My PR" | jq '.branches[-1].url'   # URL of the PR
   gh-stack submit --dry-run                    # Preview what would happen
 `;
@@ -233,8 +237,11 @@ export default async function submit(args: string[]): Promise<void> {
   try {
     await runSubmit(args, run, jsonMode);
   } catch (err) {
-    if (!jsonMode && !(err instanceof SubmitAbort)) throw err;
-    if (!(err instanceof SubmitAbort)) console.error(err);
+    // A ConfigError (bad config file or env value) is an expected stop too: in
+    // --json mode it becomes the document's error, like any refusal.
+    const expected = err instanceof SubmitAbort || err instanceof ConfigError;
+    if (!jsonMode && !expected) throw err;
+    if (!expected) console.error(err);
     error = (err as Error).message;
     p.cancel(error);
     if (!jsonMode) process.exit(1);
@@ -247,7 +254,10 @@ export default async function submit(args: string[]): Promise<void> {
 }
 
 async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Promise<void> {
-  const draftFlag = args.includes("--draft") || args.includes("-d");
+  // Draft is create-time only: existing PRs keep whatever state they have.
+  const draft = await resolveFlag("submit.draft", args);
+  const draftFlag = draft.value;
+  let draftNoted = false;
   const dryRun = args.includes("--dry-run");
   const restackFlag = args.includes("--restack");
 
@@ -498,6 +508,15 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
         );
         created++;
       } else {
+        // A default (not a flag) decided draft vs ready: say which, once.
+        if (!draftNoted && draft.source !== "flag" && draft.source !== "default") {
+          draftNoted = true;
+          p.log.info(
+            pc.dim(
+              `New PRs open ${draftFlag ? "as drafts" : "ready for review"}: ${describeSource(draft)}.`,
+            ),
+          );
+        }
         const s = p.spinner();
         s.start(`Creating PR for ${pc.blue(branchName)}...`);
 
@@ -619,5 +638,7 @@ async function maybeRestack(stack: Stack, branch: string, dryRun: boolean): Prom
 
   p.print();
   const { default: restack } = await import("./restack.ts");
-  await restack(dryRun ? ["--dry-run"] : []);
+  // Always push: submit publishes by nature, and the explicit flag means no
+  // config is read after submit's own pushes already happened.
+  await restack([...(dryRun ? ["--dry-run"] : []), "--push"]);
 }

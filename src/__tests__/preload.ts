@@ -20,6 +20,9 @@
 // process started with, so Bun.spawn/spawnSync are wrapped below to default
 // `env` to the scrubbed process.env.
 
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 const FALLBACK_LOCAL_ENV_VARS = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_CONFIG",
@@ -67,3 +70,10 @@ Object.assign(Bun, {
   // oxlint-disable-next-line typescript/no-explicit-any
   spawnSync: (...args: any[]) => (originalSpawnSync as any)(...withScrubbedEnv(args)),
 });
+
+// Flag defaults (#39): never read the developer's own ~/.config/gh-stack or
+// their GH_STACK_DRAFT / GH_STACK_NO_PUSH. The XDG dir is never created, so
+// there is no user config; tests that need one set XDG_CONFIG_HOME themselves.
+process.env.XDG_CONFIG_HOME = join(tmpdir(), `gh-stack-test-no-xdg-${process.pid}`);
+delete process.env.GH_STACK_DRAFT;
+delete process.env.GH_STACK_NO_PUSH;

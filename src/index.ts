@@ -52,122 +52,136 @@ if (parsed.plain) {
 
 // Ensure we're in a git repo for all commands — except `learn`, which just
 // emits/installs the agent skill and is useful outside any repo (e.g. an agent
-// onboarding before cloning, or `learn --skill --global`).
-if (command !== "learn") {
+// onboarding before cloning, or `learn --skill --global`), and `config`, which
+// shows the user and env layers anywhere (and the repo layer inside a repo).
+if (command !== "learn" && command !== "config") {
   await ensureGitRepo();
 }
 
 // Route to subcommand — strip global flags from command args
 const commandArgs = parsed.commandArgs;
 
-switch (command) {
-  case "log":
-    await (await import("./commands/log.ts")).default(commandArgs);
-    break;
+// A config problem (malformed TOML, a non-boolean env value) is reported as
+// one clean line, whichever command hit it.
+const { ConfigError } = await import("./lib/config.ts");
+try {
+  switch (command) {
+    case "log":
+      await (await import("./commands/log.ts")).default(commandArgs);
+      break;
 
-  case "init":
-    await (await import("./commands/init.ts")).default(commandArgs);
-    break;
+    case "init":
+      await (await import("./commands/init.ts")).default(commandArgs);
+      break;
 
-  case "create":
-    await (await import("./commands/create.ts")).default(commandArgs);
-    break;
+    case "create":
+      await (await import("./commands/create.ts")).default(commandArgs);
+      break;
 
-  case "add":
-    await (await import("./commands/add.ts")).default(commandArgs);
-    break;
+    case "add":
+      await (await import("./commands/add.ts")).default(commandArgs);
+      break;
 
-  case "delete":
-    await (await import("./commands/delete.ts")).default(commandArgs);
-    break;
+    case "delete":
+      await (await import("./commands/delete.ts")).default(commandArgs);
+      break;
 
-  case "split":
-    await (await import("./commands/split.ts")).default(commandArgs);
-    break;
+    case "split":
+      await (await import("./commands/split.ts")).default(commandArgs);
+      break;
 
-  case "rename":
-    await (await import("./commands/rename.ts")).default(commandArgs);
-    break;
+    case "rename":
+      await (await import("./commands/rename.ts")).default(commandArgs);
+      break;
 
-  case "checkout":
-  case "co":
-    await (await import("./commands/checkout.ts")).default(commandArgs);
-    break;
+    case "checkout":
+    case "co":
+      await (await import("./commands/checkout.ts")).default(commandArgs);
+      break;
 
-  case "ls":
-    await (await import("./commands/list.ts")).default(commandArgs);
-    break;
+    case "ls":
+      await (await import("./commands/list.ts")).default(commandArgs);
+      break;
 
-  case "restack":
-  case "rebase":
-    await (await import("./commands/restack.ts")).default(commandArgs);
-    break;
+    case "restack":
+    case "rebase":
+      await (await import("./commands/restack.ts")).default(commandArgs);
+      break;
 
-  case "sync":
-    await (await import("./commands/sync.ts")).default(commandArgs);
-    break;
+    case "sync":
+      await (await import("./commands/sync.ts")).default(commandArgs);
+      break;
 
-  case "submit":
-    await (await import("./commands/submit.ts")).default(commandArgs);
-    break;
+    case "submit":
+      await (await import("./commands/submit.ts")).default(commandArgs);
+      break;
 
-  case "status":
-    await (await import("./commands/status.ts")).default(commandArgs);
-    break;
+    case "status":
+      await (await import("./commands/status.ts")).default(commandArgs);
+      break;
 
-  case "merge":
-    await (await import("./commands/merge.ts")).default(commandArgs);
-    break;
+    case "merge":
+      await (await import("./commands/merge.ts")).default(commandArgs);
+      break;
 
-  case "undo":
-    await (await import("./commands/undo.ts")).default(commandArgs);
-    break;
+    case "undo":
+      await (await import("./commands/undo.ts")).default(commandArgs);
+      break;
 
-  case "doctor":
-    await (await import("./commands/doctor.ts")).default(commandArgs);
-    break;
+    case "doctor":
+      await (await import("./commands/doctor.ts")).default(commandArgs);
+      break;
 
-  case "update-prs":
-    await (await import("./commands/update-prs.ts")).default(commandArgs);
-    break;
+    case "update-prs":
+      await (await import("./commands/update-prs.ts")).default(commandArgs);
+      break;
 
-  case "stacks":
-    await (await import("./commands/stacks.ts")).default(commandArgs);
-    break;
+    case "stacks":
+      await (await import("./commands/stacks.ts")).default(commandArgs);
+      break;
 
-  case "archive":
-    await (await import("./commands/archive.ts")).default(commandArgs);
-    break;
+    case "archive":
+      await (await import("./commands/archive.ts")).default(commandArgs);
+      break;
 
-  case "up":
-    await (await import("./commands/up.ts")).default(commandArgs);
-    break;
+    case "up":
+      await (await import("./commands/up.ts")).default(commandArgs);
+      break;
 
-  case "down":
-    await (await import("./commands/down.ts")).default(commandArgs);
-    break;
+    case "down":
+      await (await import("./commands/down.ts")).default(commandArgs);
+      break;
 
-  case "top":
-    await (await import("./commands/top.ts")).default(commandArgs);
-    break;
+    case "top":
+      await (await import("./commands/top.ts")).default(commandArgs);
+      break;
 
-  case "bottom":
-    await (await import("./commands/bottom.ts")).default(commandArgs);
-    break;
+    case "bottom":
+      await (await import("./commands/bottom.ts")).default(commandArgs);
+      break;
 
-  case "learn":
-    await (await import("./commands/learn.ts")).default(commandArgs);
-    break;
+    case "learn":
+      await (await import("./commands/learn.ts")).default(commandArgs);
+      break;
 
-  case "--help":
-  case "help":
-    printHelp();
-    break;
+    case "config":
+      await (await import("./commands/config.ts")).default(commandArgs);
+      break;
 
-  default:
-    console.error(`Unknown command: ${command}\n`);
-    printHelp();
-    process.exit(1);
+    case "--help":
+    case "help":
+      printHelp();
+      break;
+
+    default:
+      console.error(`Unknown command: ${command}\n`);
+      printHelp();
+      process.exit(1);
+  }
+} catch (err) {
+  if (!(err instanceof ConfigError)) throw err;
+  console.error(`gh-stack: ${err.message}`);
+  process.exit(1);
 }
 
 function printHelp() {
@@ -213,6 +227,7 @@ ${bold("INFO & MAINTENANCE")}
   ${green("archive")}        Manage archived stacks
   ${green("update-prs")}     Refresh stack visualization in PR descriptions
   ${green("doctor")}         Migrate & repair stack metadata
+  ${green("config")}         Show flag defaults and where each comes from
   ${green("learn")}          Print the agent skill (--skill installs it)
 
 ${bold("GLOBAL OPTIONS")}
@@ -225,6 +240,12 @@ ${bold("ENVIRONMENT")}
   GH_STACK_YES=1       Same as --yes (also enables --plain)
   GH_STACK_PLAIN=1     Same as --plain
   GH_STACK_NO_COLOR    Disable colored output
+  GH_STACK_DRAFT=1     submit creates new PRs as drafts (0 = ready)
+  GH_STACK_NO_PUSH=1   restack/sync never push (0 = push)
+
+${bold("CONFIG")}
+  .gh-stack.toml (repo root) and ~/.config/gh-stack/config.toml set flag
+  defaults, e.g. [submit] draft = true. Run ${green("gh-stack config")} to see them.
 `);
 }
 

@@ -306,8 +306,25 @@ describe("a bare restack/sync with an interrupted run pending (#29)", () => {
     const res = await runCli(["merge"]);
 
     expect(res.exitCode).toBe(1);
-    expect(res.out).toContain("Finish it before running merge");
+    expect(res.out).toContain("An interrupted sync of stack test-stack is pending");
     expect(res.out).toContain("gh-stack restack --resume");
+    expect(res.out).toContain("gh-stack restack --fresh");
+    expect(res.out).toContain("restacks test-stack from the current branch");
+  });
+
+  test("a refused --fresh leaves the interrupted run intact (preconditions come first)", async () => {
+    await syncStoppedOnConflictThenContinued();
+    const path = `${tmpDir}/.git/.gh-stack/restack-state.json`;
+    const before = await Bun.file(path).text();
+    await Bun.write(`${tmpDir}/README.md`, "uncommitted\n"); // dirty tree
+
+    for (const cmd of ["restack", "sync"]) {
+      const res = await runCli([cmd, "--fresh"]);
+      expect(res.exitCode).toBe(1);
+      expect(res.out).toContain("Working tree is not clean");
+      expect(res.out).not.toContain("discarding");
+      expect(await Bun.file(path).text()).toBe(before);
+    }
   });
 });
 

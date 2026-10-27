@@ -178,7 +178,19 @@ ALIASES
   let resuming = resume;
   if (!resume) {
     if (dryRun) await notePendingRun();
-    else resuming = (await routePendingRun("restack", { fresh, onto: ontoFlag })) === "resume";
+    else {
+      const preflight = async () => {
+        await ensureCleanWorkingTree();
+        await resolveFlag("restack.push", args); // a bad setting stops here
+        const meta = await ensureMetadata();
+        if (!ontoFlag) {
+          const branch = await git.currentBranch();
+          if (!findStackForBranch(meta, branch)) refuseNotInStack(branch);
+        }
+      };
+      resuming =
+        (await routePendingRun("restack", { fresh, onto: ontoFlag, preflight })) === "resume";
+    }
   }
 
   // A resume keeps the push decision of the run it resumes (unless this
@@ -360,11 +372,17 @@ function describePendingRun(state: RestackState): void {
  * to do about it. Interactive: ask (resume / start fresh / cancel). Under
  * --yes: resume, never start fresh. `--fresh` discards it (also the way out
  * of a state file gh-stack can't read).
+ *
+ * `preflight` is the new run's own preconditions (clean tree, valid push
+ * setting, the current branch in a stack, ...). It runs before anything is
+ * discarded, so a command that's going to refuse anyway leaves the
+ * interrupted run intact.
  */
 export async function routePendingRun(
   command: "restack" | "sync",
-  opts: { fresh: boolean; onto?: string },
+  opts: { fresh: boolean; onto?: string; preflight: () => Promise<void> },
 ): Promise<"resume" | "fresh"> {
+  if (opts.fresh) await opts.preflight();
   const state = await findPendingRun({ discard: opts.fresh });
   if (!state) return "fresh";
 
@@ -412,6 +430,7 @@ export async function routePendingRun(
     process.exit(0);
   }
   if (choice === "fresh") {
+    await opts.preflight();
     await clearRestackState();
     return "fresh";
   }
@@ -435,11 +454,21 @@ export async function notePendingRun(): Promise<void> {
 export async function ensureNoPendingRun(command: string): Promise<void> {
   const state = await findPendingRun();
   if (!state) return;
+  // One run can be pending per worktree, and `command` restacks internally,
+  // which would overwrite this run's state: so this is global, not per stack.
+  const meta = await readMetadata();
+  const branch = await git.currentBranch().catch(() => null);
+  const here = meta && branch ? findStackForBranch(meta, branch) : null;
+  const pending = state.stack_name;
+  const freshEffect = !here
+    ? `it drops ${pending}'s remaining steps; run it from a branch of the stack you want restacked`
+    : here === pending
+      ? `it drops the remaining steps and restacks ${here} from the current branch`
+      : `it drops ${pending}'s remaining steps, then restacks ${here} (the current branch's stack), not ${pending}`;
   p.cancel(
-    `An interrupted ${state.command} is pending (stopped at ${stoppedAt(state)}). Finish it before running ${command}:\n` +
-      `    ${pc.green("gh-stack restack --resume")}\n\n` +
-      `  Or discard it and restack from the current branch:\n` +
-      `    ${pc.green("gh-stack restack --fresh")}`,
+    `An interrupted ${state.command} of stack ${pc.yellow(pending)} is pending (stopped at ${stoppedAt(state)}). Only one run can be pending, and ${command} would start another.\n\n` +
+      `  Finish it (from any branch):\n    ${pc.green("gh-stack restack --resume")}\n\n` +
+      `  Or discard it:\n    ${pc.green("gh-stack restack --fresh")}   ${pc.dim(`(${freshEffect})`)}`,
   );
   process.exit(1);
 }
@@ -673,16 +702,17 @@ async function handleResume(
   return "resumed";
 }
 
+function refuseNotInStack(branch: string): never {
+  p.cancel(
+    `Branch ${pc.blue(branch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}`,
+  );
+  process.exit(1);
+}
+
 async function handleFreshRestack(meta: StackMetadata, ctx: ChainContext): Promise<void> {
   const currentBranch = await git.currentBranch();
   const stackName = findStackForBranch(meta, currentBranch);
-
-  if (!stackName) {
-    p.cancel(
-      `Branch ${pc.blue(currentBranch)} is not in any stack.\n\n  Add it with:\n    ${pc.green("gh-stack add")}`,
-    );
-    process.exit(1);
-  }
+  if (!stackName) refuseNotInStack(currentBranch);
 
   const stack = meta.stacks[stackName]!;
   await ensureValidStack(meta, stackName);

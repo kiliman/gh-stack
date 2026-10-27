@@ -11,6 +11,7 @@ import {
   writeMetadata,
 } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
+import { resolveFlag } from "../lib/config.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { getPrInfo } from "../lib/github.ts";
 import { planMerges, advanceNewBottom, type BranchReview } from "../lib/advance.ts";
@@ -73,54 +74,26 @@ If an interrupted restack or sync is pending, sync asks whether to resume it
   // new sync on top of it (#29).
   if (dryRun) {
     await notePendingRun();
-  } else if ((await routePendingRun("sync", { fresh })) === "resume") {
+  } else if (
+    (await routePendingRun("sync", {
+      fresh,
+      preflight: async () => void (await syncPreconditions(args)),
+    })) === "resume"
+  ) {
     await resumeRun();
     return;
   }
 
   const push = await resolvePush(args);
   const noPush = !push.value;
-
-  await ensureCleanWorkingTree();
-
-  const meta = await ensureMetadata();
-  const currentBranch = await git.currentBranch();
-  const stackName = findStackForBranch(meta, currentBranch);
-
-  if (!stackName) {
-    p.cancel(
-      `Branch ${pc.blue(currentBranch)} is not in any stack.\n\n  Track it first (no push/PR):\n    ${pc.green("gh-stack add")}\n\n  Or open its PR with:\n    ${pc.green("gh-stack submit")}`,
-    );
-    process.exit(1);
-  }
-
+  const { meta, stackName } = await syncPreconditions(args);
   let stack = meta.stacks[stackName]!;
-  await ensureValidStack(meta, stackName);
   let ordered = getOrderedBranches(stack);
-
-  if (ordered.length === 0) {
-    p.cancel("No branches in this stack");
-    process.exit(1);
-  }
 
   p.intro(pc.cyan("Git Stack Sync"));
 
   // Find the root branch (whose parent is the stack's base)
   const base = stackBase(stack);
-  const baseIsTrunk = base === "main" || base === "master";
-
-  // sync only makes sense for trunk-rooted stacks — it fetches main and
-  // rebases onto it. A split stack is rooted on a branch in another stack, so
-  // syncing it means restacking onto that base (handled by `restack`), or
-  // re-rooting onto main once the parent stack has merged.
-  if (!baseIsTrunk) {
-    p.cancel(
-      `${pc.yellow(stackName)} is based on ${pc.yellow(base)}, not main — sync doesn't apply.\n\n` +
-        `  • Parent moved? Restack onto it:   ${pc.green("gh-stack restack")}\n` +
-        `  • Parent stack merged to main?     ${pc.green("gh-stack restack --onto main")}`,
-    );
-    process.exit(1);
-  }
 
   // Catch up to reality first: if the bottom PR(s) already landed on the trunk
   // outside gh-stack (e.g. the GitHub web UI), the stack metadata still lists
@@ -188,6 +161,52 @@ If an interrupted restack or sync is pending, sync asks whether to resume it
   // Rebase the root onto main, push it, then restack every branch above it —
   // one run, saved after every step, so `restack --resume` can finish it.
   await syncChain(meta, stackName, ordered, { trunkRef: "origin/main", push });
+}
+
+/**
+ * What a new sync needs before it changes anything: a clean tree, a valid push
+ * setting, and the current branch in a trunk-rooted stack. Also the preflight
+ * for discarding an interrupted run, so a sync that would refuse leaves that
+ * run intact.
+ */
+async function syncPreconditions(
+  args: string[],
+): Promise<{ meta: StackMetadata; stackName: string }> {
+  await resolveFlag("restack.push", args); // a bad setting stops here
+  await ensureCleanWorkingTree();
+
+  const meta = await ensureMetadata();
+  const currentBranch = await git.currentBranch();
+  const stackName = findStackForBranch(meta, currentBranch);
+
+  if (!stackName) {
+    p.cancel(
+      `Branch ${pc.blue(currentBranch)} is not in any stack.\n\n  Track it first (no push/PR):\n    ${pc.green("gh-stack add")}\n\n  Or open its PR with:\n    ${pc.green("gh-stack submit")}`,
+    );
+    process.exit(1);
+  }
+
+  const stack = meta.stacks[stackName]!;
+  await ensureValidStack(meta, stackName);
+  if (getOrderedBranches(stack).length === 0) {
+    p.cancel("No branches in this stack");
+    process.exit(1);
+  }
+
+  // sync only makes sense for trunk-rooted stacks — it fetches main and
+  // rebases onto it. A split stack is rooted on a branch in another stack, so
+  // syncing it means restacking onto that base (handled by `restack`), or
+  // re-rooting onto main once the parent stack has merged.
+  const base = stackBase(stack);
+  if (base !== "main" && base !== "master") {
+    p.cancel(
+      `${pc.yellow(stackName)} is based on ${pc.yellow(base)}, not main — sync doesn't apply.\n\n` +
+        `  • Parent moved? Restack onto it:   ${pc.green("gh-stack restack")}\n` +
+        `  • Parent stack merged to main?     ${pc.green("gh-stack restack --onto main")}`,
+    );
+    process.exit(1);
+  }
+  return { meta, stackName };
 }
 
 /** Result of the merged-bottom catch-up pass. */

@@ -73,6 +73,10 @@ switch (command) {
     await (await import("./commands/add.ts")).default(commandArgs);
     break;
 
+  case "join":
+    await (await import("./commands/join.ts")).default(commandArgs);
+    break;
+
   case "delete":
     await (await import("./commands/delete.ts")).default(commandArgs);
     break;
@@ -200,6 +204,7 @@ ${bold("STACK MANAGEMENT")}
   ${green("sync")}           Sync base with main + restack all
   ${green("merge")}          Squash-merge via GitHub (top-down, or --approved bottom-up)
   ${green("split")}          Cut a stack into two at a branch
+  ${green("join")}           Splice an existing branch/PR into a stack
   ${green("rename")}         Rename a tracked branch (keeps metadata in sync)
   ${green("delete")}         Remove a branch from the stack
 

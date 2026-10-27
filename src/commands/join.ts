@@ -36,7 +36,13 @@ import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib
 import { takeSnapshot, resolveRestackBoundary } from "../lib/snapshot.ts";
 import { findOpenPrForBranch, setPrBase } from "../lib/github.ts";
 import { confirmAction, renderStackTree } from "../lib/ui.ts";
-import { findStaleRefs, publishBranch, resolvePush, restackChain } from "./restack.ts";
+import {
+  ensureNoPendingRun,
+  findStaleRefs,
+  publishBranch,
+  resolvePush,
+  restackChain,
+} from "./restack.ts";
 import type { Branch, Stack, StackMetadata } from "../types.ts";
 
 const HELP = `
@@ -144,6 +150,7 @@ export default async function join(args: string[]): Promise<void> {
     );
   }
   await ensureCleanWorkingTree();
+  if (!dryRun) await ensureNoPendingRun("join");
 
   const meta = await ensureMetadata();
   const startBranch = await git.currentBranch().catch(() => null);

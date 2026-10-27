@@ -7,27 +7,32 @@ import {
   findStackForBranch,
   getOrderedBranches,
   removeBranchFromStack,
-  saveRestackState,
   stackBase,
   writeMetadata,
 } from "../lib/metadata.ts";
 import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
-import { confirmAction } from "../lib/ui.ts";
 import { getPrInfo } from "../lib/github.ts";
 import { planMerges, advanceNewBottom, type BranchReview } from "../lib/advance.ts";
 import type { StackMetadata } from "../types.ts";
-import { resolvePush } from "./restack.ts";
+import {
+  notePendingRun,
+  refuseRebaseInProgress,
+  resolvePush,
+  routePendingRun,
+  syncChain,
+} from "./restack.ts";
 
 export default async function sync(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
+  const fresh = args.includes("--fresh");
 
   if (args.includes("--help")) {
     console.log(`
 gh-stack sync — Sync base with main + restack all
 
 USAGE
-  gh-stack sync [--dry-run] [--no-push | --push]
+  gh-stack sync [--dry-run] [--no-push | --push] [--fresh]
 
 Fetches latest main, rebases the base branch onto main,
 then restacks all children. Equivalent to running restack
@@ -39,21 +44,43 @@ OPTIONS
               (also GH_STACK_NO_PUSH=1, or \`[restack] push = false\` in
               config; see gh-stack config). Wins over --yes for pushes
   --push      Push even when a config default or env var says not to
+  --resume    Same as \`gh-stack restack --resume\`
+  --fresh     Discard an interrupted restack/sync instead of resuming it
+
+If an interrupted restack or sync is pending, sync asks whether to resume it
+(with --yes it resumes) rather than starting over on top of it.
 `);
     return;
   }
 
-  const noPush = !(await resolvePush(args)).value;
+  // Only explicit push flags carry over to a resume: it otherwise keeps the
+  // push decision of the run it resumes.
+  const pushFlags = args.filter((a) => a === "--push" || a === "--no-push");
+  if (args.includes("--resume")) {
+    const { default: restack } = await import("./restack.ts");
+    await restack(["--resume", ...pushFlags]);
+    return;
+  }
 
   // Reject if a git rebase is already in progress. Letting sync run on top
   // of a half-finished rebase produces deeply confusing state — make the
   // user finish or abort it first.
   if (await git.isRebaseInProgress()) {
-    p.cancel(
-      `Git rebase already in progress.\n\n  Finish or abort it first:\n    ${pc.green("git rebase --continue")}\n    ${pc.red("git rebase --abort")}\n\n  Then re-run ${pc.green("gh-stack sync")}.`,
-    );
-    process.exit(1);
+    await refuseRebaseInProgress("sync");
   }
+
+  // An interrupted restack/sync is pending: resume it rather than starting a
+  // new sync on top of it (#29).
+  if (dryRun) {
+    await notePendingRun();
+  } else if ((await routePendingRun("sync", { fresh })) === "resume") {
+    const { default: restack } = await import("./restack.ts");
+    await restack(["--resume", ...pushFlags]);
+    return;
+  }
+
+  const push = await resolvePush(args);
+  const noPush = !push.value;
 
   await ensureCleanWorkingTree();
 
@@ -159,84 +186,9 @@ OPTIONS
   // need to find when restacking children. (See resolveRestackBoundary.)
   await takeSnapshot(meta, stackName, "sync");
 
-  // Step 1: Rebase base branch onto main
-  console.log();
-  console.log(pc.cyan("━".repeat(40)));
-  console.log(`${pc.blue("Step 1:")} Rebase ${pc.yellow(baseBranch)} onto main`);
-  console.log(pc.cyan("━".repeat(40)));
-  console.log();
-
-  // Check if already up to date
-  if (await git.isAncestor("origin/main", baseBranch)) {
-    p.log.success(`${baseBranch} is already up to date with main`);
-  } else if (dryRun) {
-    p.log.warn(`[DRY RUN] Would rebase ${baseBranch} onto origin/main`);
-  } else {
-    const confirmed = await confirmAction(`Rebase ${pc.yellow(baseBranch)} onto origin/main?`);
-    if (!confirmed) {
-      p.cancel("Cancelled");
-      process.exit(0);
-    }
-
-    p.log.info(`Checking out ${pc.yellow(baseBranch)}...`);
-    await git.checkout(baseBranch);
-
-    // Save restack state BEFORE rebasing so --resume can find it.
-    // The chain is the full ordered list — base branch at index 0,
-    // so resume knows where we were and can continue with children.
-    await saveRestackState({
-      current_index: 0,
-      stack_name: stackName,
-      chain: ordered,
-      push: !noPush,
-    });
-
-    p.log.info("Rebasing onto origin/main...");
-    const success = await git.rebase("origin/main");
-
-    if (!success) {
-      console.log();
-      p.log.error("Rebase conflict — resolve and run:");
-      console.log(`  ${pc.green("git rebase --continue")}`);
-      console.log(`  ${pc.green("gh-stack restack --resume")}`);
-      process.exit(2);
-    }
-
-    p.log.success("Base branch rebased onto main");
-
-    // Prompt to push base
-    if (noPush) {
-      p.log.info(`Not pushing ${pc.yellow(baseBranch)} (--no-push) — it's now ahead of origin`);
-    } else {
-      await promptForcePush(baseBranch);
-    }
-  }
-
-  // Step 2: Restack children
-  const children = ordered.slice(1);
-
-  if (children.length === 0) {
-    p.outro(pc.green("Sync complete! (no children to restack)"));
-    return;
-  }
-
-  console.log();
-  console.log(pc.cyan("━".repeat(40)));
-  console.log(`${pc.blue("Step 2:")} Restack ${children.length} child branch(es)`);
-  console.log(pc.cyan("━".repeat(40)));
-  console.log();
-
-  // Delegate to restack for the remaining branches
-  // We import and run restack in --rebase mode effectively
-  const { default: restack } = await import("./restack.ts");
-
-  // Switch to first child and run restack
-  if (children.length > 0) {
-    await git.checkout(children[0]!);
-    // Pass the push decision explicitly so restack doesn't re-resolve it (and
-    // re-announce a config default sync already reported).
-    await restack([...(dryRun ? ["--dry-run"] : []), noPush ? "--no-push" : "--push"]);
-  }
+  // Rebase the root onto main, push it, then restack every branch above it —
+  // one run, saved after every step, so `restack --resume` can finish it.
+  await syncChain(meta, stackName, ordered, { trunkRef: "origin/main", push });
 }
 
 /** Result of the merged-bottom catch-up pass. */
@@ -362,34 +314,4 @@ async function advanceMergedBottoms(
   }
 
   return { detected: true, advanced: true, drained: false };
-}
-
-async function promptForcePush(branch: string): Promise<void> {
-  if (branch === "main" || branch === "master") return;
-  if (!(await git.remoteBranchExists(branch))) return;
-
-  const localSha = await git.revParse(branch);
-  let remoteSha: string;
-  try {
-    remoteSha = await git.revParse(`origin/${branch}`);
-  } catch {
-    return;
-  }
-
-  if (localSha === remoteSha) return;
-
-  console.log();
-  p.log.info(`${pc.yellow("⚠")} ${branch} is out of sync with remote`);
-
-  const confirmed = await confirmAction("Push with --force-with-lease?");
-  if (confirmed) {
-    const ok = await git.forcePushWithLease(branch);
-    if (ok) {
-      p.log.success("Pushed successfully");
-    } else {
-      p.log.error("Push failed");
-    }
-  } else {
-    p.log.warn("Skipping push");
-  }
 }

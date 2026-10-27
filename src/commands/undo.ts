@@ -4,6 +4,7 @@ import * as git from "../lib/git.ts";
 import pc from "picocolors";
 import { ensureMetadata, ensureCleanWorkingTree } from "../lib/safety.ts";
 import { getLastSnapshot, popSnapshot } from "../lib/snapshot.ts";
+import { clearRestackState, loadRestackState } from "../lib/metadata.ts";
 import { confirmAction } from "../lib/ui.ts";
 import { $ } from "bun";
 
@@ -71,6 +72,16 @@ a destructive operation (restack, merge, sync, remove).
 
   // Pop the snapshot
   await popSnapshot(meta);
+
+  // An unfinished run on this stack was rewriting the branches just restored;
+  // resuming it would push the restored tips as if they were its results.
+  const run = await loadRestackState();
+  if (run && !run.finished_at && run.stack_name === snapshot.stack) {
+    await clearRestackState();
+    p.log.info(
+      `Discarded the interrupted ${run.command}'s saved state (its branches were restored).`,
+    );
+  }
 
   p.outro(pc.green("Undo complete!"));
 }

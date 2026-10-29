@@ -289,3 +289,37 @@ describe("a re-root stopped on a conflict is finished by re-running (#51)", () =
     expect(meta.stacks["test-stack"]!.branches["pr2"]!.parent).toBe("main");
   });
 });
+
+describe("sync's re-root stopped on a conflict is finished by re-running sync (#51)", () => {
+  test("resolve, continue, re-run sync: pr2 is pushed and retargeted, pr3 follows", async () => {
+    await mainAddsConflictingPr2File();
+    // PR #1 merges on GitHub outside gh-stack.
+    await githubSquashesPr1();
+    await $`sh ${binDir}/merge-1.sh`.quiet();
+    await checkout(tmpDir, "pr2");
+
+    const first = await runCli(["sync"]);
+    expect(first.exitCode).toBe(2);
+    expect(first.out).toContain("Rebase conflict re-rooting pr2 onto main");
+    expect(first.out).toContain("gh-stack sync");
+
+    await Bun.write(`${tmpDir}/pr2.txt`, "resolved\n");
+    await git(tmpDir, "add", "pr2.txt");
+    await $`git -C ${tmpDir} -c core.editor=true rebase --continue`.quiet();
+
+    const second = await runCli(["sync"]);
+
+    expect(second.exitCode).toBe(0);
+    expect(second.out).toContain("pr2 is already on main");
+    const squash = await remoteSha("main");
+    expect(await remoteSha("pr2")).toBe(await git(tmpDir, "rev-parse", "pr2"));
+    expect(await contains(remoteDir, squash, "refs/heads/pr2")).toBe(true);
+    expect(await contains(remoteDir, "refs/heads/pr2", "refs/heads/pr3")).toBe(true);
+    expect(await git(tmpDir, "rev-list", "--count", "pr2..pr3")).toBe("1");
+    const calls = await Bun.file(`${binDir}/gh.log`).text();
+    expect(calls).toContain("pr edit 2 --base main");
+    const meta = await readMetadata(tmpDir);
+    expect(meta.stacks["test-stack"]!.branches["pr1"]).toBeUndefined();
+    expect(meta.stacks["test-stack"]!.branches["pr2"]!.parent).toBe("main");
+  });
+});

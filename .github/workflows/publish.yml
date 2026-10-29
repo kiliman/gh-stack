@@ -1,0 +1,59 @@
+# Checks every PR and push to main; publishes to npm when a v* tag is pushed.
+#
+# Publishing uses npm trusted publishing (OIDC): npmjs.com trusts this workflow
+# file by name, so no npm token is stored anywhere. Renaming this file breaks
+# publishing until the trusted publisher on npmjs.com is updated to match.
+name: publish
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      # The tests drive real git repos; give them an identity and the trunk name
+      # they expect.
+      - run: |
+          git config --global user.name "gh-stack CI"
+          git config --global user.email "ci@users.noreply.github.com"
+          git config --global init.defaultBranch main
+      - run: bun run check
+
+  publish:
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # mints the OIDC token npm exchanges for publish rights
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Trusted publishing needs npm >= 11.5.1, which Node 24 bundles. No
+      # package cache: npm warns against caching in release builds.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Tag matches package.json version
+        run: |
+          version="v$(node -p 'require("./package.json").version')"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+      # The package ships TypeScript source run by Bun, so there's nothing to
+      # build. --ignore-scripts skips prepare (husky), which isn't installed here.
+      - run: npm --version && npm publish --ignore-scripts

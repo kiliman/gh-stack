@@ -276,7 +276,7 @@ sync [--dry-run] [--no-push|--push] [--resume | --fresh] [--overwrite-remote]
 
 merge [--dry-run] [-d|--delete-branch] [--collapse] [--skip-collapse-check]
 merge --approved [--collapse] [--dry-run] [-d|--delete-branch]
-merge --base [--dry-run] [-d|--delete-branch]
+merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push]
     Default (top-down collapse): squash-merge the whole stack top-down
     via GitHub (PR3 → PR2 → PR1), then enables auto-merge for the base PR
     into main. The whole stack lands on main as a single squash commit.
@@ -323,7 +323,18 @@ merge --base [--dry-run] [-d|--delete-branch]
                 just its own commits). One PR per run — run it again to
                 land the next. Approval is enforced by GitHub branch
                 protection, not gh-stack. A base PR already merged outside
-                gh-stack is detected and advanced past.
+                gh-stack is detected and advanced past. The re-root waits
+                until origin's main shows the merge commit, and stops (exit
+                2) if it never does. When a re-root stops (a conflict, or
+                main not showing the merge yet), finish it by re-running
+                `gh-stack merge --base` after `git rebase --continue`: it
+                advances past the merged PR and picks up a branch that's
+                already re-rooted. Don't run `restack` there: it would put
+                the branch back on the merged one.
+                --no-push (or GH_STACK_NO_PUSH=1) still merges the PR on
+                GitHub but keeps the re-root and the restack above it
+                local, PR bases included, until `gh-stack submit`. The
+                `[restack] push` config default doesn't apply to merge.
     --collapse  With the default or --approved, stop after collapsing into
                 the base PR WITHOUT merging it to main, so you can review
                 the cumulative diff on GitHub. Re-run `gh-stack merge` to
@@ -520,7 +531,7 @@ If a command needs to prompt but stdin isn't a TTY, it exits 1 with the prompt i
 ```
 GH_STACK_YES=1         Skip all confirmations (same as --yes; also enables --plain)
 GH_STACK_PLAIN=1       Plain output (same as --plain)
-GH_STACK_NO_PUSH=1     restack/sync never push (same as --no-push; wins over --yes; 0 = push)
+GH_STACK_NO_PUSH=1     restack, sync and merge --base never push (same as --no-push; wins over --yes; 0 = push)
 GH_STACK_DRAFT=1       submit creates new PRs as drafts (same as --draft; 0 = ready)
                        (both accept 1/0, true/false, yes/no; anything else is an error)
 GH_STACK_NO_COLOR=1    Disable colored output
@@ -552,8 +563,10 @@ says so in its output.
 | `[restack] push` | `--push` / `--no-push`   | `GH_STACK_NO_PUSH` (inverted) | `true`   |
 
 `[restack] push` governs `restack` and `sync` only. `merge` and
-`submit --restack` always push the branches they restack: publishing is their
-job, and child PRs left stale on GitHub would be worse than any default. A
+`submit --restack` push the branches they restack whatever the config says:
+publishing is their job, and child PRs left stale on GitHub would be worse
+than any default. Only `merge --base` can be kept local, and only by an
+explicit `--no-push` or `GH_STACK_NO_PUSH=1`. A
 `restack --resume` keeps the push decision of the run it resumes unless you
 pass `--push` or `--no-push`.
 

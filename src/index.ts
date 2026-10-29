@@ -246,7 +246,7 @@ ${bold("ENVIRONMENT")}
   GH_STACK_PLAIN=1     Same as --plain
   GH_STACK_NO_COLOR    Disable colored output
   GH_STACK_DRAFT=1     submit creates new PRs as drafts (0 = ready)
-  GH_STACK_NO_PUSH=1   restack/sync never push (0 = push)
+  GH_STACK_NO_PUSH=1   restack/sync/merge --base never push (0 = push)
 
 ${bold("CONFIG")}
   .gh-stack.toml (repo root) and ~/.config/gh-stack/config.toml set flag

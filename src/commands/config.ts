@@ -38,7 +38,7 @@ FILES
 
 ENVIRONMENT (1/0, true/false, or yes/no)
   GH_STACK_DRAFT       submit draft default
-  GH_STACK_NO_PUSH     restack/sync push default (1 = don't push)
+  GH_STACK_NO_PUSH     restack/sync/merge --base push default (1 = don't push)
 
 --yes is not configurable from a file: auto-confirming destructive operations
 must be asked for per run (--yes or GH_STACK_YES=1).

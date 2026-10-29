@@ -337,9 +337,11 @@ async function advanceMergedBottoms(
         console.log();
         if (res.reason === "conflict") {
           p.log.error(`Rebase conflict re-rooting ${pc.yellow(child)} onto ${trunk}.`);
-          console.log(`  Resolve it, then finish the restack:`);
+          console.log(`  Resolve it, then finish the sync:`);
           console.log(`    ${pc.green("git rebase --continue")}`);
-          console.log(`    ${pc.green("gh-stack restack")}`);
+          console.log(
+            `    ${pc.green("gh-stack sync")}   ${pc.dim(`(picks up the re-rooted ${child}; not restack, which would put it back on ${mergedBranch})`)}`,
+          );
         } else {
           p.log.error(
             `Could not determine a safe rebase base for ${pc.yellow(child)} (${res.reason}).`,

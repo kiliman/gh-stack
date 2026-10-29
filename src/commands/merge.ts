@@ -32,9 +32,14 @@ import {
   type BranchReview,
   type MergeAction,
 } from "../lib/advance.ts";
+import { flagSetting, parseEnvBool, type Resolved } from "../lib/config.ts";
 
 const MAX_RETRIES = 12;
 const RETRY_DELAY_MS = 5000;
+
+// Waits between fetches while origin's trunk catches up to a merge GitHub has
+// already reported (one entry per retry; ~7s in all).
+const TRUNK_MERGE_WAIT_MS = [1000, 2000, 4000];
 
 // After GitHub rejects a merge with the "still recomputing" signature, back off
 // (capped) and re-poll before retrying. One entry per retry; length+1 = max
@@ -260,7 +265,7 @@ gh-stack merge — Squash-merge a stack via GitHub
 USAGE
   gh-stack merge [--dry-run] [-d|--delete-branch] [--collapse]
   gh-stack merge --approved [--collapse] [--dry-run] [-d|--delete-branch]
-  gh-stack merge --base [--dry-run] [-d|--delete-branch]
+  gh-stack merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push]
 
 DEFAULT (top-down collapse)
   Squash-merges the whole stack from top to bottom via GitHub:
@@ -280,6 +285,11 @@ DEFAULT (top-down collapse)
   Squash-merges only the bottom PR into main as its own commit, then re-roots
   the next branch onto main. One PR per run — run it again to land the next.
   Approval is enforced by GitHub branch protection, not gh-stack.
+  With --no-push (or GH_STACK_NO_PUSH=1) the PR still merges on GitHub, but
+  the re-rooted branches stay local until ${pc.green("gh-stack submit")}. The
+  \`[restack] push\` config default doesn't apply to merge. If the re-root
+  stops (a conflict, or main not showing the merge yet), finish the fix, then
+  re-run ${pc.green("gh-stack merge --base")}: it picks up the already-merged PR.
 
 --collapse (stop before main)
   With the default or --approved, stop after collapsing into the base PR
@@ -313,6 +323,8 @@ OPTIONS
       --skip-collapse-check
                        Don't verify the collapsed children's content is in
                        the base PR (above)
+      --no-push        With --base: re-root and restack locally only (also
+                       GH_STACK_NO_PUSH=1); --push overrides the variable
       --dry-run        Show what would happen without doing anything
 `);
     return;
@@ -949,6 +961,43 @@ async function collapsedChildren(
 }
 
 /**
+ * Fetch the trunk and confirm it holds PR `prNumber`'s merge commit (#51).
+ * The re-root rebases onto `origin/<trunk>`; a trunk fetched before the squash
+ * landed puts the next branch on a main without the merged PR's changes, so
+ * its PR shows them deleted. Not ok when the merge commit can't be confirmed
+ * on the trunk, and the caller must stop rather than re-root.
+ */
+async function fetchTrunkWithMerge(
+  trunk: string,
+  prNumber: number,
+): Promise<{ ok: boolean; mergeCommit: string | null }> {
+  let mergeCommit: string | null = null;
+  for (let attempt = 0; ; attempt++) {
+    mergeCommit ??= (await getPrMergeState(prNumber))?.mergeCommit ?? null;
+    await $`git fetch origin ${trunk}`.nothrow().quiet();
+    if (mergeCommit && (await git.isAncestor(mergeCommit, `origin/${trunk}`))) {
+      return { ok: true, mergeCommit };
+    }
+    if (attempt >= TRUNK_MERGE_WAIT_MS.length) return { ok: false, mergeCommit };
+    await Bun.sleep(TRUNK_MERGE_WAIT_MS[attempt]!);
+  }
+}
+
+/**
+ * Whether `merge --base` pushes the branches it re-roots and restacks:
+ * `--push`/`--no-push`, else GH_STACK_NO_PUSH (#51). The squash itself always
+ * lands on GitHub. The `[restack] push` config default deliberately doesn't
+ * apply: a repo default for restack shouldn't change what a merge publishes.
+ */
+function resolveMergePush(args: string[]): Resolved {
+  const flag = flagSetting("restack.push", args);
+  if (flag) return flag;
+  const noPush = parseEnvBool("GH_STACK_NO_PUSH", process.env.GH_STACK_NO_PUSH);
+  if (noPush === undefined) return { value: true, source: "default" };
+  return { value: !noPush, source: "env", origin: "GH_STACK_NO_PUSH" };
+}
+
+/**
  * `gh-stack merge --base` — squash-merge ONLY the bottom PR into main, then
  * re-root the next branch onto main (replaying just its own commits, via
  * advance.ts's fork-point resolution). One PR per run — run it again to land the
@@ -974,7 +1023,17 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   }
 
   const stack = meta.stacks[stackName]!;
-  await ensureValidStack(meta, stackName);
+  const base = stackBase(stack);
+  // The bottom branch may be gone locally once its PR merged: --delete-branch
+  // deletes it, and a re-run then only finishes the re-root (#51).
+  const root = Object.keys(stack.branches).find((b) => stack.branches[b]!.parent === base);
+  const rootPr = root ? stack.branches[root]!.pr : undefined;
+  const rootGone =
+    root != null &&
+    rootPr != null &&
+    !(await git.localBranchExists(root)) &&
+    (await getPrMergeState(rootPr))?.state === "MERGED";
+  await ensureValidStack(meta, stackName, { allowMissing: rootGone ? [root] : [] });
   const ordered = getOrderedBranches(stack);
   if (ordered.length === 0) {
     p.cancel("No branches in this stack");
@@ -983,7 +1042,6 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
 
   // Like top-down merge: a split stack rooted off another stack can't drain to
   // main until it's re-rooted. Require a trunk base.
-  const base = stackBase(stack);
   if (base !== "main" && base !== "master") {
     p.cancel(
       `${pc.yellow(stackName)} is based on ${pc.yellow(base)}, not main — can't merge yet.\n\n` +
@@ -994,6 +1052,7 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   }
   const trunk = base;
   const targetRef = `origin/${trunk}`;
+  const push = resolveMergePush(args).value;
 
   p.intro(pc.cyan("Merge Base PR (via GitHub)"));
   p.log.info(`Stack: ${pc.yellow(stackName)}`);
@@ -1027,6 +1086,11 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
     console.log(
       `    ${pc.dim(`then re-root ${nextChild} onto ${trunk} — the rest stays a stack`)}`,
     );
+    if (!push) {
+      console.log(
+        `    ${pc.dim(`(--no-push: re-rooted branches stay local; ${pc.green("gh-stack submit")} publishes them)`)}`,
+      );
+    }
   }
   console.log();
 
@@ -1097,8 +1161,6 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   // Keep a copy of the original topology to archive if the stack fully drains.
   const originalStack = structuredClone(stack);
 
-  await $`git fetch origin ${trunk}`.quiet();
-
   for (let i = 0; i < plan.steps.length; i++) {
     const step = plan.steps[i]!;
     const mergedBranch = step.branch;
@@ -1151,6 +1213,25 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
     }
 
     if (child) {
+      // Re-root onto the trunk as it is now, with the merge in it (#51).
+      const trunkState = await fetchTrunkWithMerge(trunk, step.pr!);
+      if (!trunkState.ok) {
+        console.log();
+        p.log.error(
+          `PR #${step.pr} is merged, but ${targetRef} doesn't show ${
+            trunkState.mergeCommit
+              ? `its merge commit ${trunkState.mergeCommit.slice(0, 8)}`
+              : "its merge commit (GitHub didn't say which it is)"
+          } yet.`,
+        );
+        console.log(
+          `  Stopped before re-rooting ${pc.yellow(child)}: a ${trunk} without the merge would drop its changes from the stack.`,
+        );
+        console.log(`  Once ${trunk} has it, finish with:`);
+        console.log(`    ${pc.green("gh-stack merge --base")}`);
+        process.exit(2);
+      }
+
       const res = await advanceNewBottom({
         meta,
         stackName,
@@ -1159,16 +1240,17 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
         childPr,
         targetRef,
         recordedBase: trunk,
+        push,
         expect: verified.get(child),
       });
       if (!res.ok) {
         console.log();
         if (res.reason === "conflict") {
           p.log.error(`Rebase conflict re-rooting ${pc.yellow(child)} onto ${trunk}.`);
-          console.log(`  Resolve the conflict, then:`);
+          console.log(`  Resolve the conflict, then finish with:`);
           console.log(`    ${pc.green("git rebase --continue")}`);
           console.log(
-            `    ${pc.green("gh-stack restack")}   ${pc.dim("(restacks the rest of the tail)")}`,
+            `    ${pc.green("gh-stack merge --base")}   ${pc.dim(`(pushes ${child}, retargets its PR, restacks the rest)`)}`,
           );
           console.log();
           console.log(
@@ -1228,10 +1310,10 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   if (await git.localBranchExists(newBottom)) {
     await git.checkout(newBottom);
     const { default: restack } = await import("./restack.ts");
-    // Always push: merge publishes by nature (the advance above already
-    // pushed), and children left stale on GitHub are worse than any default.
-    // An explicit flag also means no config is read mid-merge.
-    await restack(["--push", ...(overwrite ? ["--overwrite-remote"] : [])]);
+    // Push unless this run is local-only (--no-push / GH_STACK_NO_PUSH): the
+    // tail must match the re-root above. An explicit flag also means the
+    // `[restack] push` config isn't read mid-merge.
+    await restack([push ? "--push" : "--no-push", ...(overwrite ? ["--overwrite-remote"] : [])]);
   }
 
   p.outro(

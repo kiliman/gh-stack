@@ -74,8 +74,9 @@ export GH_STACK_YES=1     # skip every confirmation, plain output
   human approves), add `--no-push` to `restack`/`sync`, or export
   `GH_STACK_NO_PUSH=1` (a repo may also set `[restack] push = false`). It wins
   over `--yes` for pushes and lists what's ahead of origin at the end; publish
-  later with `gh-stack restack --push`. `merge` and `submit --restack` always
-  push. `restack --resume` keeps the interrupted run's push decision unless you
+  later with `gh-stack restack --push`. `merge --base` honors `--no-push` and
+  `GH_STACK_NO_PUSH` (not the config); other `merge` modes and `submit --restack`
+  always push. `restack --resume` keeps the interrupted run's push decision unless you
   pass `--push`/`--no-push`. `--yes` itself can't come from a config file:
   always pass it or `GH_STACK_YES=1`.
 - A prompt reached without a TTY on stdin **exits 1** (naming the prompt)
@@ -335,7 +336,12 @@ Merge is **top-down everywhere** (collapse PRn → PRn-1 → … → base PR, th
 - **`merge --base`**: squash-merge **only the bottom PR** into trunk and re-root
   the next branch onto trunk — one PR per run, re-run for the next. Use this to
   land reviewed PRs one at a time. Auto-advances past a bottom PR already merged
-  outside gh-stack.
+  outside gh-stack. If the re-root stops (a conflict, or "origin/main doesn't
+  show its merge commit"), fix it (`git rebase --continue`) and **re-run
+  `merge --base`**: it advances past the merged PR and finishes a branch that's
+  already re-rooted. Don't run `restack` there: it would put the branch back on
+  the merged one. `--no-push` / `GH_STACK_NO_PUSH=1` still merges on GitHub but
+  keeps the re-root and the tail local until `gh-stack submit`.
 - **`--collapse`** (with `merge` or `merge --approved`): stop after collapsing
   into the base PR — review on GitHub, then re-run `merge` to finish.
 

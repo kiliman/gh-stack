@@ -170,7 +170,11 @@ export function ensureNotMain(branch: string): void {
 /**
  * Validate stack metadata before destructive operations.
  */
-export async function validateStack(meta: StackMetadata, stackName: string): Promise<string[]> {
+export async function validateStack(
+  meta: StackMetadata,
+  stackName: string,
+  opts: { allowMissing?: string[] } = {},
+): Promise<string[]> {
   const stack = meta.stacks[stackName];
   if (!stack) return [`Stack "${stackName}" not found`];
 
@@ -181,7 +185,7 @@ export async function validateStack(meta: StackMetadata, stackName: string): Pro
   for (const branchName of branchNames) {
     const branch = stack.branches[branchName]!;
 
-    if (!(await git.localBranchExists(branchName))) {
+    if (!opts.allowMissing?.includes(branchName) && !(await git.localBranchExists(branchName))) {
       errors.push(`Branch "${branchName}" does not exist locally`);
     }
 
@@ -201,8 +205,12 @@ export async function validateStack(meta: StackMetadata, stackName: string): Pro
   return errors;
 }
 
-export async function ensureValidStack(meta: StackMetadata, stackName: string): Promise<void> {
-  const errors = await validateStack(meta, stackName);
+export async function ensureValidStack(
+  meta: StackMetadata,
+  stackName: string,
+  opts: { allowMissing?: string[] } = {},
+): Promise<void> {
+  const errors = await validateStack(meta, stackName, opts);
   if (errors.length === 0) return;
 
   p.cancel(`Invalid stack metadata for ${pc.yellow(stackName)}`);

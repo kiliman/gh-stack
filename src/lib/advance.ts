@@ -120,6 +120,17 @@ export async function resolveForkPoint(
   mergedBranch: string,
   child: string,
 ): Promise<string | null> {
+  // `gh pr merge --delete-branch` deletes the merged branch locally too, which
+  // leaves the shared resolver no ref to read snapshots against. Its pre-merge
+  // tip is in the snapshot the caller took: use the newest recorded tip the
+  // child still builds on.
+  if (!(await git.localBranchExists(mergedBranch))) {
+    for (const snap of (meta.snapshots ?? []).toReversed()) {
+      const tip = snap.branches[mergedBranch];
+      if (tip && (await git.isAncestor(tip, child))) return tip;
+    }
+    return null;
+  }
   const boundary = await resolveRestackBoundary(meta, mergedBranch, child);
   return boundary?.sha ?? null;
 }
@@ -137,6 +148,9 @@ export type AdvanceResult =
  *
  * The caller MUST have taken a snapshot first — on a rebase conflict this leaves
  * the in-progress `git rebase` for the user to resolve and returns `conflict`.
+ * Metadata still names the merged branch as the child's parent then, so the
+ * fix is to re-run the caller: this skips the finished rebase and does the rest.
+ * (`restack` would rebase the child back onto the merged branch.)
  */
 export async function advanceNewBottom(opts: {
   meta: StackMetadata;
@@ -158,20 +172,31 @@ export async function advanceNewBottom(opts: {
   const push = opts.push ?? true;
   let retargeted = false;
 
-  const forkPoint = await resolveForkPoint(meta, mergedBranch, child);
-  if (!forkPoint) return { ok: false, reason: "no-fork-point" };
+  // Already on the target: an earlier run stopped on a conflict the user then
+  // resolved, or the branch was re-rooted by hand (#51). Its fork point is
+  // behind it now, so skip the rebase and finish the rest (push, PR base,
+  // metadata). Before a re-root the child can't contain the target, which
+  // holds the merged PR's new squash commit.
+  if (await git.isAncestor(targetRef, child)) {
+    p.log.info(
+      `${pc.yellow(child)} is already on ${pc.green(recordedBase)} — finishing its re-root`,
+    );
+  } else {
+    const forkPoint = await resolveForkPoint(meta, mergedBranch, child);
+    if (!forkPoint) return { ok: false, reason: "no-fork-point" };
 
-  // Guard: the fork-point must be an ancestor of the child, else `--onto` would
-  // replay an unrelated range. Bail loudly rather than mangle history.
-  if (!(await git.isAncestor(forkPoint, child))) {
-    return { ok: false, reason: "bad-fork-point", forkPoint };
+    // Guard: the fork-point must be an ancestor of the child, else `--onto` would
+    // replay an unrelated range. Bail loudly rather than mangle history.
+    if (!(await git.isAncestor(forkPoint, child))) {
+      return { ok: false, reason: "bad-fork-point", forkPoint };
+    }
+
+    p.log.info(
+      `Re-rooting ${pc.yellow(child)} onto ${pc.green(recordedBase)} ${pc.dim(`(base: ${forkPoint.slice(0, 8)})`)}`,
+    );
+    const ok = await git.rebaseOnto(targetRef, forkPoint, child);
+    if (!ok) return { ok: false, reason: "conflict", forkPoint };
   }
-
-  p.log.info(
-    `Re-rooting ${pc.yellow(child)} onto ${pc.green(recordedBase)} ${pc.dim(`(base: ${forkPoint.slice(0, 8)})`)}`,
-  );
-  const ok = await git.rebaseOnto(targetRef, forkPoint, child);
-  if (!ok) return { ok: false, reason: "conflict", forkPoint };
 
   if (push) {
     // Push the rebased head first so the PR diff is clean before its base flips.

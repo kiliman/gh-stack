@@ -39,3 +39,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .claude/skills/using-gh-stack/
 .codex/skills/using-gh-stack/
 .cursor/skills/using-gh-stack/
+
+# Working files (scripts, logs, scratch output)
+tmp/

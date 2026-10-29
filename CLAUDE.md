@@ -76,7 +76,16 @@ When making changes, follow these steps:
 5. **Tag** — `git tag -a v0.x.y -m "Release v0.x.y — summary"`
 6. **Build** — `bun run build`
 7. **Push** — `git push && git push origin v0.x.y`
-8. **Publish** — `OTP=$(op item get npm --otp) && npm publish --otp="$OTP"`
+8. **Publish** — pushing the tag publishes. `.github/workflows/publish.yml` runs
+   the checks on Linux, verifies the tag matches `package.json`, and publishes
+   via npm trusted publishing (OIDC, no token). Watch it with `gh run watch`,
+   then confirm with `npm view gh-stack version`. npm can take a minute or two
+   to show a new version; wait rather than re-publishing.
 
 The pre-push hook runs lint + typecheck + tests (output suppressed on success).
 The prepublishOnly hook is a no-op since checks already ran on push.
+
+Manual fallback (only if the workflow can't publish): `npm whoami` must be
+`kiliman`, then `OTP=$(op item get npm --otp) && npm publish --otp="$OTP"`.
+The trusted publisher on npmjs.com names the workflow file, so renaming
+`publish.yml` breaks publishing until that setting is updated.

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.1
+
+### 🐛 Fixes
+- **`merge --base` re-rooted the next branch onto main from before the squash.** It fetched main once, before merging the bottom PR, and rebased the next branch onto that stale `origin/main`. The branch was pushed without the merged PR's changes, so its PR showed them as deleted and the restack above it stopped on modify/delete conflicts. It now fetches main after the merge and confirms the PR's merge commit is there before re-rooting. If main doesn't show it within a few seconds, it stops (exit 2) instead of guessing; re-run `merge --base` to finish. (#51)
+- **`merge --base --delete-branch` never re-rooted.** `gh` deletes the merged branch locally too, which left the fork-point lookup with no ref to work from (`no-fork-point`). It now uses the merged branch's tip from the snapshot `merge` takes first. (#51)
+- **A re-root that stops is finished by re-running the command.** After a conflict while re-rooting, `merge --base` and `sync` used to say to run `gh-stack restack`, which rebased the branch back onto the merged one and force-pushed it. Re-running `merge --base` (or `sync`) now picks up a branch that's already re-rooted, by the resolved conflict or by hand, and finishes the push, the PR retarget and the metadata. The messages say so. (#51)
+
+### ⚠️ Behavior changes
+- **`merge --base` honors `--no-push` and `GH_STACK_NO_PUSH=1`.** The PR still merges on GitHub, but the re-root, the PR retarget and the restack above it stay local until `gh-stack submit`. `--push` overrides the variable. The `[restack] push` config default still doesn't apply to merge. (#51)
+
 ## 0.19.0
 
 ### ⚠️ Behavior changes

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.2
+
+### 📦 Packaging
+- **Releases are published from GitHub Actions with npm trusted publishing.** Pushing a version tag runs lint, typecheck and the tests on Linux, checks that the tag matches `package.json`, and publishes. No npm token is involved, and each release now carries a provenance attestation that links it to the commit and workflow run that built it. The code is the same as 0.19.1. (#53)
+
 ## 0.19.1
 
 ### 🐛 Fixes

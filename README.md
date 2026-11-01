@@ -262,11 +262,14 @@ sync [--dry-run] [--no-push|--push] [--resume | --fresh] [--overwrite-remote]
     Fetch main, rebase the base branch onto main, push it, then restack
     all children (every branch above it, in one resumable run). Snapshots every branch's pre-sync tip so children can be
     correctly rebased even though their parent's history was rewritten.
-    If the bottom PR(s) already merged on main outside gh-stack (e.g.
-    the GitHub web UI), sync detects this and advances the stack past
-    them — re-rooting the survivor onto main with `--onto` so only its
-    own commits replay — instead of replaying the now-squashed commits
-    and conflicting.
+    If the bottom PR(s) already merged outside gh-stack (e.g. the GitHub
+    web UI, or the base of a `merge --approved` landing with the PRs
+    collapsed into it), sync detects this and advances the stack past
+    them: it drops every merged branch and re-roots only the first
+    unmerged one onto main with `--onto`, so only its own commits replay,
+    instead of replaying the now-squashed commits and conflicting. It
+    warns about a merged PR whose changes never reached main (merged
+    into a branch after that branch's own PR had landed).
 
     --no-push / --push (and their defaults): as for restack. Also skips
     retargeting a PR's base after advancing past a merged bottom;
@@ -323,7 +326,8 @@ merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push]
                 just its own commits). One PR per run — run it again to
                 land the next. Approval is enforced by GitHub branch
                 protection, not gh-stack. A base PR already merged outside
-                gh-stack is detected and advanced past. The re-root waits
+                gh-stack is detected and advanced past, along with
+                PRs already collapsed into it. The re-root waits
                 until origin's main shows the merge commit, and stops (exit
                 2) if it never does. When a re-root stops (a conflict, or
                 main not showing the merge yet), finish it by re-running

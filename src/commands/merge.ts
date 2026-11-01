@@ -423,11 +423,11 @@ OPTIONS
           : "Single branch stack — enabling auto-merge on GitHub.",
       );
       if (!dryRun) {
-        try {
-          await $`gh pr merge ${basePr} --squash --auto`.quiet();
+        const auto = await $`gh pr merge ${basePr} --squash --auto`.nothrow().quiet();
+        if (auto.exitCode === 0) {
           p.log.success(`Auto-merge enabled for PR #${basePr}`);
-        } catch {
-          p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${basePr} --squash --auto`)}`);
+        } else {
+          autoMergeFallback(basePr, auto.stderr.toString());
         }
       }
     } else {
@@ -721,6 +721,7 @@ OPTIONS
 
   // verdict is "merged", "ready", or "blocked" (pending checks). All are safe to
   // archive: the PR is either already merged or will merge once checks pass.
+  let autoMerging = true;
   if (verdict === "merged") {
     autoSpinner.stop(`PR #${basePr} already merged into main`);
   } else {
@@ -740,7 +741,8 @@ OPTIONS
     } else {
       autoSpinner.stop(pc.yellow(`Could not enable auto-merge for PR #${basePr}`));
       if (auto.stderr) p.log.error(auto.stderr);
-      p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${basePr} --squash --auto`)}`);
+      autoMergeFallback(basePr!, auto.stderr);
+      autoMerging = false;
     }
   }
 
@@ -764,7 +766,7 @@ OPTIONS
   if (tail.length > 0) {
     p.outro(
       pc.green(
-        `Approved run collapsed into PR #${basePr} → auto-merging to main. ` +
+        `Approved run collapsed into PR #${basePr}${autoMerging ? " → auto-merging to main" : ""}. ` +
           `After it lands, run \`gh-stack sync\` to re-root the ${tail.length} remaining branch(es).`,
       ),
     );
@@ -961,6 +963,36 @@ async function collapsedChildren(
 }
 
 /**
+ * What to do when `gh pr merge --auto` failed. A repo that doesn't allow
+ * auto-merge fails the same way every time, so don't suggest retrying it (#54).
+ */
+function autoMergeFallback(prNumber: number, stderr: string): void {
+  if (/auto.?merge is not allowed/i.test(stderr)) {
+    p.log.info(
+      `This repo doesn't allow auto-merge. Merge PR #${prNumber} once its checks pass: ${pc.dim(`gh pr merge ${prNumber} --squash`)}`,
+    );
+  } else {
+    p.log.info(`Enable manually: ${pc.dim(`gh pr merge ${prNumber} --squash --auto`)}`);
+  }
+}
+
+/**
+ * The branches right above the base (`ordered[0]`) whose PRs already merged,
+ * bottom-up, stopping at the first that hasn't: PRs collapsed into the base,
+ * or landed on their own. A PR that can't be read stops the run, so it's
+ * re-rooted rather than dropped on a guess.
+ */
+async function mergedRunAbove(stack: Stack, ordered: string[]): Promise<string[]> {
+  const run: string[] = [];
+  for (const branch of ordered.slice(1)) {
+    const pr = stack.branches[branch]?.pr;
+    if (pr == null || (await getPrMergeState(pr))?.state !== "MERGED") break;
+    run.push(branch);
+  }
+  return run;
+}
+
+/**
  * Fetch the trunk and confirm it holds PR `prNumber`'s merge commit (#51).
  * The re-root rebases onto `origin/<trunk>`; a trunk fetched before the squash
  * landed puts the next branch on a main without the merged PR's changes, so
@@ -1071,7 +1103,11 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   const baseState = await getPrMergeState(basePr);
   const baseAction: MergeAction = baseState?.state === "MERGED" ? "advance-only" : "merge";
   const plan = { steps: [{ branch: baseBranch, pr: basePr, action: baseAction }] };
-  const nextChild = ordered[1] ?? null;
+  // PRs already merged above the base (collapsed into it, or landed on their
+  // own) go with it: dropped, never re-rooted, since replaying their commits
+  // onto a trunk that holds them squashed conflicts (#54).
+  const mergedAbove = await mergedRunAbove(stack, ordered);
+  const nextChild = ordered[1 + mergedAbove.length] ?? null;
 
   console.log();
   console.log(`  ${pc.bold("Plan:")}`);
@@ -1082,6 +1118,11 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
         : `${pc.green("squash-merge")} → ${pc.green(trunk)}`
     }`,
   );
+  if (mergedAbove.length > 0) {
+    console.log(
+      `    ${pc.dim(`drop ${mergedAbove.join(", ")} (already merged into the branch below)`)}`,
+    );
+  }
   if (nextChild) {
     console.log(
       `    ${pc.dim(`then re-root ${nextChild} onto ${trunk} — the rest stays a stack`)}`,
@@ -1151,7 +1192,7 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   const overwrite = args.includes("--overwrite-remote");
   const verified = await guardRemoteContent(
     meta,
-    ordered.slice(1).filter((b) => !collapsed.includes(b)),
+    ordered.slice(1).filter((b) => !collapsed.includes(b) && !mergedAbove.includes(b)),
     { command: "merge --base", overwrite, dryRun: false },
   );
 
@@ -1164,7 +1205,7 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   for (let i = 0; i < plan.steps.length; i++) {
     const step = plan.steps[i]!;
     const mergedBranch = step.branch;
-    const child = ordered[i + 1] ?? null;
+    const child = nextChild;
     const childPr = child ? (stack.branches[child]?.pr ?? null) : null;
 
     console.log();
@@ -1232,10 +1273,13 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
         process.exit(2);
       }
 
+      // The child sits on the last branch of the merged run.
+      const mergedParent = stack.branches[child]!.parent;
       const res = await advanceNewBottom({
         meta,
         stackName,
-        mergedBranch,
+        mergedBranch: mergedParent,
+        alsoMerged: [mergedBranch, ...mergedAbove].filter((b) => b !== mergedParent),
         child,
         childPr,
         targetRef,
@@ -1267,8 +1311,10 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
         process.exit(2);
       }
     } else {
-      // The merged branch was the top — nothing rides above it. Just drop it.
-      await removeBranchFromStack(meta, stackName, mergedBranch);
+      // Nothing unmerged rides above it. Just drop the merged run.
+      for (const branch of [mergedBranch, ...mergedAbove]) {
+        await removeBranchFromStack(meta, stackName, branch);
+      }
     }
   }
 

@@ -94,6 +94,53 @@ export function planMerges(ordered: BranchReview[], opts: { approveAndMerge: boo
   return { steps, stop: null };
 }
 
+/** One branch of a contiguous merged run, with how its PR merged. */
+export interface MergedRunEntry {
+  branch: string;
+  /** Its stack parent. */
+  parent: string;
+  pr: number | null;
+  /** The branch its PR merged into. */
+  baseRefName: string | null;
+  mergedAt: string | null;
+}
+
+/** A merged PR whose changes never reached the trunk. */
+export interface StrandedMerge {
+  branch: string;
+  pr: number | null;
+  into: string;
+  /** The PR of the branch it merged into, which had already landed; null when that branch isn't in the run. */
+  landedPr: number | null;
+}
+
+/**
+ * The merged PRs in `run` (bottom-up) whose changes never reached `trunk`.
+ * Advancing past a merged run drops its branches without replaying them, which
+ * is only right if each one's changes are on the trunk: merged into the trunk,
+ * or into a branch of the run before that branch's own PR merged (a collapse).
+ * One merged into its parent after the parent landed, or into a branch outside
+ * the run, is stranded. Missing facts never claim stranded.
+ */
+export function strandedMerges(run: MergedRunEntry[], trunk: string): StrandedMerge[] {
+  const byBranch = new Map(run.map((entry) => [entry.branch, entry]));
+  const stranded: StrandedMerge[] = [];
+  for (const entry of run) {
+    const into = entry.baseRefName;
+    if (!into || into === trunk) continue;
+    const container = byBranch.get(into);
+    if (!container) {
+      stranded.push({ branch: entry.branch, pr: entry.pr, into, landedPr: null });
+      continue;
+    }
+    if (!entry.mergedAt || !container.mergedAt) continue;
+    if (Date.parse(entry.mergedAt) > Date.parse(container.mergedAt)) {
+      stranded.push({ branch: entry.branch, pr: entry.pr, into, landedPr: container.pr });
+    }
+  }
+  return stranded;
+}
+
 function reviewReason(decision: string | null): string {
   switch (decision) {
     case "CHANGES_REQUESTED":
@@ -142,9 +189,10 @@ export type AdvanceResult =
 
 /**
  * Re-root `child` (the branch that becomes the new bottom) onto `targetRef`,
- * dropping `mergedBranch`'s now-squashed commits, then drop `mergedBranch` from
- * the stack metadata (re-parenting `child` and any siblings onto the trunk),
- * push the rebased child, and repoint its PR base to `recordedBase`.
+ * dropping `mergedBranch`'s now-squashed commits, then drop `mergedBranch` (and
+ * `alsoMerged`) from the stack metadata (re-parenting `child` and any siblings
+ * onto the trunk), push the rebased child, and repoint its PR base to
+ * `recordedBase`.
  *
  * The caller MUST have taken a snapshot first — on a rebase conflict this leaves
  * the in-progress `git rebase` for the user to resolve and returns `conflict`.
@@ -155,7 +203,13 @@ export type AdvanceResult =
 export async function advanceNewBottom(opts: {
   meta: StackMetadata;
   stackName: string;
+  /** The merged branch `child` sits on: its pre-merge tip is the fork point. */
   mergedBranch: string;
+  /**
+   * The rest of a merged run below `mergedBranch` (#54). Their commits are in
+   * the trunk too, so they're dropped without being re-rooted themselves.
+   */
+  alsoMerged?: string[];
   child: string;
   childPr: number | null;
   targetRef: string;
@@ -227,10 +281,12 @@ export async function advanceNewBottom(opts: {
     );
   }
 
-  // Metadata last: re-parents child (and siblings) onto the merged branch's
-  // parent (the trunk) and writes. Done after the git work succeeds so a failure
+  // Metadata last: drop the merged run, which re-parents child (and siblings)
+  // onto the trunk, and write. Done after the git work succeeds so a failure
   // never leaves metadata describing a state git didn't reach.
-  await removeBranchFromStack(meta, stackName, mergedBranch);
+  for (const merged of [...(opts.alsoMerged ?? []), mergedBranch]) {
+    await removeBranchFromStack(meta, stackName, merged);
+  }
 
   // Record where the child's PR really points. Until it's retargeted it still
   // targets the merged branch, and the next successful push of the child

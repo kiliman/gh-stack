@@ -215,16 +215,18 @@ export interface PrMergeResult {
   baseRefName: string;
   /** The commit merging it created on its base (for a squash merge, the squash commit). */
   mergeCommit: string | null;
+  /** When it merged (ISO 8601); null if it hasn't. */
+  mergedAt: string | null;
 }
 
 export async function getPrMergeState(prNumber: number): Promise<PrMergeResult | null> {
   try {
     const data = JSON.parse(
       (
-        await $`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,mergeCommit`.text()
+        await $`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,mergeCommit,mergedAt`.text()
       ).trim(),
     );
-    return { ...data, mergeCommit: data.mergeCommit?.oid ?? null };
+    return { ...data, mergeCommit: data.mergeCommit?.oid ?? null, mergedAt: data.mergedAt || null };
   } catch {
     return null;
   }

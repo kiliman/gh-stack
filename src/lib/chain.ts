@@ -4,8 +4,24 @@
 // auto-create/register a stack from a bare set of local branches so the
 // end state is always stack registered + branches pushed + PRs created).
 import * as git from "./git.ts";
+import { allBranchMemberships, type BranchMembership } from "./branch-config.ts";
 import { findStackForBranch, getOrderedBranches, stackBase } from "./metadata.ts";
 import type { StackMetadata, Branch } from "../types.ts";
+
+/**
+ * A new stack entry for a branch, keeping the PR number and id already
+ * recorded for it in git config. Git config is shared by every worktree of a
+ * repo, but stack files are not: a branch submitted in one worktree and then
+ * tracked in another (the dependency sweep's handoff) would otherwise lose its
+ * PR, and `sync` and `merge --base` would not see it merge.
+ */
+function newBranchEntry(parent: string, recorded: BranchMembership | undefined): Branch {
+  return {
+    parent,
+    ...(recorded?.pr != null && { pr: recorded.pr }),
+    ...(recorded?.id && { id: recorded.id }),
+  };
+}
 
 /**
  * Detect a chain of branches from trunk to the current branch.
@@ -107,6 +123,7 @@ export async function resolveOrCreateStack(
   trunk: string,
 ): Promise<StackResolution> {
   const fullChain = await detectBranchChain(branch, trunk); // trunk→current
+  const recorded = await allBranchMemberships();
 
   // Walk from just below `branch` downward; the first tracked ancestor is the
   // attachment point. Everything above it (up to `branch`) is the untracked
@@ -143,7 +160,7 @@ export async function resolveOrCreateStack(
       }
 
       if (stack.branches[name]) continue; // already tracked — leave as-is
-      stack.branches[name] = { parent };
+      stack.branches[name] = newBranchEntry(parent, recorded.get(name));
       stack.last_branch = name;
       addedBranches.push(name);
     }
@@ -177,8 +194,7 @@ export async function resolveOrCreateStack(
     const name = fullChain[i]!;
     if (stack.branches[name]) continue;
     const parent = i === 0 ? trunk : fullChain[i - 1]!;
-    const branchData: Branch = { parent };
-    stack.branches[name] = branchData;
+    stack.branches[name] = newBranchEntry(parent, recorded.get(name));
     stack.last_branch = name;
     addedBranches.push(name);
   }

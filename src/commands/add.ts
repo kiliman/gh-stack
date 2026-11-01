@@ -38,7 +38,8 @@ OPTIONS
                      its stack and has no PR (e.g. a mistaken ${"`"}init${"`"} at trunk).
 
 Network-free — nothing is pushed and no PR is opened. Run ${"`"}gh-stack submit${"`"} when
-you're ready to publish.
+you're ready to publish. A PR already recorded for the branch in git config
+(by gh-stack in another worktree of this repo) is kept.
 
 EXAMPLES
   gh-stack add                    Track the current branch

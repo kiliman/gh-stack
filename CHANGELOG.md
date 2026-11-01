@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.7
+
+### 🐛 Fixes
+- **A parent leaving with several children no longer wedges the stack.** Deleting a stack's root that had several children, or advancing past one that merged, put every child on the base. That left one stack with several roots, which every command refused, including the ones you'd recover with. Each child (with the branches above it) now becomes its own stack. (#60, #61)
+- **`sync` and `merge --base` re-root every child of a merged branch.** They re-rooted only the first; its siblings kept the merged PR's pre-squash commits and would conflict on the next restack. Each child is now re-rooted from its merged parent's tip and its PR retargeted, and each split-off stack's tail is restacked. This is the dependency sweep's shape: a batch PR with one breaking PR per upgrade. (#60, #61)
+- **`doctor` repairs a stack with several roots** by splitting it, and reports stacks that still fail the checks other commands run, rather than saying "Metadata looks healthy." The refusal message points at that repair. (#60, #61)
+- **`submit --dry-run` no longer plans to create PRs that already exist.** It now looks up PRs opened outside gh-stack, as a real run does, without recording them. (#60, #61)
+
 ## 0.19.6
 
 ### 🐛 Fixes

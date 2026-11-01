@@ -315,8 +315,10 @@ deletes them from the PR.
 
 **`sync` is self-correcting:** if you merged the bottom PR in the GitHub UI, or
 the base of a `merge --approved` landed with the PRs collapsed into it, `sync`
-detects it, drops every merged branch, and re-roots only the first unmerged one
-onto trunk instead of replaying squashed commits and conflicting. It rebases
+detects it, drops every merged branch, and re-roots each unmerged branch sitting
+on them onto trunk instead of replaying squashed commits and conflicting. A
+merged branch with several children (the dependency sweep's batch PR with one
+breaking PR per upgrade) leaves one stack per child, and sync syncs each. It rebases
 onto `origin/main` (fetched itself), so a stale local `main` doesn't matter.
 
 ### 5. Status
@@ -348,7 +350,8 @@ Merge is **top-down everywhere** (collapse PRn → PRn-1 → … → base PR, th
   allow auto-merge, merge the base PR yourself once its checks pass
   (`gh pr merge <N> --squash`), then `gh-stack sync`.
 - **`merge --base`**: squash-merge **only the bottom PR** into trunk and re-root
-  the next branch onto trunk — one PR per run, re-run for the next. Use this to
+  the next branch onto trunk (every child, each as its own stack, when the
+  bottom PR has several) — one PR per run, re-run for the next. Use this to
   land reviewed PRs one at a time. Auto-advances past a bottom PR already merged
   outside gh-stack. If the re-root stops (a conflict, or "origin/main doesn't
   show its merge commit"), fix it (`git rebase --continue`) and **re-run
@@ -377,13 +380,13 @@ cherry-pick them, don't force past it.
 ### 7. Maintenance
 
 ```bash
-gh-stack delete        # remove a branch from the stack (re-parents children)
+gh-stack delete        # remove a branch from the stack (re-parents children; a root's several children become one stack each)
 gh-stack split         # cut a stack into two at a branch
 gh-stack join <b>      # splice an existing branch/PR into the stack (--above <b>, --dry-run)
 gh-stack rename        # rename a tracked branch (keeps metadata in sync)
 gh-stack undo          # restore from the last snapshot
 gh-stack archive       # manage archived stacks
-gh-stack doctor        # migrate & repair stack metadata
+gh-stack doctor        # migrate & repair stack metadata (splits a stack with several roots)
 gh-stack update-prs    # repair stack viz in PR descriptions + adopt PRs opened with gh pr create
 ```
 

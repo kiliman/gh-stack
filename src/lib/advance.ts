@@ -4,6 +4,8 @@
 // `gh-stack merge --approved` or squash-merged outside the tool (the GitHub UI)
 // — the rest of the stack must be *advanced*: drop the merged branch from the
 // stack and re-root the new bottom onto `main`, replaying ONLY its own commits.
+// A merged branch with several children leaves several new bottoms: each is
+// re-rooted and becomes its own stack (#60).
 //
 // The subtle part is the rebase fork-point. After a squash-merge, `main` carries
 // a brand-new commit that is NOT in the child's history, so `merge-base(child,
@@ -19,8 +21,8 @@
 import * as p from "./output.ts";
 import pc from "picocolors";
 import * as git from "./git.ts";
-import type { StackMetadata } from "../types.ts";
-import { removeBranchFromStack, writeMetadata } from "./metadata.ts";
+import type { Stack, StackMetadata } from "../types.ts";
+import { getOrderedBranches, removeBranchFromStack, writeMetadata } from "./metadata.ts";
 import { resolveRestackBoundary } from "./snapshot.ts";
 import { setPrBase } from "./github.ts";
 
@@ -182,119 +184,153 @@ export async function resolveForkPoint(
   return boundary?.sha ?? null;
 }
 
-/** Outcome of advancing a single new bottom onto the trunk. */
-export type AdvanceResult =
-  | { ok: true }
-  | { ok: false; reason: "conflict" | "no-fork-point" | "bad-fork-point"; forkPoint?: string };
+/** An unmerged branch sitting on a merged run: it gets re-rooted onto the trunk. */
+export interface Survivor {
+  branch: string;
+  pr: number | null;
+  /**
+   * Its origin tip as the remote guard checked and cleared it: the push
+   * leases on exactly that sha (see git.forcePushWithLease).
+   */
+  expect?: string;
+}
 
 /**
- * Re-root `child` (the branch that becomes the new bottom) onto `targetRef`,
- * dropping `mergedBranch`'s now-squashed commits, then drop `mergedBranch` (and
- * `alsoMerged`) from the stack metadata (re-parenting `child` and any siblings
- * onto the trunk), push the rebased child, and repoint its PR base to
- * `recordedBase`.
+ * The unmerged branches whose parent is in the merged run, parents first.
+ * Usually one, but a merged branch with several children leaves one per child,
+ * and each needs its own re-root (#60).
+ */
+export function survivorsOf(stack: Stack, merged: string[]): string[] {
+  const run = new Set(merged);
+  return getOrderedBranches(stack).filter((b) => !run.has(b) && run.has(stack.branches[b]!.parent));
+}
+
+/** Outcome of advancing a stack past a merged run. */
+export type AdvanceResult =
+  | {
+      ok: true;
+      /** Stacks split off because the run left several branches on the trunk (#60). */
+      split: string[];
+    }
+  | {
+      ok: false;
+      /** The survivor that couldn't be re-rooted, and the merged branch it sat on. */
+      child: string;
+      mergedBranch: string;
+      reason: "conflict" | "no-fork-point" | "bad-fork-point";
+      forkPoint?: string;
+    };
+
+/**
+ * Re-root each survivor onto `targetRef`, dropping its merged parent's
+ * now-squashed commits, push it, and repoint its PR base to `recordedBase`.
+ * Then drop the whole merged run from the stack metadata. Survivors left side
+ * by side on the trunk become one stack each (see splitMultiRootStack).
  *
  * The caller MUST have taken a snapshot first — on a rebase conflict this leaves
  * the in-progress `git rebase` for the user to resolve and returns `conflict`.
- * Metadata still names the merged branch as the child's parent then, so the
- * fix is to re-run the caller: this skips the finished rebase and does the rest.
- * (`restack` would rebase the child back onto the merged branch.)
+ * Metadata still names the merged branches then, so the fix is to re-run the
+ * caller: survivors already on the target skip their rebase and finish the
+ * rest. (`restack` would rebase them back onto the merged branch.)
  */
-export async function advanceNewBottom(opts: {
+export async function advancePastMerged(opts: {
   meta: StackMetadata;
   stackName: string;
-  /** The merged branch `child` sits on: its pre-merge tip is the fork point. */
-  mergedBranch: string;
   /**
-   * The rest of a merged run below `mergedBranch` (#54). Their commits are in
-   * the trunk too, so they're dropped without being re-rooted themselves.
+   * The merged run, every branch of it. Their commits are in the trunk, so
+   * they're dropped without being re-rooted themselves (#54).
    */
-  alsoMerged?: string[];
-  child: string;
-  childPr: number | null;
+  merged: string[];
+  survivors: Survivor[];
   targetRef: string;
   recordedBase: string;
   /** false = `--no-push`: rebase + metadata only, leave origin and the PR alone (#36). */
   push?: boolean;
-  /**
-   * The child's origin tip as the remote guard checked and cleared it: the
-   * push leases on exactly that sha (see git.forcePushWithLease).
-   */
-  expect?: string;
 }): Promise<AdvanceResult> {
-  const { meta, stackName, mergedBranch, child, childPr, targetRef, recordedBase } = opts;
+  const { meta, stackName, targetRef, recordedBase } = opts;
   const push = opts.push ?? true;
-  let retargeted = false;
+  const prBases = new Map<string, string>();
 
-  // Already on the target: an earlier run stopped on a conflict the user then
-  // resolved, or the branch was re-rooted by hand (#51). Its fork point is
-  // behind it now, so skip the rebase and finish the rest (push, PR base,
-  // metadata). Before a re-root the child can't contain the target, which
-  // holds the merged PR's new squash commit.
-  if (await git.isAncestor(targetRef, child)) {
-    p.log.info(
-      `${pc.yellow(child)} is already on ${pc.green(recordedBase)} — finishing its re-root`,
-    );
-  } else {
-    const forkPoint = await resolveForkPoint(meta, mergedBranch, child);
-    if (!forkPoint) return { ok: false, reason: "no-fork-point" };
+  for (const survivor of opts.survivors) {
+    const child = survivor.branch;
+    const childPr = survivor.pr;
+    const mergedBranch = meta.stacks[stackName]!.branches[child]!.parent;
+    let retargeted = false;
 
-    // Guard: the fork-point must be an ancestor of the child, else `--onto` would
-    // replay an unrelated range. Bail loudly rather than mangle history.
-    if (!(await git.isAncestor(forkPoint, child))) {
-      return { ok: false, reason: "bad-fork-point", forkPoint };
+    // Already on the target: an earlier run stopped on a conflict the user then
+    // resolved, or the branch was re-rooted by hand (#51). Its fork point is
+    // behind it now, so skip the rebase and finish the rest (push, PR base,
+    // metadata). Before a re-root the child can't contain the target, which
+    // holds the merged PR's new squash commit.
+    if (await git.isAncestor(targetRef, child)) {
+      p.log.info(
+        `${pc.yellow(child)} is already on ${pc.green(recordedBase)} — finishing its re-root`,
+      );
+    } else {
+      const forkPoint = await resolveForkPoint(meta, mergedBranch, child);
+      if (!forkPoint) return { ok: false, child, mergedBranch, reason: "no-fork-point" };
+
+      // Guard: the fork-point must be an ancestor of the child, else `--onto` would
+      // replay an unrelated range. Bail loudly rather than mangle history.
+      if (!(await git.isAncestor(forkPoint, child))) {
+        return { ok: false, child, mergedBranch, reason: "bad-fork-point", forkPoint };
+      }
+
+      p.log.info(
+        `Re-rooting ${pc.yellow(child)} onto ${pc.green(recordedBase)} ${pc.dim(`(base: ${forkPoint.slice(0, 8)})`)}`,
+      );
+      const ok = await git.rebaseOnto(targetRef, forkPoint, child);
+      if (!ok) return { ok: false, child, mergedBranch, reason: "conflict", forkPoint };
     }
 
-    p.log.info(
-      `Re-rooting ${pc.yellow(child)} onto ${pc.green(recordedBase)} ${pc.dim(`(base: ${forkPoint.slice(0, 8)})`)}`,
-    );
-    const ok = await git.rebaseOnto(targetRef, forkPoint, child);
-    if (!ok) return { ok: false, reason: "conflict", forkPoint };
+    if (push) {
+      // Push the rebased head first so the PR diff is clean before its base flips.
+      // If it didn't land, leave the base alone: retargeting onto the trunk with
+      // the old head on origin would show the merged commits in the PR (#29).
+      const pushed = await git.forcePushWithLease(child, { expect: survivor.expect });
+      if (!pushed.ok) {
+        p.log.error(
+          `Push of ${pc.yellow(child)} failed — PR${childPr != null ? ` #${childPr}` : ""} left on ${mergedBranch} for now. The next push of ${child} that lands (gh-stack restack --resume, sync) retargets it.`,
+        );
+        for (const line of git.pushFailureHint(child, pushed)) console.log(`  ${line}`);
+      } else if (childPr != null) {
+        const moved = await setPrBase(childPr, recordedBase);
+        if (moved) {
+          retargeted = true;
+          p.log.success(`PR #${childPr} base → ${pc.green(recordedBase)}`);
+        } else {
+          p.log.warn(
+            `Could not retarget PR #${childPr} — the next push of ${child} retries, or set its base to ${recordedBase} manually`,
+          );
+        }
+      }
+    } else if (childPr != null) {
+      // Retargeting the base without pushing the rebased head would show the
+      // merged commits in the PR diff, so leave both for `submit` to reconcile.
+      p.log.info(
+        `Not pushing ${pc.yellow(child)} or retargeting PR #${childPr} (--no-push) — ${pc.green("gh-stack submit")} publishes both`,
+      );
+    }
+
+    // Where the child's PR really points. Until it's retargeted it still
+    // targets the merged branch, and the next successful push of the child
+    // retargets it (restack's pushStep), so it's never left there.
+    if (childPr != null) prBases.set(child, retargeted ? recordedBase : mergedBranch);
   }
 
-  if (push) {
-    // Push the rebased head first so the PR diff is clean before its base flips.
-    // If it didn't land, leave the base alone: retargeting onto the trunk with
-    // the old head on origin would show the merged commits in the PR (#29).
-    const pushed = await git.forcePushWithLease(child, { expect: opts.expect });
-    if (!pushed.ok) {
-      p.log.error(
-        `Push of ${pc.yellow(child)} failed — PR${childPr != null ? ` #${childPr}` : ""} left on ${mergedBranch} for now. The next push of ${child} that lands (gh-stack restack --resume, sync) retargets it.`,
-      );
-      for (const line of git.pushFailureHint(child, pushed)) console.log(`  ${line}`);
-    } else if (childPr != null) {
-      const moved = await setPrBase(childPr, recordedBase);
-      if (moved) {
-        retargeted = true;
-        p.log.success(`PR #${childPr} base → ${pc.green(recordedBase)}`);
-      } else {
-        p.log.warn(
-          `Could not retarget PR #${childPr} — the next push of ${child} retries, or set its base to ${recordedBase} manually`,
-        );
+  // Metadata last: drop the merged run in one go (survivors move onto the
+  // trunk) and write. Done after the git work succeeds so a failure never
+  // leaves metadata describing a state git didn't reach.
+  const split = await removeBranchFromStack(meta, stackName, opts.merged);
+
+  if (prBases.size > 0) {
+    for (const stack of [stackName, ...split].map((name) => meta.stacks[name])) {
+      for (const [branch, prBase] of prBases) {
+        const entry = stack?.branches[branch];
+        if (entry) entry.prBase = prBase;
       }
     }
-  } else if (childPr != null) {
-    // Retargeting the base without pushing the rebased head would show the
-    // merged commits in the PR diff, so leave both for `submit` to reconcile.
-    p.log.info(
-      `Not pushing ${pc.yellow(child)} or retargeting PR #${childPr} (--no-push) — ${pc.green("gh-stack submit")} publishes both`,
-    );
-  }
-
-  // Metadata last: drop the merged run, which re-parents child (and siblings)
-  // onto the trunk, and write. Done after the git work succeeds so a failure
-  // never leaves metadata describing a state git didn't reach.
-  for (const merged of [...(opts.alsoMerged ?? []), mergedBranch]) {
-    await removeBranchFromStack(meta, stackName, merged);
-  }
-
-  // Record where the child's PR really points. Until it's retargeted it still
-  // targets the merged branch, and the next successful push of the child
-  // retargets it (restack's pushStep), so it's never left there.
-  const entry = meta.stacks[stackName]?.branches[child];
-  if (entry && childPr != null) {
-    entry.prBase = retargeted ? recordedBase : mergedBranch;
     await writeMetadata(meta);
   }
-  return { ok: true };
+  return { ok: true, split };
 }

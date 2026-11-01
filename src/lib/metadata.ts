@@ -535,48 +535,92 @@ export async function addBranchToStack(
 }
 
 /**
- * Remove a branch from a stack, re-parenting children to the removed branch's parent.
+ * Remove branches from a stack, re-parenting each one's children to its
+ * parent. If that leaves several branches on the stack's base (a removed root
+ * had more than one child), they're split into one stack each; see
+ * splitMultiRootStack. Returns the names of the stacks split off.
+ *
+ * Pass every branch that leaves at once (e.g. a whole merged run): splitting
+ * after each removal could move a branch still to be removed into another stack.
  */
 export async function removeBranchFromStack(
   meta: StackMetadata,
   stackName: string,
-  branchName: string,
-): Promise<StackMetadata> {
+  branchNames: string | string[],
+): Promise<string[]> {
   const stack = meta.stacks[stackName];
   if (!stack) {
     throw new Error(`Stack "${stackName}" not found`);
   }
 
-  const branch = stack.branches[branchName];
-  if (!branch) {
-    throw new Error(`Branch "${branchName}" not found in stack "${stackName}"`);
-  }
+  for (const branchName of typeof branchNames === "string" ? [branchNames] : branchNames) {
+    const branch = stack.branches[branchName];
+    if (!branch) {
+      throw new Error(`Branch "${branchName}" not found in stack "${stackName}"`);
+    }
 
-  const removedParent = branch.parent;
+    for (const b of Object.values(stack.branches)) {
+      if (b.parent === branchName) b.parent = branch.parent;
+    }
+    delete stack.branches[branchName];
 
-  // Re-parent children
-  for (const [, b] of Object.entries(stack.branches)) {
-    if (b.parent === branchName) {
-      b.parent = removedParent;
+    // The removed branch may still exist in git but is no longer a member —
+    // drop its membership config explicitly (syncBranchConfig also would, but
+    // be direct since the branch is gone from `meta`).
+    await clearBranchMembership(branchName);
+
+    if (stack.last_branch === branchName) {
+      const remaining = Object.keys(stack.branches);
+      stack.last_branch = remaining.length > 0 ? remaining[remaining.length - 1]! : null;
     }
   }
 
-  // Remove the branch
-  delete stack.branches[branchName];
+  const split = splitMultiRootStack(meta, stackName);
+  await writeMetadata(meta);
+  return split;
+}
 
-  // The removed branch may still exist in git but is no longer a member —
-  // drop its membership config explicitly (syncBranchConfig also would, but
-  // be direct since the branch is gone from `meta`).
-  await clearBranchMembership(branchName);
+/** The branches sitting directly on the stack's base, in insertion order. */
+export function stackRoots(stack: Stack): string[] {
+  const base = stackBase(stack);
+  return Object.keys(stack.branches).filter((b) => stack.branches[b]!.parent === base);
+}
 
-  // Update last_branch if it was the removed one
-  if (stack.last_branch === branchName) {
-    const remaining = Object.keys(stack.branches);
-    stack.last_branch = remaining.length > 0 ? remaining[remaining.length - 1]! : null;
+/**
+ * Give each root of a stack with several roots its own stack (#60). A stack has
+ * exactly one root, so this happens when a removed root had several children:
+ * siblings on the same base are independent stacks. The first root keeps the
+ * stack; each other root's subtree moves to a new stack named after that root
+ * (suffixed `-2`, `-3`… on a clash), on the same base. Metadata only: no git
+ * branch moves. The caller writes. Returns the new stacks' names.
+ */
+export function splitMultiRootStack(meta: StackMetadata, stackName: string): string[] {
+  const stack = meta.stacks[stackName];
+  if (!stack) return [];
+  const [, ...others] = stackRoots(stack);
+  const created: string[] = [];
+
+  for (const root of others) {
+    let name = root;
+    for (let n = 2; meta.stacks[name]; n++) name = `${root}-${n}`;
+
+    const moved: Stack = {
+      description: stack.description ? `Split from ${stackName}` : "",
+      last_branch: null,
+      branches: {},
+      base: stackBase(stack),
+    };
+    for (const b of buildRebaseChain(stack, root)) {
+      moved.branches[b] = stack.branches[b]!;
+      delete stack.branches[b];
+    }
+    moved.last_branch = getOrderedBranches(moved).at(-1) ?? null;
+    meta.stacks[name] = moved;
+    created.push(name);
   }
 
-  await writeMetadata(meta);
-  return meta;
+  if (created.length > 0) stack.last_branch = getOrderedBranches(stack).at(-1) ?? null;
+  return created;
 }
 
 /**

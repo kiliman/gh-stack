@@ -6,7 +6,6 @@ import * as git from "../lib/git.ts";
 import {
   findStackForBranch,
   getOrderedBranches,
-  removeBranchFromStack,
   stackBase,
   writeMetadata,
 } from "../lib/metadata.ts";
@@ -28,7 +27,8 @@ import { guardRemoteContent } from "../lib/remote-guard.ts";
 import { ensureNoPendingRun } from "./restack.ts";
 import {
   planMerges,
-  advanceNewBottom,
+  advancePastMerged,
+  survivorsOf,
   type BranchReview,
   type MergeAction,
 } from "../lib/advance.ts";
@@ -1032,7 +1032,8 @@ function resolveMergePush(args: string[]): Resolved {
 /**
  * `gh-stack merge --base` — squash-merge ONLY the bottom PR into main, then
  * re-root the next branch onto main (replaying just its own commits, via
- * advance.ts's fork-point resolution). One PR per run — run it again to land the
+ * advance.ts's fork-point resolution); every child, each its own stack, when
+ * the bottom PR has several (#60). One PR per run — run it again to land the
  * next. Approval is NOT checked here; GitHub branch protection enforces it.
  * A base PR already merged outside gh-stack is detected and advanced past.
  */
@@ -1107,7 +1108,9 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   // own) go with it: dropped, never re-rooted, since replaying their commits
   // onto a trunk that holds them squashed conflicts (#54).
   const mergedAbove = await mergedRunAbove(stack, ordered);
-  const nextChild = ordered[1 + mergedAbove.length] ?? null;
+  const mergedRun = [baseBranch, ...mergedAbove];
+  // Every unmerged branch on the run is re-rooted: one per child (#60).
+  const survivors = survivorsOf(stack, mergedRun);
 
   console.log();
   console.log(`  ${pc.bold("Plan:")}`);
@@ -1123,10 +1126,16 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
       `    ${pc.dim(`drop ${mergedAbove.join(", ")} (already merged into the branch below)`)}`,
     );
   }
-  if (nextChild) {
+  if (survivors.length === 1) {
     console.log(
-      `    ${pc.dim(`then re-root ${nextChild} onto ${trunk} — the rest stays a stack`)}`,
+      `    ${pc.dim(`then re-root ${survivors[0]} onto ${trunk} — the rest stays a stack`)}`,
     );
+  } else if (survivors.length > 1) {
+    console.log(
+      `    ${pc.dim(`then re-root ${survivors.join(", ")} onto ${trunk} — each becomes its own stack`)}`,
+    );
+  }
+  if (survivors.length > 0) {
     if (!push) {
       console.log(
         `    ${pc.dim(`(--no-push: re-rooted branches stay local; ${pc.green("gh-stack submit")} publishes them)`)}`,
@@ -1141,8 +1150,8 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   }
 
   const confirmed = await confirmAction(
-    nextChild
-      ? `Merge base PR #${basePr} into ${trunk} and re-root ${nextChild}?`
+    survivors.length > 0
+      ? `Merge base PR #${basePr} into ${trunk} and re-root ${survivors.join(", ")}?`
       : `Merge base PR #${basePr} into ${trunk}?`,
   );
   if (!confirmed) {
@@ -1201,12 +1210,11 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
   await takeSnapshot(meta, stackName, "merge-base");
   // Keep a copy of the original topology to archive if the stack fully drains.
   const originalStack = structuredClone(stack);
+  let split: string[] = [];
 
   for (let i = 0; i < plan.steps.length; i++) {
     const step = plan.steps[i]!;
     const mergedBranch = step.branch;
-    const child = nextChild;
-    const childPr = child ? (stack.branches[child]?.pr ?? null) : null;
 
     console.log();
     console.log(pc.cyan("━".repeat(40)));
@@ -1253,7 +1261,7 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
       p.log.info(`PR #${step.pr} already merged — advancing the stack past it.`);
     }
 
-    if (child) {
+    if (survivors.length > 0) {
       // Re-root onto the trunk as it is now, with the merge in it (#51).
       const trunkState = await fetchTrunkWithMerge(trunk, step.pr!);
       if (!trunkState.ok) {
@@ -1266,56 +1274,53 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
           } yet.`,
         );
         console.log(
-          `  Stopped before re-rooting ${pc.yellow(child)}: a ${trunk} without the merge would drop its changes from the stack.`,
+          `  Stopped before re-rooting ${pc.yellow(survivors.join(", "))}: a ${trunk} without the merge would drop its changes from the stack.`,
         );
         console.log(`  Once ${trunk} has it, finish with:`);
         console.log(`    ${pc.green("gh-stack merge --base")}`);
         process.exit(2);
       }
-
-      // The child sits on the last branch of the merged run.
-      const mergedParent = stack.branches[child]!.parent;
-      const res = await advanceNewBottom({
-        meta,
-        stackName,
-        mergedBranch: mergedParent,
-        alsoMerged: [mergedBranch, ...mergedAbove].filter((b) => b !== mergedParent),
-        child,
-        childPr,
-        targetRef,
-        recordedBase: trunk,
-        push,
-        expect: verified.get(child),
-      });
-      if (!res.ok) {
-        console.log();
-        if (res.reason === "conflict") {
-          p.log.error(`Rebase conflict re-rooting ${pc.yellow(child)} onto ${trunk}.`);
-          console.log(`  Resolve the conflict, then finish with:`);
-          console.log(`    ${pc.green("git rebase --continue")}`);
-          console.log(
-            `    ${pc.green("gh-stack merge --base")}   ${pc.dim(`(pushes ${child}, retargets its PR, restacks the rest)`)}`,
-          );
-          console.log();
-          console.log(
-            pc.dim(`  The merged PR(s) below ${child} are done; only the re-root needs finishing.`),
-          );
-        } else {
-          p.log.error(
-            `Could not determine a safe rebase base for ${pc.yellow(child)} (${res.reason}).`,
-          );
-          console.log(
-            `  Re-root it manually:\n    ${pc.green(`git rebase --onto ${targetRef} <merged-tip> ${child}`)}`,
-          );
-        }
-        process.exit(2);
-      }
-    } else {
-      // Nothing unmerged rides above it. Just drop the merged run.
-      for (const branch of [mergedBranch, ...mergedAbove]) {
-        await removeBranchFromStack(meta, stackName, branch);
-      }
     }
+
+    const res = await advancePastMerged({
+      meta,
+      stackName,
+      merged: mergedRun,
+      survivors: survivors.map((branch) => ({
+        branch,
+        pr: stack.branches[branch]?.pr ?? null,
+        expect: verified.get(branch),
+      })),
+      targetRef,
+      recordedBase: trunk,
+      push,
+    });
+    if (!res.ok) {
+      console.log();
+      if (res.reason === "conflict") {
+        p.log.error(`Rebase conflict re-rooting ${pc.yellow(res.child)} onto ${trunk}.`);
+        console.log(`  Resolve the conflict, then finish with:`);
+        console.log(`    ${pc.green("git rebase --continue")}`);
+        console.log(
+          `    ${pc.green("gh-stack merge --base")}   ${pc.dim(`(pushes ${res.child}, retargets its PR, restacks the rest)`)}`,
+        );
+        console.log();
+        console.log(
+          pc.dim(
+            `  The merged PR(s) below ${res.child} are done; only the re-root needs finishing.`,
+          ),
+        );
+      } else {
+        p.log.error(
+          `Could not determine a safe rebase base for ${pc.yellow(res.child)} (${res.reason}).`,
+        );
+        console.log(
+          `  Re-root it manually:\n    ${pc.green(`git rebase --onto ${targetRef} <merged-tip> ${res.child}`)}`,
+        );
+      }
+      process.exit(2);
+    }
+    split = res.split;
   }
 
   // Did the whole stack drain, or is there a tail to restack?
@@ -1345,17 +1350,20 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
     return;
   }
 
-  // Restack the surviving tail onto the newly re-rooted bottom. The new bottom
-  // is itself already rebased onto main; restack skips it (base branch) and
-  // propagates onto its children using the snapshot taken above.
-  console.log();
-  p.log.info(
-    `Restacking ${remaining.length} remaining branch(es) onto ${pc.yellow(remaining[0]!)}...`,
-  );
-  const newBottom = remaining[0]!;
-  if (await git.localBranchExists(newBottom)) {
+  // Restack the surviving tail onto the newly re-rooted bottom, then each stack
+  // split off beside it (#60). Each new bottom is already rebased onto main;
+  // restack skips it (base branch) and propagates onto its children using the
+  // snapshot taken above.
+  const { default: restack } = await import("./restack.ts");
+  for (const name of [stackName, ...split]) {
+    const tail = meta.stacks[name] ? getOrderedBranches(meta.stacks[name]) : [];
+    const newBottom = tail[0];
+    if (!newBottom || !(await git.localBranchExists(newBottom))) continue;
+    console.log();
+    p.log.info(
+      `Restacking ${pc.yellow(name)} (${tail.length} branch(es)) onto ${pc.yellow(newBottom)}...`,
+    );
     await git.checkout(newBottom);
-    const { default: restack } = await import("./restack.ts");
     // Push unless this run is local-only (--no-push / GH_STACK_NO_PUSH): the
     // tail must match the re-root above. An explicit flag also means the
     // `[restack] push` config isn't read mid-merge.
@@ -1364,7 +1372,9 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
 
   p.outro(
     pc.green(
-      `Merged base PR #${basePr} into ${trunk}; ${remaining.length} branch(es) left as a stack.`,
+      split.length > 0
+        ? `Merged base PR #${basePr} into ${trunk}; the rest is now ${split.length + 1} stacks: ${[stackName, ...split].join(", ")}.`
+        : `Merged base PR #${basePr} into ${trunk}; ${remaining.length} branch(es) left as a stack.`,
     ),
   );
 }

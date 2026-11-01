@@ -42,8 +42,8 @@ describe("remove branch with re-parenting", () => {
     // Stack: pr1 (main) → pr2 → pr3
     // Remove pr2 → pr3 should be re-parented to pr1
 
-    const updated = await removeBranchFromStack(meta, "test-stack", "pr2");
-    const stack = updated.stacks["test-stack"]!;
+    await removeBranchFromStack(meta, "test-stack", "pr2");
+    const stack = meta.stacks["test-stack"]!;
 
     expect(stack.branches["pr2"]).toBeUndefined();
     expect(stack.branches["pr3"]!.parent).toBe("pr1");
@@ -54,8 +54,8 @@ describe("remove branch with re-parenting", () => {
     const { meta } = await createLinearStack(tmpDir);
     // Remove pr1 → pr2 should be re-parented to main
 
-    const updated = await removeBranchFromStack(meta, "test-stack", "pr1");
-    const stack = updated.stacks["test-stack"]!;
+    await removeBranchFromStack(meta, "test-stack", "pr1");
+    const stack = meta.stacks["test-stack"]!;
 
     expect(stack.branches["pr1"]).toBeUndefined();
     expect(stack.branches["pr2"]!.parent).toBe("main");
@@ -65,34 +65,62 @@ describe("remove branch with re-parenting", () => {
     const { meta } = await createLinearStack(tmpDir);
     // Remove pr3 → pr1 and pr2 unchanged
 
-    const updated = await removeBranchFromStack(meta, "test-stack", "pr3");
-    const stack = updated.stacks["test-stack"]!;
+    await removeBranchFromStack(meta, "test-stack", "pr3");
+    const stack = meta.stacks["test-stack"]!;
 
     expect(stack.branches["pr3"]).toBeUndefined();
     expect(stack.branches["pr1"]!.parent).toBe("main");
     expect(stack.branches["pr2"]!.parent).toBe("pr1");
   });
 
-  test("removing branch with multiple children re-parents all of them", async () => {
-    // Build tree: pr1 → pr2a, pr1 → pr2b
+  test("removing a root with several children splits them into one stack each (#60)", async () => {
+    // Build tree: pr1 → pr2a, pr1 → pr2b → pr3
     const { meta } = await createBranchingStack(tmpDir);
-    // Remove pr1 → pr2a and pr2b should both re-parent to main
 
-    const updated = await removeBranchFromStack(meta, "tree-stack", "pr1");
-    const stack = updated.stacks["tree-stack"]!;
+    const split = await removeBranchFromStack(meta, "tree-stack", "pr1");
 
-    expect(stack.branches["pr1"]).toBeUndefined();
-    expect(stack.branches["pr2a"]!.parent).toBe("main");
-    expect(stack.branches["pr2b"]!.parent).toBe("main");
-    // pr3 still points to pr2b
-    expect(stack.branches["pr3"]!.parent).toBe("pr2b");
+    expect(split).toEqual(["pr2b"]);
+    const kept = meta.stacks["tree-stack"]!;
+    expect(Object.keys(kept.branches)).toEqual(["pr2a"]);
+    expect(kept.branches["pr2a"]!.parent).toBe("main");
+    expect(kept.last_branch).toBe("pr2a");
+
+    const moved = meta.stacks["pr2b"]!;
+    expect(moved.base).toBe("main");
+    expect(moved.branches["pr2b"]!.parent).toBe("main");
+    expect(moved.branches["pr3"]!.parent).toBe("pr2b");
+    expect(moved.last_branch).toBe("pr3");
+
+    // Each is a valid single-root stack, and that survives a re-read.
+    const reread = (await readMetadata(tmpDir))!;
+    expect(await validateStack(reread, "tree-stack")).toEqual([]);
+    expect(await validateStack(reread, "pr2b")).toEqual([]);
+  });
+
+  test("removing a merged run at once re-parents onto the nearest survivor", async () => {
+    // pr1 → pr2a, pr1 → pr2b → pr3: drop pr1 and pr2b together.
+    const { meta } = await createBranchingStack(tmpDir);
+
+    const split = await removeBranchFromStack(meta, "tree-stack", ["pr1", "pr2b"]);
+
+    expect(split).toEqual(["pr3"]);
+    expect(Object.keys(meta.stacks["tree-stack"]!.branches)).toEqual(["pr2a"]);
+    expect(meta.stacks["pr3"]!.branches["pr3"]!.parent).toBe("main");
+  });
+
+  test("a split-off stack takes a suffixed name when the root's name is taken", async () => {
+    const { meta } = await createBranchingStack(tmpDir);
+    meta.stacks["pr2b"] = { description: "", last_branch: null, branches: {}, base: "main" };
+
+    expect(await removeBranchFromStack(meta, "tree-stack", "pr1")).toEqual(["pr2b-2"]);
+    expect(Object.keys(meta.stacks["pr2b-2"]!.branches)).toEqual(["pr2b", "pr3"]);
   });
 
   test("last_branch updates when removed branch was last", async () => {
     const { meta } = await createLinearStack(tmpDir);
     // pr3 is last_branch — remove it
-    const updated = await removeBranchFromStack(meta, "test-stack", "pr3");
-    const stack = updated.stacks["test-stack"]!;
+    await removeBranchFromStack(meta, "test-stack", "pr3");
+    const stack = meta.stacks["test-stack"]!;
 
     expect(stack.last_branch).not.toBe("pr3");
     expect(stack.last_branch).toBeTruthy();

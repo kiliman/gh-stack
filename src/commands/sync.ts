@@ -6,7 +6,6 @@ import * as git from "../lib/git.ts";
 import {
   findStackForBranch,
   getOrderedBranches,
-  removeBranchFromStack,
   stackBase,
   writeMetadata,
 } from "../lib/metadata.ts";
@@ -17,8 +16,9 @@ import { guardRemoteContent } from "../lib/remote-guard.ts";
 import { getPrMergeState } from "../lib/github.ts";
 import {
   planMerges,
-  advanceNewBottom,
+  advancePastMerged,
   strandedMerges,
+  survivorsOf,
   type BranchReview,
   type MergePlan,
   type MergedRunEntry,
@@ -198,9 +198,29 @@ adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`
   // need to find when restacking children. (See resolveRestackBoundary.)
   await takeSnapshot(meta, stackName, "sync");
 
+  if (advance.split.length > 0) {
+    p.log.info(
+      `Split off ${advance.split.map((s) => pc.yellow(s)).join(", ")} — each is synced after ${pc.yellow(stackName)}. ` +
+        pc.dim(`If a run stops, finish it, then run gh-stack sync on the stacks it didn't reach.`),
+    );
+  }
+
   // Rebase the root onto main, push it, then restack every branch above it —
   // one run, saved after every step, so `restack --resume` can finish it.
   await syncChain(meta, stackName, ordered, { trunkRef: "origin/main", push, verified });
+
+  // Stacks split off by the advance are already re-rooted onto the trunk, but
+  // the branches above their roots still sit on the old roots (#60).
+  for (const name of advance.split) {
+    const splitStack = meta.stacks[name];
+    if (!splitStack) continue;
+    await takeSnapshot(meta, name, "sync");
+    await syncChain(meta, name, getOrderedBranches(splitStack), {
+      trunkRef: "origin/main",
+      push,
+      verified,
+    });
+  }
 }
 
 /**
@@ -257,6 +277,8 @@ interface AdvanceOutcome {
   advanced: boolean;
   /** The whole stack drained (every branch was already merged) and was archived. */
   drained: boolean;
+  /** Stacks split off because several branches sat on the merged run (#60). */
+  split: string[];
 }
 
 /** The contiguous merged bottom branches, and how each one's PR merged. */
@@ -312,16 +334,15 @@ async function advanceMergedBottoms(
   verified: Map<string, string>,
 ): Promise<AdvanceOutcome> {
   const stack = meta.stacks[stackName]!;
-  const ordered = getOrderedBranches(stack);
   const { plan, run } = merged;
 
   if (plan.steps.length === 0) {
-    return { detected: false, advanced: false, drained: false };
+    return { detected: false, advanced: false, drained: false, split: [] };
   }
 
   const mergedBranches = plan.steps.map((step) => step.branch);
-  // The first unmerged branch. Ordered parents-first, so its parent is in the run.
-  const survivor = ordered[mergedBranches.length] ?? null;
+  // Every unmerged branch sitting on the run: one per child of a merged branch.
+  const survivors = survivorsOf(stack, mergedBranches);
 
   p.log.warn(`${plan.steps.length} bottom PR(s) already merged:`);
   for (const step of plan.steps) {
@@ -329,17 +350,22 @@ async function advanceMergedBottoms(
   }
   console.log(
     `  ${pc.dim(
-      survivor
-        ? `Dropping them and re-rooting ${survivor} onto ${trunk}, so only its own commits replay.`
-        : `Dropping them: nothing is left above them.`,
+      survivors.length === 0
+        ? `Dropping them: nothing is left above them.`
+        : `Dropping them and re-rooting ${survivors.join(", ")} onto ${trunk}, so only their own commits replay.`,
     )}`,
   );
+  if (survivors.length > 1) {
+    console.log(
+      `  ${pc.dim(`Each of ${survivors.join(", ")} becomes its own stack: siblings on ${trunk} don't depend on each other.`)}`,
+    );
+  }
   console.log();
   warnStranded(strandedMerges(run, trunk), trunk);
 
   if (dryRun) {
     p.log.warn("[DRY RUN] Would advance the stack past the merged bottom PR(s)");
-    return { detected: true, advanced: false, drained: false };
+    return { detected: true, advanced: false, drained: false, split: [] };
   }
 
   const targetRef = `origin/${trunk}`;
@@ -347,41 +373,37 @@ async function advanceMergedBottoms(
   await takeSnapshot(meta, stackName, "sync-advance");
   const originalStack = structuredClone(stack);
 
-  if (survivor) {
-    const mergedParent = stack.branches[survivor]!.parent;
-    const res = await advanceNewBottom({
-      meta,
-      stackName,
-      mergedBranch: mergedParent,
-      alsoMerged: mergedBranches.filter((b) => b !== mergedParent),
-      child: survivor,
-      childPr: stack.branches[survivor]?.pr ?? null,
-      targetRef,
-      recordedBase: trunk,
-      push: !noPush,
-      expect: verified.get(survivor),
-    });
-    if (!res.ok) {
-      console.log();
-      if (res.reason === "conflict") {
-        p.log.error(`Rebase conflict re-rooting ${pc.yellow(survivor)} onto ${trunk}.`);
-        console.log(`  Resolve it, then finish the sync:`);
-        console.log(`    ${pc.green("git rebase --continue")}`);
-        console.log(
-          `    ${pc.green("gh-stack sync")}   ${pc.dim(`(picks up the re-rooted ${survivor}; not restack, which would put it back on ${mergedParent})`)}`,
-        );
-      } else {
-        p.log.error(
-          `Could not determine a safe rebase base for ${pc.yellow(survivor)} (${res.reason}).`,
-        );
-        console.log(
-          `  Re-root manually:\n    ${pc.green(`git rebase --onto ${targetRef} <${mergedParent}'s pre-merge tip> ${survivor}`)}`,
-        );
-      }
-      process.exit(2);
+  const res = await advancePastMerged({
+    meta,
+    stackName,
+    merged: mergedBranches,
+    survivors: survivors.map((branch) => ({
+      branch,
+      pr: stack.branches[branch]?.pr ?? null,
+      expect: verified.get(branch),
+    })),
+    targetRef,
+    recordedBase: trunk,
+    push: !noPush,
+  });
+  if (!res.ok) {
+    console.log();
+    if (res.reason === "conflict") {
+      p.log.error(`Rebase conflict re-rooting ${pc.yellow(res.child)} onto ${trunk}.`);
+      console.log(`  Resolve it, then finish the sync:`);
+      console.log(`    ${pc.green("git rebase --continue")}`);
+      console.log(
+        `    ${pc.green("gh-stack sync")}   ${pc.dim(`(picks up the re-rooted ${res.child}; not restack, which would put it back on ${res.mergedBranch})`)}`,
+      );
+    } else {
+      p.log.error(
+        `Could not determine a safe rebase base for ${pc.yellow(res.child)} (${res.reason}).`,
+      );
+      console.log(
+        `  Re-root manually:\n    ${pc.green(`git rebase --onto ${targetRef} <${res.mergedBranch}'s pre-merge tip> ${res.child}`)}`,
+      );
     }
-  } else {
-    for (const branch of mergedBranches) await removeBranchFromStack(meta, stackName, branch);
+    process.exit(2);
   }
 
   // Whole stack drained? Archive the original topology and land on the trunk.
@@ -398,10 +420,10 @@ async function advanceMergedBottoms(
     delete meta.stacks[stackName];
     if (meta.current_stack === stackName) meta.current_stack = null;
     await writeMetadata(meta);
-    return { detected: true, advanced: true, drained: true };
+    return { detected: true, advanced: true, drained: true, split: [] };
   }
 
-  return { detected: true, advanced: true, drained: false };
+  return { detected: true, advanced: true, drained: false, split: res.split };
 }
 
 /**

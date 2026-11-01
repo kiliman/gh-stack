@@ -6,6 +6,7 @@ import {
   readMetadata,
   findStackForBranch,
   stackBase,
+  stackRoots,
 } from "./metadata.ts";
 import type { StackMetadata, Stack } from "../types.ts";
 import * as p from "./output.ts";
@@ -219,9 +220,15 @@ export async function ensureValidStack(
     console.log(`  ${pc.red("•")} ${error}`);
   }
   console.log();
-  console.log(
-    pc.dim(`Repair the local branches, or run ${pc.green("gh-stack doctor")}, before retrying.`),
-  );
+  if (stackRoots(meta.stacks[stackName]!).length > 1) {
+    console.log(
+      pc.dim(`Run ${pc.green("gh-stack doctor")} to split it into one stack per root, then retry.`),
+    );
+  } else {
+    console.log(
+      pc.dim(`Repair the local branches, or run ${pc.green("gh-stack doctor")}, before retrying.`),
+    );
+  }
   process.exit(1);
 }
 

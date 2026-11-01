@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.5
+
+### 🐛 Fixes
+- **A refused push now says why.** When a push failed for a reason other than the lease (a failing pre-push hook, a protected branch, a network error), gh-stack printed only git's last line, "failed to push some refs". It now prints the last 20 lines of git's output, including the hook's own messages, and saves all of it to `.git/.gh-stack/push-failure.log`. Git 2.56 leaves a pre-push hook's output on stdout, so gh-stack now captures stdout as well as stderr. (#58)
+
+### 🧪 Development
+- **The pre-push tests no longer inherit `GH_STACK_*` variables.** A push made by `GH_STACK_YES=1 gh-stack submit` in this repo passed the variable to the hook's tests, five of them failed, and the push was refused. The test preload now clears every `GH_STACK_*` variable, and the hook lists the failing tests at the end of its output. (#58)
+
 ## 0.19.4
 
 ### 📦 Dependencies

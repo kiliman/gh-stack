@@ -20,6 +20,7 @@
 // process started with, so Bun.spawn/spawnSync are wrapped below to default
 // `env` to the scrubbed process.env.
 
+import { setDefaultTimeout } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -83,3 +84,10 @@ process.env.XDG_CONFIG_HOME = join(tmpdir(), `gh-stack-test-no-xdg-${process.pid
 for (const name of Object.keys(process.env)) {
   if (name.startsWith("GH_STACK_")) delete process.env[name];
 }
+
+// Most tests drive real git (temp repos, a bare remote, rebases, pushes), and
+// a few run two restacks. Bun's 5 s default fails them on a loaded machine,
+// e.g. under the pre-push hook while other work runs. bunfig.toml has no
+// timeout setting Bun reads, so it's set here; files and tests that set their
+// own still win.
+setDefaultTimeout(30_000);

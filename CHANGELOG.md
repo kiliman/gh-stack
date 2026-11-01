@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.3
+
+### 🐛 Fixes
+- **`sync` after `merge --approved` stopped on add/add conflicts.** When several bottom PRs had merged (PRs collapsed into the base, then the base landed on main, or PRs merged into main one after the other), `sync` re-rooted each branch above a merged one in turn, including branches that had merged themselves. That replayed their pre-squash commits onto a main already holding them squashed. It now drops every merged branch and re-roots only the first unmerged one, from its merged parent's tip. A conflict there leaves the stack as it was; resolve it and re-run `sync` to finish. (#54)
+- **`merge --base` re-rooted PRs already collapsed into the base.** It now drops them along with the base and re-roots the first unmerged branch. (#54)
+- **`merge --approved` suggested `--auto` again when the repo doesn't allow auto-merge.** It now says to merge the base PR directly (`gh pr merge <N> --squash`) once its checks pass, then run `gh-stack sync`. (#54)
+
+### ✨ Improvements
+- **`sync` warns about a merged PR whose changes never reached main**: one merged into its parent branch after the parent's own PR had landed, or into a branch outside the stack. Sync still drops it, and the warning says to open a new PR for those changes. (#54)
+
 ## 0.19.2
 
 ### 📦 Packaging

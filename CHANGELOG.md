@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.4
+
+### 📦 Dependencies
+- **Dev tooling updates from the weekly dependency sweep.** `@types/bun` 1.3.10 → 1.4.4, `oxlint` 1.89.0 → 1.90.0 (#56) and `oxfmt` 0.74.0 → 0.75.0 (#57). None of these ship in the package, and the code is the same as 0.19.3. `bun audit` reports no vulnerabilities.
+
 ## 0.19.3
 
 ### 🐛 Fixes

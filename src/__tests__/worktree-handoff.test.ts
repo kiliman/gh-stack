@@ -5,8 +5,13 @@
 // worktree, removes it, and runs `gh-stack add` in the main checkout. `add`
 // used to create PR-less entries there, so `merge --base` refused ("has no
 // PR") and `sync` could not see the bottom PR merge.
+//
+// Because that config is shared, each branch records the worktree that owns it
+// (`ghstack-gitdir`), and a write in one worktree leaves the branches another
+// live worktree is stacking alone (#64).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { $ } from "bun";
+import * as fs from "node:fs/promises";
 import {
   cleanup,
   createBranch,
@@ -87,5 +92,91 @@ describe("worktree handoff", () => {
 
     expect((await runCli(tmpDir, ["add", "wip"])).exitCode).toBe(0);
     expect(await trackedPrs(tmpDir)).toEqual({ wip: null });
+  });
+});
+
+/** One `ghstack-<field>` config value for a branch, or "" when unset. */
+async function config(cwd: string, branch: string, field: string): Promise<string> {
+  return (await $`git -C ${cwd} config branch.${branch}.ghstack-${field}`.quiet().nothrow())
+    .text()
+    .trim();
+}
+
+async function gitDirOf(cwd: string): Promise<string> {
+  return (await $`git -C ${cwd} rev-parse --absolute-git-dir`.text()).trim();
+}
+
+describe("worktrees sharing branch config (#64)", () => {
+  // main checkout stacks feat-a; a linked worktree stacks feat-b.
+  async function twoWorktrees(): Promise<void> {
+    await createBranch(tmpDir, "feat-a", "main");
+    await makeCommit(tmpDir, "a.txt", "a\n", "feat: a");
+    expect((await runCli(tmpDir, ["add", "feat-a"])).exitCode).toBe(0);
+
+    await $`git -C ${tmpDir} worktree add -q -b feat-b ${worktreeDir} main`.quiet();
+    await makeCommit(worktreeDir, "b.txt", "b\n", "feat: b");
+    expect((await runCli(worktreeDir, ["add", "feat-b"])).exitCode).toBe(0);
+  }
+
+  test("a write in one worktree leaves the other's branch config alone", async () => {
+    await twoWorktrees();
+    // The worktree's `add` wrote, and the main checkout's branch kept its config.
+    expect(await config(tmpDir, "feat-a", "stack")).toBe("feat-a");
+    expect(await config(tmpDir, "feat-a", "gitdir")).toBe(await gitDirOf(tmpDir));
+    expect(await config(tmpDir, "feat-b", "gitdir")).toBe(await gitDirOf(worktreeDir));
+
+    const doctor = await runCli(tmpDir, ["doctor"]);
+    expect(doctor.exitCode).toBe(0);
+    expect(doctor.stdout).toContain(
+      "Left 1 branch(es) alone that another worktree is stacking: feat-b",
+    );
+    expect(await config(tmpDir, "feat-b", "stack")).toBe("feat-b");
+    expect(await config(tmpDir, "feat-b", "id")).not.toBe("");
+  });
+
+  test("a branch renamed in one worktree after a write in the other is still recognized", async () => {
+    await twoWorktrees();
+    expect((await runCli(tmpDir, ["doctor"])).exitCode).toBe(0);
+
+    await $`git -C ${worktreeDir} branch -m feat-b feat-b2`.quiet();
+    expect(await trackedPrs(worktreeDir)).toEqual({ "feat-b2": null });
+  });
+
+  test("a removed worktree's config is cleared by the next write", async () => {
+    await twoWorktrees();
+    await $`git -C ${tmpDir} worktree remove ${worktreeDir}`.quiet();
+
+    const doctor = await runCli(tmpDir, ["doctor"]);
+    expect(doctor.stdout).toContain("1 stale membership(s) cleared");
+    expect(await config(tmpDir, "feat-b", "stack")).toBe("");
+    expect(await config(tmpDir, "feat-a", "stack")).toBe("feat-a");
+  });
+
+  test("so is the config of a worktree whose checkout was deleted without git", async () => {
+    await twoWorktrees();
+    await fs.rm(worktreeDir, { recursive: true, force: true }); // not pruned yet
+
+    expect((await runCli(tmpDir, ["doctor"])).exitCode).toBe(0);
+    expect(await config(tmpDir, "feat-b", "stack")).toBe("");
+  });
+
+  test("add takes a branch over from a worktree that's still around", async () => {
+    await $`git -C ${tmpDir} worktree add -q -b deps/sweep ${worktreeDir} main`.quiet();
+    await makeCommit(worktreeDir, "safe.txt", "safe\n", "chore(deps): safe updates");
+    expect((await runCli(worktreeDir, ["submit", "-t", "deps", "-b", "body"])).exitCode).toBe(0);
+    // The worktree moves to another branch so the main checkout can take it.
+    await $`git -C ${worktreeDir} checkout -q --detach`.quiet();
+
+    expect((await runCli(tmpDir, ["add", "deps/sweep"])).exitCode).toBe(0);
+    expect(await config(tmpDir, "deps/sweep", "gitdir")).toBe(await gitDirOf(tmpDir));
+
+    // The worktree still tracks it, and dropping it there doesn't clear the
+    // config the main checkout now owns.
+    expect((await runCli(worktreeDir, ["doctor"])).exitCode).toBe(0);
+    const del = await runCli(worktreeDir, ["delete", "deps/sweep", "--keep-branch"]);
+    expect(del.exitCode).toBe(0);
+    expect(await config(tmpDir, "deps/sweep", "pr")).toBe("101");
+    expect(await config(tmpDir, "deps/sweep", "gitdir")).toBe(await gitDirOf(tmpDir));
+    expect(await trackedPrs(tmpDir)).toEqual({ "deps/sweep": 101 });
   });
 });

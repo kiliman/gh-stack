@@ -95,6 +95,7 @@ add [branch] [--parent <branch>]
     A PR that gh-stack already recorded for a branch in git config (in
     another worktree of the repo) is kept, so a stack submitted from a
     worktree can be tracked in the main checkout and merged from there.
+    The adding worktree takes the branch over from then on.
 
     --parent <branch>: stack it directly on <branch> (which it must
     already be based on), tracking <branch> first if needed. Use this
@@ -498,7 +499,8 @@ config [--json]
 doctor
     Migrate old (v2) metadata to the v3 layout, split any stack left
     with several root branches into one stack per root, reconcile git
-    branch config against the topology files, flag stacks whose base
+    branch config against the topology files (leaving branches another
+    worktree is stacking alone), flag stacks whose base
     stack appears already-merged into main, and report stacks that
     still fail the checks other commands run before loading a stack.
     Safe to run repeatedly.
@@ -652,7 +654,9 @@ Review/CI status is intentionally not shown here. Run `gh-stack update-prs`
 ### Metadata (v3)
 
 Stack metadata lives under `.git/.gh-stack/` (never committed) — a folder of
-per-stack files plus git-native branch config, rather than a single JSON blob:
+per-stack files plus git-native branch config, rather than a single JSON blob.
+A linked worktree keeps its own folder in its own git dir
+(`.git/worktrees/<name>/.gh-stack/`), so each worktree has its own stacks:
 
 ```
 .git/.gh-stack/
@@ -687,7 +691,15 @@ branch.<name>.ghstack-stack   <stack>
 branch.<name>.ghstack-parent  <parent-branch>
 branch.<name>.ghstack-pr      <number>
 branch.<name>.ghstack-id      <uuid>   stable identity (survives rename)
+branch.<name>.ghstack-gitdir  <path>   git dir of the worktree that owns it
 ```
+
+Git config is shared by every worktree, so each branch records the worktree
+that owns it. A write in one worktree never clears or overwrites a branch
+another live worktree owns. `add` (or any command that starts tracking a
+branch) takes a branch over, which is how a stack is handed from one worktree
+to another. Once a worktree is removed, or its checkout is deleted, the next
+write anywhere clears the config it left behind.
 
 The two representations cross-check each other; `gh-stack doctor` reconciles
 any drift. Why this shape:

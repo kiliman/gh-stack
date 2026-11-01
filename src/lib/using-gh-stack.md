@@ -133,6 +133,8 @@ no-publish path.)
 but the PR numbers gh-stack records in git config are shared. So after
 submitting from a worktree, `gh-stack add <top-branch>` in the main checkout
 tracks the whole chain _with_ its PRs, and `sync`/`merge --base` work there.
+Each branch's config records the worktree that owns it, so worktrees running
+gh-stack side by side don't clear each other's; `add` takes a branch over.
 
 **Splice an existing branch/PR into a stack — `gh-stack join`.** For a branch
 that should have been stacked but was cut from main on its own (often with its

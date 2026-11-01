@@ -50,7 +50,8 @@ OPTIONS
     : ensureCurrentStack(meta);
   await ensureValidStack(meta, stackName);
   const stack = meta.stacks[stackName]!;
-  const currentBranch = await git.currentBranch();
+  // Detached HEAD is fine: `delete <branch>` doesn't need a current branch.
+  const currentBranch = (await git.currentBranch().catch(() => null)) ?? undefined;
 
   p.intro(pc.cyan("Delete Branch from Stack"));
 

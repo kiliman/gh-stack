@@ -17,7 +17,6 @@ import {
 import { validateStack } from "../lib/safety.ts";
 import { legacyMetadataPath, legacyRestackStatePath, restackStateFile } from "../lib/paths.ts";
 import { writeSnapshotFile } from "../lib/snapshot.ts";
-import { allBranchMemberships } from "../lib/branch-config.ts";
 
 const HELP = `
 gh-stack doctor — Migrate & repair stack metadata
@@ -28,9 +27,10 @@ USAGE
 Migrates old (v2) metadata to the v3 layout (per-stack files under
 .git/.gh-stack/ + git branch config), splits any stack left with several
 root branches into one stack per root, reconciles branch config against
-the topology files, flags stacks whose base stack looks already-merged
-into main, and reports stacks that still fail the checks other commands
-run before they load a stack.
+the topology files (leaving branches another worktree is stacking
+alone), flags stacks whose base stack looks already-merged into main,
+and reports stacks that still fail the checks other commands run
+before they load a stack.
 
 Safe to run repeatedly — it's idempotent.
 `;
@@ -204,11 +204,6 @@ function inferStack(
 // ── Reconciliation ──
 
 async function reconcile(meta: StackMetadata): Promise<void> {
-  // Re-syncing config is what writeMetadata already does: set desired
-  // membership, clear stale. Snapshot the before-state so we can report what
-  // drifted, then apply.
-  const before = await allBranchMemberships();
-
   // Report topology branches that no longer exist locally (can't auto-fix
   // safely — re-parenting children is a judgement call).
   const deadBranches: { stack: string; branch: string }[] = [];
@@ -220,30 +215,21 @@ async function reconcile(meta: StackMetadata): Promise<void> {
     }
   }
 
-  // Build desired membership to diff against `before`.
-  const desired = new Set<string>();
-  let drift = 0;
-  for (const [name, stack] of Object.entries(meta.stacks)) {
-    for (const [branch, b] of Object.entries(stack.branches)) {
-      desired.add(branch);
-      const cur = before.get(branch);
-      if (!cur || cur.stack !== name || cur.parent !== b.parent || cur.pr !== b.pr) drift++;
-    }
-  }
-  let orphans = 0;
-  for (const branch of before.keys()) {
-    if (!desired.has(branch)) orphans++;
-  }
+  // Re-syncing config is what writeMetadata already does: set desired
+  // membership, clear stale, leave other worktrees' branches alone.
+  const { updated, cleared, foreign } = await writeMetadata(meta);
 
-  // Apply the reconciliation (idempotent).
-  await writeMetadata(meta);
-
-  if (drift > 0 || orphans > 0) {
+  if (updated.length > 0 || cleared.length > 0) {
     p.log.success(
-      `Reconciled branch config: ${drift} updated, ${orphans} stale membership(s) cleared.`,
+      `Reconciled branch config: ${updated.length} updated, ${cleared.length} stale membership(s) cleared.`,
     );
   } else {
     p.log.info("Branch config already in sync with topology.");
+  }
+  if (foreign.length > 0) {
+    p.log.info(
+      `Left ${foreign.length} branch(es) alone that another worktree is stacking: ${foreign.join(", ")}`,
+    );
   }
 
   if (deadBranches.length > 0) {

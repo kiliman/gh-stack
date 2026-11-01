@@ -29,6 +29,7 @@ import {
   allBranchMemberships,
   setBranchMembership,
   clearBranchMembership,
+  ownedByOtherWorktree,
   type BranchMembership,
 } from "./branch-config.ts";
 import { loadSnapshots } from "./snapshot.ts";
@@ -256,7 +257,7 @@ function serializeStack(stack: Stack): string {
  * tombstone any stack file that's no longer present, and reconcile git branch
  * config to match active membership.
  */
-export async function writeMetadata(meta: StackMetadata): Promise<void> {
+export async function writeMetadata(meta: StackMetadata): Promise<BranchConfigSync> {
   await ensureDirs();
 
   // 0. stamp a stable id on any active branch that lacks one, so a later
@@ -268,6 +269,13 @@ export async function writeMetadata(meta: StackMetadata): Promise<void> {
 
   const aDir = await activeDir();
   const arDir = await archivedDir();
+
+  // Branches this worktree tracked before this write. Any other active branch
+  // is joining it now, which claims its config from another worktree.
+  const tracked = new Set<string>();
+  for (const stack of Object.values(await readStackDir(aDir))) {
+    for (const name of Object.keys(stack.branches ?? {})) tracked.add(name);
+  }
 
   // 2. write active + archived stack files (write desired state BEFORE
   //    removing anything — that's what makes "can't vanish" hold).
@@ -286,7 +294,7 @@ export async function writeMetadata(meta: StackMetadata): Promise<void> {
   await reconcileStale(arDir, archivedNames, (name) => activeNames.has(name));
 
   // 4. mirror active membership into git config
-  await syncBranchConfig(meta);
+  return syncBranchConfig(meta, tracked);
 }
 
 /**
@@ -321,38 +329,80 @@ async function reconcileStale(
   }
 }
 
+/** What `syncBranchConfig` changed. */
+export interface BranchConfigSync {
+  /** Branches whose membership was written. */
+  updated: string[];
+  /** Branches whose stale membership was removed. */
+  cleared: string[];
+  /** Branches left alone because another live worktree owns them. */
+  foreign: string[];
+}
+
 /**
- * Reconcile git branch config so it exactly mirrors active-stack membership.
+ * Reconcile git branch config so it mirrors this worktree's active membership.
  * Only branches whose recorded membership differs are touched, to avoid
  * shelling out to `git config` for every branch on every write.
+ *
+ * Git config is shared by every worktree, so a branch another live worktree
+ * owns is left alone (#64): it isn't cleared when this worktree doesn't track
+ * it, and it isn't overwritten when both do. The exception is a branch joining
+ * this worktree's stacks in this write (`add`, `create`, adopting a chain),
+ * which is the handoff, so this worktree takes it over. `tracked` is what this
+ * worktree tracked before the write.
  */
-async function syncBranchConfig(meta: StackMetadata): Promise<void> {
+async function syncBranchConfig(
+  meta: StackMetadata,
+  tracked: Set<string>,
+): Promise<BranchConfigSync> {
+  const mine = await git.absoluteGitDir();
   const desired = new Map<string, BranchMembership>();
   for (const [stackName, stack] of Object.entries(meta.stacks)) {
     for (const [branchName, b] of Object.entries(stack.branches)) {
-      desired.set(branchName, { stack: stackName, parent: b.parent, pr: b.pr, id: b.id });
+      desired.set(branchName, {
+        stack: stackName,
+        parent: b.parent,
+        pr: b.pr,
+        id: b.id,
+        gitdir: mine,
+      });
     }
   }
 
   const existing = await allBranchMemberships();
+  const result: BranchConfigSync = { updated: [], cleared: [], foreign: [] };
 
   for (const [branch, m] of desired) {
     const cur = existing.get(branch);
+    if (tracked.has(branch) && ownedByOtherWorktree(cur, mine)) {
+      result.foreign.push(branch);
+      continue;
+    }
     if (
       !cur ||
       cur.stack !== m.stack ||
       cur.parent !== m.parent ||
       cur.pr !== m.pr ||
-      cur.id !== m.id
+      cur.id !== m.id ||
+      cur.gitdir !== m.gitdir
     ) {
       await setBranchMembership(branch, m);
+      result.updated.push(branch);
     }
   }
 
   // Branches that still carry gh-stack config but are no longer active members.
-  for (const branch of existing.keys()) {
-    if (!desired.has(branch)) await clearBranchMembership(branch);
+  for (const [branch, m] of existing) {
+    if (desired.has(branch)) continue;
+    if (ownedByOtherWorktree(m, mine)) {
+      result.foreign.push(branch);
+      continue;
+    }
+    await clearBranchMembership(branch);
+    result.cleared.push(branch);
   }
+
+  return result;
 }
 
 /**
@@ -563,11 +613,6 @@ export async function removeBranchFromStack(
       if (b.parent === branchName) b.parent = branch.parent;
     }
     delete stack.branches[branchName];
-
-    // The removed branch may still exist in git but is no longer a member —
-    // drop its membership config explicitly (syncBranchConfig also would, but
-    // be direct since the branch is gone from `meta`).
-    await clearBranchMembership(branchName);
 
     if (stack.last_branch === branchName) {
       const remaining = Object.keys(stack.branches);

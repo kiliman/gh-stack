@@ -40,6 +40,15 @@ export async function gitDir(): Promise<string> {
 }
 
 /**
+ * Absolute path to this worktree's git dir. `gitDir()` is relative (`.git`) in
+ * the main checkout, which can't identify a worktree from another one.
+ */
+export async function absoluteGitDir(): Promise<string> {
+  const result = await $`git rev-parse --absolute-git-dir`.text();
+  return result.trim();
+}
+
+/**
  * Get the absolute path to the repository's working-tree root.
  */
 export async function repoRoot(): Promise<string> {

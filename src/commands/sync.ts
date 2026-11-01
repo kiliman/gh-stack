@@ -14,8 +14,16 @@ import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib
 import { resolveFlag } from "../lib/config.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { guardRemoteContent } from "../lib/remote-guard.ts";
-import { getPrInfo } from "../lib/github.ts";
-import { planMerges, advanceNewBottom, type BranchReview, type MergePlan } from "../lib/advance.ts";
+import { getPrMergeState } from "../lib/github.ts";
+import {
+  planMerges,
+  advanceNewBottom,
+  strandedMerges,
+  type BranchReview,
+  type MergePlan,
+  type MergedRunEntry,
+  type StrandedMerge,
+} from "../lib/advance.ts";
 import type { StackMetadata } from "../types.ts";
 import restack, {
   notePendingRun,
@@ -117,7 +125,7 @@ adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`
   // Bottoms whose PRs already merged are skipped: the advance drops them
   // rather than rewriting them, and after `merge --approved` they're exactly
   // where the collapse's squash commits live.
-  const mergedBranches = new Set(merged.steps.map((step) => step.branch));
+  const mergedBranches = new Set(merged.plan.steps.map((step) => step.branch));
   const verified = await guardRemoteContent(
     meta,
     ordered.filter((b) => !mergedBranches.has(b)),
@@ -251,60 +259,83 @@ interface AdvanceOutcome {
   drained: boolean;
 }
 
+/** The contiguous merged bottom branches, and how each one's PR merged. */
+interface MergedBottoms {
+  plan: MergePlan;
+  run: MergedRunEntry[];
+}
+
 /**
- * Detect bottom PR(s) that already merged on the trunk outside gh-stack and
- * advance the stack past them — re-rooting the survivor onto the trunk with
- * `--onto` so only its own commits replay (never the squashed work). Shares the
- * planner and re-root mechanics with `merge --approved` (see ./lib/advance.ts).
+ * The contiguous bottom branches whose PRs already merged (outside gh-stack,
+ * or the base of a `merge --approved` and the PRs collapsed into it), walking
+ * bottom-up and stopping at the first that isn't.
+ */
+async function findMergedBottoms(meta: StackMetadata, stackName: string): Promise<MergedBottoms> {
+  const stack = meta.stacks[stackName]!;
+  const reviews: BranchReview[] = [];
+  const run: MergedRunEntry[] = [];
+  for (const branch of getOrderedBranches(stack)) {
+    const pr = stack.branches[branch]?.pr ?? null;
+    const state = pr != null ? await getPrMergeState(pr) : null;
+    const prState = state?.state ?? null;
+    reviews.push({ branch, pr, prState, reviewDecision: null });
+    if (prState !== "MERGED") break;
+    run.push({
+      branch,
+      parent: stack.branches[branch]!.parent,
+      pr,
+      baseRefName: state?.baseRefName ?? null,
+      mergedAt: state?.mergedAt ?? null,
+    });
+  }
+  return { plan: planMerges(reviews, { approveAndMerge: false }), run };
+}
+
+/**
+ * Advance the stack past bottom PR(s) that already merged: drop them all and
+ * re-root the first unmerged branch onto the trunk with `--onto`, from its
+ * merged parent's pre-merge tip, so only its own commits replay. The merged
+ * branches themselves are never re-rooted: their commits are already on the
+ * trunk, squashed, and replaying them conflicts (#54). Shares the re-root
+ * mechanics with `merge` (see ./lib/advance.ts).
  *
  * Returns what happened so the caller can re-derive the root or short-circuit.
  * In dry-run it reports and makes no changes.
  */
-/**
- * The contiguous bottom branches whose PRs already merged (outside gh-stack,
- * or the base of a `merge --approved`), walking bottom-up and stopping at the
- * first that isn't.
- */
-async function findMergedBottoms(meta: StackMetadata, stackName: string): Promise<MergePlan> {
-  const stack = meta.stacks[stackName]!;
-  const reviews: BranchReview[] = [];
-  for (const branch of getOrderedBranches(stack)) {
-    const pr = stack.branches[branch]?.pr ?? null;
-    let prState: string | null = null;
-    if (pr != null) {
-      const info = await getPrInfo(pr);
-      prState = info?.state ?? null;
-    }
-    reviews.push({ branch, pr, prState, reviewDecision: null });
-    if (prState !== "MERGED") break;
-  }
-  return planMerges(reviews, { approveAndMerge: false });
-}
-
 async function advanceMergedBottoms(
   meta: StackMetadata,
   stackName: string,
   trunk: string,
   dryRun: boolean,
   noPush: boolean,
-  plan: MergePlan,
+  merged: MergedBottoms,
   verified: Map<string, string>,
 ): Promise<AdvanceOutcome> {
   const stack = meta.stacks[stackName]!;
   const ordered = getOrderedBranches(stack);
+  const { plan, run } = merged;
 
   if (plan.steps.length === 0) {
     return { detected: false, advanced: false, drained: false };
   }
 
-  p.log.warn(`${plan.steps.length} bottom PR(s) already merged on ${trunk} outside gh-stack:`);
+  const mergedBranches = plan.steps.map((step) => step.branch);
+  // The first unmerged branch. Ordered parents-first, so its parent is in the run.
+  const survivor = ordered[mergedBranches.length] ?? null;
+
+  p.log.warn(`${plan.steps.length} bottom PR(s) already merged:`);
   for (const step of plan.steps) {
     console.log(`  ${pc.dim("✓")} ${pc.yellow(step.branch)}${step.pr ? ` (#${step.pr})` : ""}`);
   }
   console.log(
-    `  ${pc.dim(`Advancing past them (re-rooting onto ${trunk}) instead of replaying squashed commits.`)}`,
+    `  ${pc.dim(
+      survivor
+        ? `Dropping them and re-rooting ${survivor} onto ${trunk}, so only its own commits replay.`
+        : `Dropping them: nothing is left above them.`,
+    )}`,
   );
   console.log();
+  warnStranded(strandedMerges(run, trunk), trunk);
 
   if (dryRun) {
     p.log.warn("[DRY RUN] Would advance the stack past the merged bottom PR(s)");
@@ -316,45 +347,41 @@ async function advanceMergedBottoms(
   await takeSnapshot(meta, stackName, "sync-advance");
   const originalStack = structuredClone(stack);
 
-  for (let i = 0; i < plan.steps.length; i++) {
-    const mergedBranch = plan.steps[i]!.branch;
-    const child = ordered[i + 1] ?? null;
-    const childPr = child ? (stack.branches[child]?.pr ?? null) : null;
-
-    if (child) {
-      const res = await advanceNewBottom({
-        meta,
-        stackName,
-        mergedBranch,
-        child,
-        childPr,
-        targetRef,
-        recordedBase: trunk,
-        push: !noPush,
-        expect: verified.get(child),
-      });
-      if (!res.ok) {
-        console.log();
-        if (res.reason === "conflict") {
-          p.log.error(`Rebase conflict re-rooting ${pc.yellow(child)} onto ${trunk}.`);
-          console.log(`  Resolve it, then finish the sync:`);
-          console.log(`    ${pc.green("git rebase --continue")}`);
-          console.log(
-            `    ${pc.green("gh-stack sync")}   ${pc.dim(`(picks up the re-rooted ${child}; not restack, which would put it back on ${mergedBranch})`)}`,
-          );
-        } else {
-          p.log.error(
-            `Could not determine a safe rebase base for ${pc.yellow(child)} (${res.reason}).`,
-          );
-          console.log(
-            `  Re-root manually:\n    ${pc.green(`git rebase --onto ${targetRef} <merged-tip> ${child}`)}`,
-          );
-        }
-        process.exit(2);
+  if (survivor) {
+    const mergedParent = stack.branches[survivor]!.parent;
+    const res = await advanceNewBottom({
+      meta,
+      stackName,
+      mergedBranch: mergedParent,
+      alsoMerged: mergedBranches.filter((b) => b !== mergedParent),
+      child: survivor,
+      childPr: stack.branches[survivor]?.pr ?? null,
+      targetRef,
+      recordedBase: trunk,
+      push: !noPush,
+      expect: verified.get(survivor),
+    });
+    if (!res.ok) {
+      console.log();
+      if (res.reason === "conflict") {
+        p.log.error(`Rebase conflict re-rooting ${pc.yellow(survivor)} onto ${trunk}.`);
+        console.log(`  Resolve it, then finish the sync:`);
+        console.log(`    ${pc.green("git rebase --continue")}`);
+        console.log(
+          `    ${pc.green("gh-stack sync")}   ${pc.dim(`(picks up the re-rooted ${survivor}; not restack, which would put it back on ${mergedParent})`)}`,
+        );
+      } else {
+        p.log.error(
+          `Could not determine a safe rebase base for ${pc.yellow(survivor)} (${res.reason}).`,
+        );
+        console.log(
+          `  Re-root manually:\n    ${pc.green(`git rebase --onto ${targetRef} <${mergedParent}'s pre-merge tip> ${survivor}`)}`,
+        );
       }
-    } else {
-      await removeBranchFromStack(meta, stackName, mergedBranch);
+      process.exit(2);
     }
+  } else {
+    for (const branch of mergedBranches) await removeBranchFromStack(meta, stackName, branch);
   }
 
   // Whole stack drained? Archive the original topology and land on the trunk.
@@ -375,4 +402,26 @@ async function advanceMergedBottoms(
   }
 
   return { detected: true, advanced: true, drained: false };
+}
+
+/**
+ * Say which merged PRs' changes never reached the trunk. The advance drops
+ * their branches either way (re-rooting one would replay its commits onto a
+ * trunk they were never squashed into, under the wrong PR), so the user has
+ * to land those changes again themselves.
+ */
+function warnStranded(stranded: StrandedMerge[], trunk: string): void {
+  if (stranded.length === 0) return;
+  for (const s of stranded) {
+    const pr = s.pr != null ? `PR #${s.pr}` : pc.yellow(s.branch);
+    p.log.warn(
+      s.landedPr != null
+        ? `${pr} merged into ${s.into} after PR #${s.landedPr} had landed, so its changes never reached ${trunk}.`
+        : `${pr} merged into ${s.into}, which isn't ${trunk} or a branch below it, so its changes may not be on ${trunk}.`,
+    );
+  }
+  console.log(
+    `  ${pc.dim(`Sync drops them from the stack anyway. To ship those changes, open a new PR for them against ${trunk}.`)}`,
+  );
+  console.log();
 }

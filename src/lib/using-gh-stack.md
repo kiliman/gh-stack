@@ -303,9 +303,11 @@ often the squash commit a `merge --collapse` added on GitHub. Run the
 pass `--overwrite-remote` unless you were asked to drop those commits: it
 deletes them from the PR.
 
-**`sync` is self-correcting:** if you merged the bottom PR in the GitHub UI,
-`sync` detects it and advances the stack past the merged branch (re-rooting onto
-trunk) instead of replaying squashed commits and conflicting.
+**`sync` is self-correcting:** if you merged the bottom PR in the GitHub UI, or
+the base of a `merge --approved` landed with the PRs collapsed into it, `sync`
+detects it, drops every merged branch, and re-roots only the first unmerged one
+onto trunk instead of replaying squashed commits and conflicting. It rebases
+onto `origin/main` (fetched itself), so a stale local `main` doesn't matter.
 
 ### 5. Status
 
@@ -332,7 +334,9 @@ Merge is **top-down everywhere** (collapse PRn → PRn-1 → … → base PR, th
   one commit on trunk. Approval is read from the base up — the first un-approved
   PR caps the run (unapproved PR4 stops at PR3 even if PR5 is approved). The
   unapproved tail is left in place; after the base lands, run `gh-stack sync` to
-  re-root the tail onto trunk (it does not block on CI).
+  re-root the tail onto trunk (it does not block on CI). If the repo doesn't
+  allow auto-merge, merge the base PR yourself once its checks pass
+  (`gh pr merge <N> --squash`), then `gh-stack sync`.
 - **`merge --base`**: squash-merge **only the bottom PR** into trunk and re-root
   the next branch onto trunk — one PR per run, re-run for the next. Use this to
   land reviewed PRs one at a time. Auto-advances past a bottom PR already merged

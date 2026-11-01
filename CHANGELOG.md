@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.9
+
+### 🐛 Fixes
+- **Worktrees no longer clear each other's branch config.** Each worktree keeps its own stack files, but the per-branch config gh-stack records (stack, parent, PR, id) is shared by all of them, and every write cleared it for branches missing from the writer's stacks. A rename or a handoff in the other worktree could then go unnoticed, and `doctor` cleared that worktree's branches as stale. Each branch now records the worktree that owns it (`ghstack-gitdir`). A write leaves branches another live worktree owns alone, starting to track a branch (`add`) takes it over, and a removed worktree's config is cleared by the next write. (#64, #65)
+- **`delete <branch>` works on a detached HEAD.** It crashed with a stack trace even though the branch was named. (#65)
+
 ## 0.19.8
 
 ### 🐛 Fixes

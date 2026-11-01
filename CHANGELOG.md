@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.8
+
+### 🐛 Fixes
+- **Squash commits no longer carry the stack position.** `submit` numbers PR titles (`… (1/3)`), and GitHub uses the title as the squash subject, so merges made by gh-stack put the position on main's commit. `merge`, `merge --base` and auto-merge now pass `--subject "<title> (#N)"` without it. A title with no position keeps GitHub's default. (#62)
+
 ## 0.19.7
 
 ### 🐛 Fixes

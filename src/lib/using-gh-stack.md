@@ -129,6 +129,11 @@ This resolves the catch-22 where `sync`/`restack` said "not in any stack" for a
 tip you hadn't submitted yet. (`submit` still auto-tracks too — `add` is just the
 no-publish path.)
 
+**Handing a stack over from another worktree.** Stack files are per worktree,
+but the PR numbers gh-stack records in git config are shared. So after
+submitting from a worktree, `gh-stack add <top-branch>` in the main checkout
+tracks the whole chain _with_ its PRs, and `sync`/`merge --base` work there.
+
 **Splice an existing branch/PR into a stack — `gh-stack join`.** For a branch
 that should have been stacked but was cut from main on its own (often with its
 own PR already open):

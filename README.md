@@ -92,6 +92,9 @@ add [branch] [--parent <branch>]
     stack — without pushing or opening a PR. Walks local ancestry: if the
     branch sits on top of an existing stack it's adopted into it (parent
     auto-detected); otherwise a new stack is created from the chain.
+    A PR that gh-stack already recorded for a branch in git config (in
+    another worktree of the repo) is kept, so a stack submitted from a
+    worktree can be tracked in the main checkout and merged from there.
 
     --parent <branch>: stack it directly on <branch> (which it must
     already be based on), tracking <branch> first if needed. Use this

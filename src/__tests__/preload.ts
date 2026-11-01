@@ -72,8 +72,14 @@ Object.assign(Bun, {
 });
 
 // Flag defaults (#39): never read the developer's own ~/.config/gh-stack or
-// their GH_STACK_DRAFT / GH_STACK_NO_PUSH. The XDG dir is never created, so
-// there is no user config; tests that need one set XDG_CONFIG_HOME themselves.
+// any GH_STACK_* variable. The XDG dir is never created, so there is no user
+// config; tests that need one set XDG_CONFIG_HOME themselves, and tests that
+// need a variable pass it to the CLI they spawn.
+//
+// The variables matter most under the pre-push hook: a push made by gh-stack
+// run as `GH_STACK_YES=1 gh-stack submit` hands GH_STACK_YES to the hook, and
+// tests that check interactive behavior fail, which refuses the push.
 process.env.XDG_CONFIG_HOME = join(tmpdir(), `gh-stack-test-no-xdg-${process.pid}`);
-delete process.env.GH_STACK_DRAFT;
-delete process.env.GH_STACK_NO_PUSH;
+for (const name of Object.keys(process.env)) {
+  if (name.startsWith("GH_STACK_")) delete process.env[name];
+}

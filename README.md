@@ -650,6 +650,7 @@ per-stack files plus git-native branch config, rather than a single JSON blob:
   deleted/<stack>.json         tombstones (recoverable)
   snapshots/<ts>__<stack>.json append-only, retained per-stack
   restack-state.json           the last restack/sync/join run: resume point + action log
+  push-failure.log             full output of the last refused push (a failing pre-push hook, say)
 ```
 
 A single `active/<stack>.json` looks like:

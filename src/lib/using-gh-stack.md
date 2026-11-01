@@ -296,6 +296,11 @@ it (its PR would be diffed against the parent's old history); the run lists it
 as held and exits 1 until `--resume` gets the parent pushed. `merge` and `join`
 refuse to run while a restack/sync is pending.
 
+**Why did the push fail?** gh-stack prints the last lines of `git push`'s
+output, which includes a pre-push hook's own messages, and saves all of it to
+`.git/.gh-stack/push-failure.log`. Fix the cause (a failing check, say), then
+`--resume`.
+
 **"Origin has commits that the local branches don't"** (restack/sync exit 1
 before changing anything): a branch's copy on origin has commits it never had,
 often the squash commit a `merge --collapse` added on GitHub. Run the

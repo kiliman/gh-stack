@@ -1,6 +1,7 @@
 // Git command helpers using Bun's shell API
 import { $ } from "bun";
 import { createHash } from "node:crypto";
+import { mkdir } from "node:fs/promises";
 
 export const STACK_SYNC_TAG_PREFIX = "stack-sync-base";
 export const STACK_SYNC_TAG_GLOB = `${STACK_SYNC_TAG_PREFIX}-*`;
@@ -153,8 +154,17 @@ export type PushResult =
        * moved since the last fetch. `rejected`: anything else.
        */
       reason: "not-integrated" | "stale-lease" | "rejected";
-      stderr: string;
+      /**
+       * git's stdout and stderr together. A local pre-push hook's output lands
+       * on either, depending on the git version (stdout as of git 2.56).
+       */
+      output: string;
+      /** Where a `rejected` push's full output was saved, when that worked. */
+      logFile?: string;
     };
+
+/** How many lines of a failed push's output `pushFailureHint` shows. */
+const PUSH_OUTPUT_TAIL = 20;
 
 /**
  * The one way gh-stack force-pushes a branch (restack, sync, merge's advance,
@@ -179,17 +189,35 @@ export async function forcePushWithLease(
   const lease = opts.expect
     ? `--force-with-lease=refs/heads/${branch}:${opts.expect}`
     : "--force-with-lease";
-  const { exitCode, stderr } = await $`git push -u ${lease} --force-if-includes origin ${branch}`
-    .nothrow()
-    .quiet();
+  const { exitCode, stdout } =
+    await $`git push -u ${lease} --force-if-includes origin ${branch} 2>&1`.nothrow().quiet();
   if (exitCode === 0) return { ok: true };
-  const text = stderr.toString();
-  const reason = text.includes("remote ref updated since checkout")
+  const output = stdout.toString();
+  const reason = output.includes("remote ref updated since checkout")
     ? "not-integrated"
-    : text.includes("stale info")
+    : output.includes("stale info")
       ? "stale-lease"
       : "rejected";
-  return { ok: false, reason, stderr: text };
+  if (reason !== "rejected") return { ok: false, reason, output };
+  return { ok: false, reason, output, logFile: await savePushFailure(output) };
+}
+
+/**
+ * Save a failed push's full output to `.git/.gh-stack/push-failure.log`. A
+ * failing pre-push hook (a test suite, say) can print a thousand lines, so
+ * `pushFailureHint` shows only the end and points here for the rest. Best
+ * effort: a failed write returns undefined.
+ */
+async function savePushFailure(text: string): Promise<string | undefined> {
+  try {
+    const dir = `${await gitDir()}/.gh-stack`;
+    await mkdir(dir, { recursive: true });
+    const file = `${dir}/push-failure.log`;
+    await Bun.write(file, text);
+    return file;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Why a force-push was refused, and what to do, in gh-stack terms (plain lines). */
@@ -208,13 +236,19 @@ export function pushFailureHint(branch: string, result: PushResult): string[] {
         `origin/${branch} moved since your last fetch, so the lease refused.`,
         `Look at what's there first: git fetch origin ${branch} && git log ${branch}..origin/${branch}`,
       ];
-    default:
-      return [
-        result.stderr
-          .trim()
-          .split("\n")
-          .find((l) => l.includes("rejected") || l.startsWith("error")) ?? result.stderr.trim(),
-      ];
+    default: {
+      // Show the end of git's output, not just its "failed to push" line: a
+      // local pre-push hook prints its reason above that line, and a remote
+      // rejection names the rule that refused the push.
+      const lines = result.output.split("\n").filter((l) => l.trim() !== "");
+      const tail = lines.slice(-PUSH_OUTPUT_TAIL);
+      const hint = ["git push failed. The end of its output (a pre-push hook prints here too):"];
+      hint.push(...tail.map((l) => `  ${l.trimEnd()}`));
+      if (result.logFile && lines.length > tail.length) {
+        hint.push(`Full output (${lines.length} lines): ${result.logFile}`);
+      }
+      return hint;
+    }
   }
 }
 

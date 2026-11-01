@@ -49,6 +49,72 @@ describe("git env isolation", () => {
     }
   }, 60_000);
 
+  // A push made by `GH_STACK_YES=1 gh-stack submit` runs the hook with
+  // GH_STACK_YES set, and tests of interactive behavior failed under it, so
+  // git refused the push.
+  test("GH_STACK_* variables from a hook do not reach the tests", async () => {
+    const proc = Bun.spawn(["bun", "test", "./src/__tests__/fixtures/gh-stack-env.fixture.ts"], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        GH_STACK_YES: "1",
+        GH_STACK_PLAIN: "1",
+        GH_STACK_NO_COLOR: "1",
+        GH_STACK_DRAFT: "1",
+        GH_STACK_NO_PUSH: "1",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const output =
+      (await new Response(proc.stderr).text()) + (await new Response(proc.stdout).text());
+
+    expect(output).toContain("1 pass");
+    expect(await proc.exited).toBe(0);
+  }, 60_000);
+
+  // gh-stack shows only the end of a failed push's output, and Bun doesn't
+  // repeat its failures at the end, so the hook lists them last.
+  test("pre-push lists the failing tests at the end of its output", async () => {
+    const stubDir = await fs.mkdtemp(path.join(await fs.realpath("/tmp"), "gh-stack-stub-"));
+    try {
+      await Bun.write(
+        path.join(stubDir, "bun"),
+        [
+          "#!/bin/sh",
+          'echo "(pass) suite > fine"',
+          'echo "(fail) suite > first broken test"',
+          'echo "lots of other output"',
+          'echo "(fail) other > second broken test"',
+          'echo " 1 pass"',
+          'echo " 2 fail"',
+          "exit 1",
+          "",
+        ].join("\n"),
+      );
+      await fs.chmod(path.join(stubDir, "bun"), 0o755);
+
+      const proc = Bun.spawn(["sh", "-e", path.join(repoRoot, ".husky/pre-push")], {
+        cwd: repoRoot,
+        env: { ...process.env, PATH: `${stubDir}:${process.env.PATH}` },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const output = await new Response(proc.stdout).text();
+
+      expect(await proc.exited).toBe(1);
+      expect(output.trimEnd()).toEndWith(
+        [
+          "Failing tests:",
+          "(fail) suite > first broken test",
+          "(fail) other > second broken test",
+        ].join("\n"),
+      );
+    } finally {
+      await fs.rm(stubDir, { recursive: true, force: true });
+    }
+  });
+
   // The hook itself, run the way husky runs it (`sh -e`), with a stub `bun`
   // that reports what it inherited and fails.
   test("pre-push clears GIT_DIR and prints a failing check's output", async () => {

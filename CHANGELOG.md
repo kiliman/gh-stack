@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.6
+
+### 🐛 Fixes
+- **`add` keeps a PR opened from another worktree.** Stack files are per worktree, but gh-stack also records each branch's PR in git config, which every worktree shares. A stack submitted from a worktree and then tracked with `gh-stack add` in the main checkout came in without its PR numbers, and the next write wiped them from the shared config. `merge --base` then refused ("has no PR"), and `sync` couldn't see the bottom PR merge, so it would replay the squashed commits. `add` (and `submit`'s auto-tracking) now keep the recorded PR. (#59)
+
 ## 0.19.5
 
 ### 🐛 Fixes

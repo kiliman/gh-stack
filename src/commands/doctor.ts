@@ -11,7 +11,10 @@ import {
   v3Exists,
   legacyMetadataExists,
   stackBase,
+  stackRoots,
+  splitMultiRootStack,
 } from "../lib/metadata.ts";
+import { validateStack } from "../lib/safety.ts";
 import { legacyMetadataPath, legacyRestackStatePath, restackStateFile } from "../lib/paths.ts";
 import { writeSnapshotFile } from "../lib/snapshot.ts";
 import { allBranchMemberships } from "../lib/branch-config.ts";
@@ -23,9 +26,11 @@ USAGE
   gh-stack doctor
 
 Migrates old (v2) metadata to the v3 layout (per-stack files under
-.git/.gh-stack/ + git branch config), then reconciles branch config
-against the topology files and flags stacks whose base stack looks
-already-merged into main.
+.git/.gh-stack/ + git branch config), splits any stack left with several
+root branches into one stack per root, reconciles branch config against
+the topology files, flags stacks whose base stack looks already-merged
+into main, and reports stacks that still fail the checks other commands
+run before they load a stack.
 
 Safe to run repeatedly — it's idempotent.
 `;
@@ -54,17 +59,57 @@ export default async function doctor(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // ── 2. Reconcile branch config ↔ topology ──
+  // ── 2. Split stacks left with several roots (#60) ──
+  splitMultiRootStacks(meta);
+
+  // ── 3. Reconcile branch config ↔ topology (also writes the split) ──
   await reconcile(meta);
 
-  // ── 3. Flag base-stack-merged situations (issue #13) ──
+  // ── 4. Flag base-stack-merged situations (issue #13) ──
   await flagMergedBaseStacks(meta);
 
-  if (migrated) {
+  // ── 5. Run the checks every command runs before it loads a stack ──
+  const invalid = await reportInvalidStacks(meta);
+
+  if (invalid > 0) {
+    p.outro(pc.yellow(`${invalid} stack(s) still need repair (see above).`));
+  } else if (migrated) {
     p.outro(pc.green("Migration complete — metadata is now v3."));
   } else {
     p.outro(pc.green("Metadata looks healthy."));
   }
+}
+
+// ── Multi-root repair (#60) ──
+
+/**
+ * A stack whose root left with several children has several roots, which every
+ * command refuses. Siblings on the same base are independent stacks, so give
+ * each its own: lossless, and only metadata changes. The caller writes.
+ */
+function splitMultiRootStacks(meta: StackMetadata): void {
+  for (const name of Object.keys(meta.stacks)) {
+    const roots = stackRoots(meta.stacks[name]!);
+    const split = splitMultiRootStack(meta, name);
+    if (split.length === 0) continue;
+    p.log.success(
+      `Split ${pc.yellow(name)}, which had ${roots.length} root branches: ${pc.yellow(roots[0]!)} stays, ${split.map((s) => pc.yellow(s)).join(", ")} split off`,
+    );
+  }
+}
+
+/** Report the stacks that still fail validation; returns how many. */
+async function reportInvalidStacks(meta: StackMetadata): Promise<number> {
+  let invalid = 0;
+  for (const name of Object.keys(meta.stacks)) {
+    const errors = await validateStack(meta, name);
+    if (errors.length === 0) continue;
+    invalid++;
+    console.log();
+    p.log.warn(`Stack ${pc.yellow(name)} is invalid:`);
+    for (const error of errors) console.log(`  ${pc.red("•")} ${error}`);
+  }
+  return invalid;
 }
 
 // ── Migration ──

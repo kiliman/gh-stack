@@ -24,12 +24,12 @@ bun install -g gh-stack
 
 ## Terms
 
-| Term | Definition |
-|------|-----------|
-| **trunk** | Base branch of the repository (usually `main`) |
-| **stack** | A chain of dependent branches |
-| **upstack** | Branches that depend on the current branch (children) |
-| **downstack** | Branches the current branch depends on (ancestors) |
+| Term          | Definition                                            |
+| ------------- | ----------------------------------------------------- |
+| **trunk**     | Base branch of the repository (usually `main`)        |
+| **stack**     | A chain of dependent branches                         |
+| **upstack**   | Branches that depend on the current branch (children) |
+| **downstack** | Branches the current branch depends on (ancestors)    |
 
 ## Quick Start
 
@@ -268,9 +268,11 @@ sync [--dry-run] [--no-push|--push] [--resume | --fresh] [--overwrite-remote]
     If the bottom PR(s) already merged outside gh-stack (e.g. the GitHub
     web UI, or the base of a `merge --approved` landing with the PRs
     collapsed into it), sync detects this and advances the stack past
-    them: it drops every merged branch and re-roots only the first
-    unmerged one onto main with `--onto`, so only its own commits replay,
-    instead of replaying the now-squashed commits and conflicting. It
+    them: it drops every merged branch and re-roots each unmerged branch
+    sitting on them onto main with `--onto`, so only their own commits
+    replay, instead of replaying the now-squashed commits and conflicting.
+    When a merged branch had several children, each child (with the
+    branches above it) becomes its own stack and is synced in turn. It
     warns about a merged PR whose changes never reached main (merged
     into a branch after that branch's own PR had landed).
 
@@ -326,8 +328,9 @@ merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push]
                 full merge.
     --base      Squash-merge ONLY the bottom PR into main as its own
                 commit, then re-root the next branch onto main (replaying
-                just its own commits). One PR per run — run it again to
-                land the next. Approval is enforced by GitHub branch
+                just its own commits). If the bottom PR has several
+                children, each is re-rooted and becomes its own stack.
+                One PR per run — run it again to land the next. Approval is enforced by GitHub branch
                 protection, not gh-stack. A base PR already merged outside
                 gh-stack is detected and advanced past, along with
                 PRs already collapsed into it. The re-root waits
@@ -433,7 +436,8 @@ delete [<branch>] [-k|--keep-branch] [--no-remote]
     delete the underlying local git branch (and the remote branch if
     it was pushed). The <branch> argument names its own stack, so this
     works from anywhere. Interactive selector (current stack) if none
-    specified.
+    specified. Deleting a stack's root that has several children leaves
+    them side by side on the base, so each becomes its own stack.
     --keep-branch leaves the git branches untouched (metadata only);
     --no-remote deletes the local branch but keeps the remote.
 ```
@@ -490,9 +494,12 @@ config [--json]
     only). Read-only; edit the TOML files directly.
 
 doctor
-    Migrate old (v2) metadata to the v3 layout, reconcile git branch
-    config against the topology files, and flag stacks whose base
-    stack appears already-merged into main. Safe to run repeatedly.
+    Migrate old (v2) metadata to the v3 layout, split any stack left
+    with several root branches into one stack per root, reconcile git
+    branch config against the topology files, flag stacks whose base
+    stack appears already-merged into main, and report stacks that
+    still fail the checks other commands run before loading a stack.
+    Safe to run repeatedly.
 
 learn [--skill] [--harness <name>] [--global] [--force]
     Teach a coding agent how to drive gh-stack. By default prints the
@@ -553,10 +560,10 @@ remember to type them:
 # .gh-stack.toml at the repo root (commit it), or
 # ~/.config/gh-stack/config.toml for personal defaults (honors XDG_CONFIG_HOME)
 [submit]
-draft = true      # new PRs open as drafts; --no-draft overrides for one PR
+draft = true # new PRs open as drafts; --no-draft overrides for one PR
 
 [restack]
-push = false      # restack and sync stay local; --push overrides
+push = false # restack and sync stay local; --push overrides
 ```
 
 Precedence, highest first: **CLI flag > env var > repo config > user config >
@@ -670,7 +677,7 @@ A single `active/<stack>.json` looks like:
 }
 ```
 
-Per-branch membership is *also* recorded in git's own config, so renaming or
+Per-branch membership is _also_ recorded in git's own config, so renaming or
 deleting a branch updates/cleans it automatically:
 
 ```

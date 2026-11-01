@@ -304,6 +304,17 @@ describe("submit --json (CLI)", () => {
     expect([stack.branches["feat-a"]!.pr, stack.branches["feat-b"]!.pr]).toEqual([101, 77]);
   }, 30_000);
 
+  test("--dry-run finds a PR opened outside gh-stack instead of planning a new one", async () => {
+    const { stdout, stderr, exitCode } = await runSubmit(["--dry-run", "-t", "Add things"], {
+      GH_EXISTING_PR: "feat-b=77",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout + stderr).toContain("exists PR #77 for feat-b");
+    expect(stdout + stderr).toContain("create PR for feat-a");
+    expect(await Bun.file(`${stubDir}/calls.log`).text()).not.toContain("pr create");
+  }, 30_000);
+
   // Every refusal still writes a JSON document to stdout, before any gh call.
   for (const [name, args, message] of [
     ["--dry-run", ["--json", "--dry-run"], "--dry-run"],

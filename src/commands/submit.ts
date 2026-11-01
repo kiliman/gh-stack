@@ -393,13 +393,13 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
   const outcomes = run.outcomes;
 
   // The branch's PR: recorded in metadata, else looked up on GitHub. A PR
-  // found that way (opened outside gh-stack) is recorded for next time.
+  // found that way (opened outside gh-stack) is recorded for next time, except
+  // in a dry run, which still looks so its plan doesn't offer to create it.
   const findPr = async (name: string): Promise<number | null> => {
     const bm = stack.branches[name]!;
     if (bm.pr) return bm.pr;
-    if (dryRun) return null;
     const found = await getPrNumber(name);
-    if (found) {
+    if (found && !dryRun) {
       bm.pr = found;
       metadataChanged = true;
     }

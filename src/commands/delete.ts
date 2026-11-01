@@ -1,7 +1,7 @@
 // gh-stack delete — Delete a branch from the stack (re-link parent chain)
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
-import { removeBranchFromStack, getChildren } from "../lib/metadata.ts";
+import { removeBranchFromStack, getChildren, stackBase } from "../lib/metadata.ts";
 import {
   ensureMetadata,
   ensureCurrentStack,
@@ -23,6 +23,9 @@ USAGE
 Removes the branch from the stack and deletes the underlying git branch,
 re-parenting any children to the removed branch's parent. If the deleted
 branch was pushed, its remote counterpart is deleted too.
+
+Deleting a stack's root that has several children leaves them side by side on
+the base, so each child (with the branches above it) becomes its own stack.
 
 If no branch is specified, shows an interactive selector.
 
@@ -84,6 +87,13 @@ OPTIONS
     for (const child of children) {
       console.log(`    ${pc.dim("→")} ${child}`);
     }
+    if (children.length > 1 && branch.parent === stackBase(stack)) {
+      p.log.info(
+        pc.dim(
+          `They'll sit side by side on ${branch.parent}, so each becomes its own stack (${children[0]} keeps ${stackName}).`,
+        ),
+      );
+    }
   }
 
   if (keepBranch) {
@@ -116,8 +126,13 @@ OPTIONS
     p.log.info(`Switched to ${pc.blue(fallback)} (was on the deleted branch)`);
   }
 
-  // Remove from metadata (re-parents children, fixes last_branch)
-  await removeBranchFromStack(meta, stackName, branchName);
+  // Remove from metadata (re-parents children, fixes last_branch, splits siblings)
+  const split = await removeBranchFromStack(meta, stackName, branchName);
+  if (split.length > 0) {
+    p.log.success(
+      `Split off ${split.map((s) => pc.yellow(s)).join(", ")} beside ${pc.blue(stackName)}`,
+    );
+  }
 
   // Delete the actual git branch(es)
   if (hasRemote) {

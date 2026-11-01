@@ -2,7 +2,7 @@
 // loop (#19). The retry loop itself shells out to `gh` and is covered by live
 // use; here we pin the classifier that decides retry-vs-abort.
 import { describe, expect, test } from "bun:test";
-import { isTransientMergeError, classifyMergeState } from "../commands/merge.ts";
+import { isTransientMergeError, classifyMergeState, squashSubject } from "../commands/merge.ts";
 
 describe("isTransientMergeError", () => {
   test("matches GitHub's async-recompute signatures", () => {
@@ -73,5 +73,16 @@ describe("classifyMergeState", () => {
     expect(
       classifyMergeState({ state: "CLOSED", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" }),
     ).toBe("closed");
+  });
+});
+
+describe("squashSubject", () => {
+  test("drops the stack position submit adds to PR titles", () => {
+    expect(squashSubject("feat: add things (2/4)", 61)).toBe("feat: add things (#61)");
+  });
+
+  test("leaves GitHub's default alone when the title has no position", () => {
+    expect(squashSubject("feat: add things", 61)).toBeNull();
+    expect(squashSubject("fix: handle (a/b) inputs", 61)).toBeNull();
   });
 });

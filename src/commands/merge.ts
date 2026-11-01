@@ -25,6 +25,7 @@ import type { Stack } from "../types.ts";
 import { confirmAction, isAutoYes } from "../lib/ui.ts";
 import { guardRemoteContent } from "../lib/remote-guard.ts";
 import { ensureNoPendingRun } from "./restack.ts";
+import { stripSeqSuffix } from "./update-prs.ts";
 import {
   planMerges,
   advancePastMerged,
@@ -63,6 +64,24 @@ export function isTransientMergeError(stderr: string): boolean {
 }
 
 /**
+ * The squash commit subject for a PR titled `title`, without the ` (N/M)`
+ * stack position `submit` adds to PR titles, which GitHub would otherwise put
+ * on the trunk's commit. Null when the title has no position, so GitHub's own
+ * "<title> (#N)" stands.
+ */
+export function squashSubject(title: string, prNumber: number): string | null {
+  const base = stripSeqSuffix(title);
+  return base === title.trimEnd() ? null : `${base} (#${prNumber})`;
+}
+
+/** `gh pr merge` args setting the squash subject (see squashSubject); empty to keep GitHub's. */
+async function squashSubjectArgs(prNumber: number): Promise<string[]> {
+  const title = (await getPrInfo(prNumber))?.title;
+  const subject = title ? squashSubject(title, prNumber) : null;
+  return subject ? ["--subject", subject] : [];
+}
+
+/**
  * Squash-merge a PR, healing the two timing artifacts a top-down cascade
  * provokes — neither of which is a real conflict:
  *
@@ -87,8 +106,9 @@ async function squashMergeWithRetry(
   s: ReturnType<typeof p.spinner>,
 ): Promise<{ ok: true } | { ok: false; stderr: string; genuine: boolean }> {
   const maxAttempts = MERGE_RETRY_BACKOFF_MS.length + 1;
+  const subject = await squashSubjectArgs(prNumber);
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const ghArgs = ["pr", "merge", String(prNumber), "--squash"];
+    const ghArgs = ["pr", "merge", String(prNumber), "--squash", ...subject];
     if (deleteFlag) ghArgs.push("--delete-branch");
 
     const proc = Bun.spawn(["gh", ...ghArgs], { stdout: "pipe", stderr: "pipe" });
@@ -423,7 +443,8 @@ OPTIONS
           : "Single branch stack — enabling auto-merge on GitHub.",
       );
       if (!dryRun) {
-        const auto = await $`gh pr merge ${basePr} --squash --auto`.nothrow().quiet();
+        const subject = await squashSubjectArgs(basePr);
+        const auto = await $`gh pr merge ${basePr} --squash --auto ${subject}`.nothrow().quiet();
         if (auto.exitCode === 0) {
           p.log.success(`Auto-merge enabled for PR #${basePr}`);
         } else {
@@ -712,6 +733,7 @@ OPTIONS
 
   const enableAutoMerge = async (): Promise<{ ok: boolean; stderr: string }> => {
     const ghArgs = ["pr", "merge", String(basePr), "--squash", "--auto"];
+    if (basePr != null) ghArgs.push(...(await squashSubjectArgs(basePr)));
     if (deleteFlag) ghArgs.push("--delete-branch");
     const proc = Bun.spawn(["gh", ...ghArgs], { stdout: "pipe", stderr: "pipe" });
     const stderr = await new Response(proc.stderr).text();

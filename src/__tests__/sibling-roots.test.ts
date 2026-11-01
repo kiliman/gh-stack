@@ -204,6 +204,7 @@ describe("advancing past a merged branch with several children (#60)", () => {
       headRefOid: await git(remoteDir, "rev-parse", "refs/heads/batch"),
       baseRefName: "main",
       mergeCommit: null,
+      title: "chore(deps): weekly sweep (1/3)",
     });
     await Bun.write(`${binDir}/merge-1.sh`, MERGE_BATCH());
     await checkout(tmpDir, "batch");
@@ -212,6 +213,10 @@ describe("advancing past a merged branch with several children (#60)", () => {
 
     expect(res.exitCode).toBe(0);
     expect(res.out).toContain("each becomes its own stack");
+    // main's squash commit doesn't carry the PR title's stack position.
+    expect(await Bun.file(`${binDir}/gh.log`).text()).toContain(
+      "pr merge 1 --squash --subject chore(deps): weekly sweep (#1)",
+    );
     await expectBothChildrenReRooted();
   });
 });

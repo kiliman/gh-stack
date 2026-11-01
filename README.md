@@ -289,7 +289,9 @@ merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push]
     via GitHub (PR3 → PR2 → PR1), then enables auto-merge for the base PR
     into main. The whole stack lands on main as a single squash commit.
     All merges happen on GitHub so PRs show as "Merged", Linear tickets
-    close automatically, and GitHub Actions fire normally. Skips already-
+    close automatically, and GitHub Actions fire normally. Squash commit
+    subjects leave out the ` (N/M)` stack position that `submit` adds to
+    PR titles. Skips already-
     merged PRs (safe to re-run). Waits for GitHub between merges, and
     self-heals its spurious "Head branch is out of date" (a stale PR
     head pointer after a child squash) by re-syncing and retrying. Before

@@ -303,6 +303,13 @@ it (its PR would be diffed against the parent's old history); the run lists it
 as held and exits 1 until `--resume` gets the parent pushed. `merge` and `join`
 refuse to run while a restack/sync is pending.
 
+**"Another git process holds …index.lock"**: some other process (often a
+background `git status`) held a git lock. gh-stack waits and retries for about 5
+seconds first, so seeing this means the lock outlasted that. It is not a
+conflict and the step changed nothing: run the same command again, or
+`gh-stack restack --resume` if a restack/sync was interrupted. If no git process
+is running, the lock is stale; remove the file it names.
+
 **Why did the push fail?** gh-stack prints the last lines of `git push`'s
 output, which includes a pre-push hook's own messages, and saves all of it to
 `.git/.gh-stack/push-failure.log`. Fix the cause (a failing check, say), then

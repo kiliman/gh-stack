@@ -2,9 +2,167 @@
 import { $ } from "bun";
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
+import pc from "picocolors";
 
 export const STACK_SYNC_TAG_PREFIX = "stack-sync-base";
 export const STACK_SYNC_TAG_GLOB = `${STACK_SYNC_TAG_PREFIX}-*`;
+
+// ── Lock contention (#69) ──────────────────────────────────────────────────
+//
+// Git doesn't wait for a lock: a checkout, rebase or config write that finds
+// `index.lock` (or `config.lock`, a ref lock) already present fails at once.
+// The usual holder is a background reader (an editor's or agent's `git
+// status`) that grabs index.lock for a few milliseconds to save a refreshed
+// stat cache, so the lock is gone almost immediately. Every gh-stack git call
+// that takes a lock goes through runGit, which waits and retries instead.
+
+/** git's message for a lock file that already exists (lockfile.c). */
+const LOCK_HELD = /Unable to create '([^']+\.lock)': File exists/;
+/**
+ * `git config` words it differently, naming the config file rather than its
+ * lock (and it already waits about a second on its own before failing).
+ */
+const CONFIG_LOCK_HELD = /could not lock config file (.+): File exists/;
+
+/** Waits between attempts: quick at first, then backing off (~5 s in all). */
+const DEFAULT_LOCK_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600, 2000];
+let lockRetryDelaysMs = DEFAULT_LOCK_RETRY_DELAYS_MS;
+
+/** Shorten the retry schedule in tests; `null` restores the default. */
+export function setLockRetryDelays(delays: number[] | null): void {
+  lockRetryDelaysMs = delays ?? DEFAULT_LOCK_RETRY_DELAYS_MS;
+}
+
+/** The lock file another process holds, if git's output says one blocked it. */
+export function heldLock(output: string): string | null {
+  const lock = LOCK_HELD.exec(output)?.[1];
+  if (lock) return lock;
+  const config = CONFIG_LOCK_HELD.exec(output)?.[1];
+  return config ? `${config}.lock` : null;
+}
+
+/**
+ * A lock was still held after every retry. Nothing conflicted: the step can
+ * simply run again once the other git process lets go.
+ */
+export class GitLockError extends Error {
+  constructor(
+    readonly lockPath: string,
+    readonly command: string,
+    /** The lock interrupted a rebase midway; it's paused, not conflicted. */
+    readonly rebaseInProgress: boolean,
+    /** How long gh-stack waited for it before giving up. */
+    readonly waitedMs: number,
+  ) {
+    super(`another git process holds ${lockPath} (${command})`);
+    this.name = "GitLockError";
+  }
+}
+
+export interface GitResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Run `git <args>`, retrying while another process holds a lock it needs.
+ * Retrying is safe because git takes the lock before changing anything: the
+ * failed attempt left the repo as it was. Throws GitLockError when retries
+ * run out; any other failure is returned for the caller to judge.
+ *
+ * `echo` replays git's output to the terminal (rebase progress and conflict
+ * messages), leaving out the attempts a lock blocked.
+ */
+export async function runGit(args: string[], opts: { echo?: boolean } = {}): Promise<GitResult> {
+  return retryLocks(args, opts.echo ?? false, async () => ({ next: args }));
+}
+
+/** Run `git <args>` with lock retries, throwing if it fails for another reason. */
+export async function runGitOrThrow(args: string[], opts: { echo?: boolean } = {}): Promise<void> {
+  const { exitCode, stderr } = await runGit(args, opts);
+  if (exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} failed (exit ${exitCode}): ${stderr.trim()}`);
+  }
+}
+
+interface Retry {
+  next: string[];
+  /** The retry resumes a rebase that a lock paused midway. */
+  resumesRebase?: boolean;
+}
+
+/**
+ * A rebase, retried around lock contention. A lock held when the rebase
+ * starts fails it before anything happens ("could not detach HEAD"), so it
+ * runs again as is. A lock that turns up midway makes git reschedule the
+ * pick it couldn't apply and pause, with nothing conflicted: `git rebase
+ * --continue` picks it up. Returns false only for a real conflict.
+ * (Exported for tests; commands use rebaseOnto and rebase.)
+ */
+export async function runRebase(args: string[]): Promise<boolean> {
+  const result = await retryLocks(args, true, async () => {
+    if (!(await isRebaseInProgress())) return { next: args };
+    // A conflict leaves unmerged paths; a lock-paused rebase doesn't.
+    if (await hasUnmergedPaths()) return null;
+    return { next: ["rebase", "--continue"], resumesRebase: true };
+  });
+  return result.exitCode === 0;
+}
+
+/**
+ * The retry loop. When an attempt fails because a lock is held, `onLocked`
+ * returns the command to retry with (or null to stop and return the failure).
+ */
+async function retryLocks(
+  args: string[],
+  echo: boolean,
+  onLocked: () => Promise<Retry | null>,
+): Promise<GitResult> {
+  let retry: Retry = { next: args };
+  let announced = false;
+  let waitedMs = 0;
+  for (let attempt = 0; ; attempt++) {
+    let shell = $`git ${retry.next}`.quiet().nothrow();
+    // Resuming a lock-paused pick reuses the commit's message; never stop to
+    // open an editor for it.
+    if (retry.resumesRebase) shell = shell.env({ ...process.env, GIT_EDITOR: "true" });
+    const raw = await shell;
+    const result = {
+      exitCode: raw.exitCode,
+      stdout: raw.stdout.toString(),
+      stderr: raw.stderr.toString(),
+    };
+
+    const lock = result.exitCode === 0 ? null : heldLock(result.stderr);
+    const next = lock ? await onLocked() : null;
+    if (!lock || !next) {
+      if (echo) {
+        process.stdout.write(result.stdout);
+        process.stderr.write(result.stderr);
+      }
+      return result;
+    }
+
+    const delay = lockRetryDelaysMs[attempt];
+    if (delay === undefined) {
+      throw new GitLockError(lock, `git ${args.join(" ")}`, next.resumesRebase ?? false, waitedMs);
+    }
+    if (!announced) {
+      console.error(pc.dim(`  Another git process holds ${lock}; waiting for it to finish…`));
+      announced = true;
+    }
+    await Bun.sleep(delay);
+    waitedMs += delay;
+    retry = next;
+  }
+}
+
+/** Whether the index has unmerged (conflicted) entries. */
+async function hasUnmergedPaths(): Promise<boolean> {
+  const out = await $`git diff --name-only --diff-filter=U`.quiet().nothrow().text();
+  return out.trim() !== "";
+}
 
 /**
  * Get the current branch name.
@@ -61,9 +219,13 @@ export async function repoRoot(): Promise<string> {
  * Refreshes the index first to avoid false positives from stale stat info.
  */
 export async function isCleanWorkingTree(): Promise<boolean> {
+  // Refresh index to avoid false positives from stat changes (timestamps, etc.).
+  // Outside the try: a lock that never frees must surface, not read as dirty.
+  // No -q: it also hides the lock message, and a refresh the lock blocked
+  // leaves stale stat info that makes a clean tree look dirty. The output
+  // ("needs update" lines) is captured and dropped.
+  await runGit(["update-index", "--refresh"]);
   try {
-    // Refresh index to avoid false positives from stat changes (timestamps, etc.)
-    await $`git update-index -q --refresh`.quiet().nothrow();
     await $`git diff-index --quiet HEAD --`.quiet();
     return true;
   } catch {
@@ -96,13 +258,13 @@ export async function isRebaseInProgress(): Promise<boolean> {
 }
 
 /**
- * Checkout a branch. Throws a raw ShellError on failure — only use this where a
- * failure is unexpected (e.g. after ensureCleanWorkingTree). For user-facing
- * branch switching, prefer tryCheckout so a dirty-tree refusal can be rendered
- * as a clean message instead of a stack trace.
+ * Checkout a branch. Throws on failure — only use this where a failure is
+ * unexpected (e.g. after ensureCleanWorkingTree). For user-facing branch
+ * switching, prefer tryCheckout so a dirty-tree refusal can be rendered as a
+ * clean message instead of a stack trace.
  */
 export async function checkout(branch: string): Promise<void> {
-  await $`git checkout ${branch}`.quiet();
+  await runGitOrThrow(["checkout", branch]);
 }
 
 /**
@@ -111,15 +273,15 @@ export async function checkout(branch: string): Promise<void> {
  * message and the offending file list when a dirty tree blocks the switch).
  */
 export async function tryCheckout(branch: string): Promise<{ ok: boolean; stderr: string }> {
-  const { exitCode, stderr } = await $`git checkout ${branch}`.quiet().nothrow();
-  return { ok: exitCode === 0, stderr: stderr.toString() };
+  const { exitCode, stderr } = await runGit(["checkout", branch]);
+  return { ok: exitCode === 0, stderr };
 }
 
 /**
  * Create and checkout a new branch from the current HEAD.
  */
 export async function createBranch(name: string): Promise<void> {
-  await $`git checkout -b ${name}`;
+  await runGitOrThrow(["checkout", "-b", name], { echo: true });
 }
 
 /**
@@ -324,7 +486,7 @@ export async function localBranchExists(branch: string): Promise<boolean> {
  * the branch didn't exist or the delete failed.
  */
 export async function deleteLocalBranch(branch: string): Promise<boolean> {
-  const { exitCode } = await $`git branch -D ${branch}`.nothrow().quiet();
+  const { exitCode } = await runGit(["branch", "-D", branch]);
   return exitCode === 0;
 }
 
@@ -334,7 +496,7 @@ export async function deleteLocalBranch(branch: string): Promise<boolean> {
  * Returns false if the rename failed (e.g. the new name already exists).
  */
 export async function renameBranch(oldName: string, newName: string): Promise<boolean> {
-  const { exitCode } = await $`git branch -m ${oldName} ${newName}`.nothrow().quiet();
+  const { exitCode } = await runGit(["branch", "-m", oldName, newName]);
   return exitCode === 0;
 }
 
@@ -350,7 +512,7 @@ export async function deleteRemoteBranch(branch: string): Promise<boolean> {
  * Create a temporary tag at a specific commit.
  */
 export async function createTag(name: string, commit: string): Promise<void> {
-  await $`git tag -f ${name} ${commit}`.quiet();
+  await runGitOrThrow(["tag", "-f", name, commit]);
 }
 
 /**
@@ -361,7 +523,7 @@ export async function deleteTagsMatching(pattern: string): Promise<void> {
     const result = await $`git tag -l ${pattern}`.text();
     const tags = result.trim().split("\n").filter(Boolean);
     for (const tag of tags) {
-      await $`git tag -d ${tag}`.quiet();
+      await runGitOrThrow(["tag", "-d", tag]);
     }
   } catch {
     // No tags to delete — that's fine
@@ -386,8 +548,7 @@ export async function rebaseOnto(
   oldBase: string,
   branch: string,
 ): Promise<boolean> {
-  const { exitCode } = await $`git rebase --onto ${newBase} ${oldBase} ${branch}`.nothrow();
-  return exitCode === 0;
+  return runRebase(["rebase", "--onto", newBase, oldBase, branch]);
 }
 
 /**
@@ -395,7 +556,7 @@ export async function rebaseOnto(
  * Returns true if successful. Caller must have verified the tree is clean.
  */
 export async function resetHard(ref: string): Promise<boolean> {
-  const { exitCode } = await $`git reset --hard ${ref}`.nothrow().quiet();
+  const { exitCode } = await runGit(["reset", "--hard", ref]);
   return exitCode === 0;
 }
 
@@ -404,8 +565,7 @@ export async function resetHard(ref: string): Promise<boolean> {
  * Returns true if successful, false if conflicts occurred.
  */
 export async function rebase(target: string): Promise<boolean> {
-  const { exitCode } = await $`git rebase ${target}`.nothrow();
-  return exitCode === 0;
+  return runRebase(["rebase", target]);
 }
 
 /**
@@ -413,7 +573,7 @@ export async function rebase(target: string): Promise<boolean> {
  * Returns true if successful.
  */
 export async function mergeSquash(branch: string): Promise<boolean> {
-  const { exitCode } = await $`git merge --squash ${branch}`.nothrow();
+  const { exitCode } = await runGit(["merge", "--squash", branch], { echo: true });
   return exitCode === 0;
 }
 
@@ -421,7 +581,7 @@ export async function mergeSquash(branch: string): Promise<boolean> {
  * Commit with a message.
  */
 export async function commit(message: string): Promise<void> {
-  await $`git commit -m ${message}`;
+  await runGitOrThrow(["commit", "-m", message], { echo: true });
 }
 
 /**

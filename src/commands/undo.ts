@@ -6,7 +6,6 @@ import { ensureMetadata, ensureCleanWorkingTree } from "../lib/safety.ts";
 import { getLastSnapshot, popSnapshot } from "../lib/snapshot.ts";
 import { clearRestackState, loadRestackState } from "../lib/metadata.ts";
 import { confirmAction } from "../lib/ui.ts";
-import { $ } from "bun";
 
 export default async function undo(args: string[]): Promise<void> {
   if (args.includes("--help")) {
@@ -60,9 +59,9 @@ a destructive operation (restack, merge, sync, remove).
   for (const [branch, sha] of Object.entries(snapshot.branches)) {
     try {
       if (branch === activeBranch) {
-        await $`git reset --hard ${sha}`.quiet();
+        await git.runGitOrThrow(["reset", "--hard", sha]);
       } else {
-        await $`git branch -f ${branch} ${sha}`.quiet();
+        await git.runGitOrThrow(["branch", "-f", branch, sha]);
       }
       p.log.success(`Restored ${pc.yellow(branch)} → ${sha.slice(0, 8)}`);
     } catch {

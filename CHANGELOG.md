@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.11
+
+### ✨ Diagnostics
+- **gh-stack says who holds a git lock.** Every lock wait is logged as one JSON line in `.git/.gh-stack/lock-waits.log`: when, which lock and command, whether it recovered, and the process `lsof` found holding the lock. When gh-stack gives up, the message names the holder (`pid 123: git status --porcelain ← Code Helper (Plugin) ← …`). When no process has the lock open, it says the lock is stale and to remove it. (#71, #72)
+
 ## 0.19.10
 
 ### 🐛 Fixes

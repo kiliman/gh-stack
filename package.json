@@ -1,6 +1,6 @@
 {
   "name": "gh-stack",
-  "version": "0.19.10",
+  "version": "0.19.11",
   "description": "Stacked PR manager for squash-merge workflows",
   "author": "Kiliman <kiliman@gmail.com>",
   "license": "MIT",

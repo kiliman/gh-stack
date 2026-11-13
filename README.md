@@ -735,7 +735,9 @@ Before any destructive operation (restack, sync, merge, delete), gh-stack saves 
 
 Git doesn't wait for a lock: a checkout or rebase that finds `index.lock` held fails at once. The usual holder is a background `git status` (an editor, a watcher, another agent session), which takes the lock for a few milliseconds. So every git step gh-stack runs that takes a lock (checkout, rebase, reset, commit, branch and tag writes, branch config) waits and retries: after 0.1, 0.2, 0.4, 0.8, 1.6 and 2 seconds, about 5 seconds in all. A rebase that a lock interrupts midway is continued, not reported as a conflict.
 
-If the lock is still held after that, gh-stack names it and stops with exit 1, never "Rebase Conflict". Nothing conflicted, and the step changed nothing: once the lock is gone, run the command again, or `gh-stack restack --resume` for an interrupted restack or sync. A lock left by a crashed git process stays until you remove it.
+If the lock is still held after that, gh-stack names it and stops with exit 1, never "Rebase Conflict". Nothing conflicted, and the step changed nothing: once the lock is gone, run the command again, or `gh-stack restack --resume` for an interrupted restack or sync. gh-stack uses `lsof` to say which process holds the lock. When no process has it open, the lock was left by a git that crashed, and the message says to remove it.
+
+Every wait is logged to `.git/.gh-stack/lock-waits.log` (in a worktree, its own git dir), one JSON line each: when, which lock and command, whether it recovered, and the holder `lsof` found. To find out what keeps taking your locks, look there.
 
 gh-stack also runs its own git calls with `GIT_OPTIONAL_LOCKS=0`, so its reads never take the lock.
 

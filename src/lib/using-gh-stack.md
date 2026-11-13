@@ -307,8 +307,10 @@ refuse to run while a restack/sync is pending.
 background `git status`) held a git lock. gh-stack waits and retries for about 5
 seconds first, so seeing this means the lock outlasted that. It is not a
 conflict and the step changed nothing: run the same command again, or
-`gh-stack restack --resume` if a restack/sync was interrupted. If no git process
-is running, the lock is stale; remove the file it names.
+`gh-stack restack --resume` if a restack/sync was interrupted. The message names
+the process holding the lock; if it says no process has it open, the lock is
+stale: remove the file it names. Every wait is logged, with its holder, to
+`.git/.gh-stack/lock-waits.log`.
 
 **Why did the push fail?** gh-stack prints the last lines of `git push`'s
 output, which includes a pre-push hook's own messages, and saves all of it to

@@ -91,15 +91,21 @@ export async function getBranchMembership(branch: string): Promise<BranchMembers
 }
 
 /**
- * Remove all gh-stack membership keys from a branch (leaves the branch and its
- * other config untouched).
+ * Remove a branch's stack membership (stack, parent, id, owner), keeping its
+ * PR number. The PR belongs to the branch, not to the stack, so a branch that
+ * leaves its stack (`delete --keep-branch`, a removed worktree's branches) and
+ * is tracked again later, in this worktree or another, gets its PR back. (#67)
  */
 export async function clearBranchMembership(branch: string): Promise<void> {
   await unsetKey(branch, STACK_KEY);
   await unsetKey(branch, PARENT_KEY);
-  await unsetKey(branch, PR_KEY);
   await unsetKey(branch, ID_KEY);
   await unsetKey(branch, GITDIR_KEY);
+}
+
+/** True if `m` records stack membership, not just a PR number kept after leaving a stack. */
+export function hasMembership(m: BranchMembership): boolean {
+  return !!(m.stack || m.parent || m.id || m.gitdir);
 }
 
 /**

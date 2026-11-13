@@ -29,6 +29,7 @@ import {
   allBranchMemberships,
   setBranchMembership,
   clearBranchMembership,
+  hasMembership,
   ownedByOtherWorktree,
   type BranchMembership,
 } from "./branch-config.ts";
@@ -277,6 +278,10 @@ export async function writeMetadata(meta: StackMetadata): Promise<BranchConfigSy
     for (const name of Object.keys(stack.branches ?? {})) tracked.add(name);
   }
 
+  // A branch joining this worktree's stacks keeps the PR recorded for it in git
+  // config, whichever worktree or command wrote it (#67).
+  await adoptRecordedPrs(meta, tracked);
+
   // 2. write active + archived stack files (write desired state BEFORE
   //    removing anything — that's what makes "can't vanish" hold).
   for (const [name, stack] of Object.entries(meta.stacks)) {
@@ -391,9 +396,10 @@ async function syncBranchConfig(
     }
   }
 
-  // Branches that still carry gh-stack config but are no longer active members.
+  // Branches that still carry gh-stack membership but are no longer active
+  // members. A branch left with only its PR number has nothing to clear.
   for (const [branch, m] of existing) {
-    if (desired.has(branch)) continue;
+    if (desired.has(branch) || !hasMembership(m)) continue;
     if (ownedByOtherWorktree(m, mine)) {
       result.foreign.push(branch);
       continue;
@@ -403,6 +409,25 @@ async function syncBranchConfig(
   }
 
   return result;
+}
+
+/**
+ * Give a branch that joins this worktree's stacks in this write (it isn't in
+ * `tracked`) the PR number git config records for it, when its stack entry has
+ * none. Git config is shared by every worktree, so the PR may have been
+ * recorded by `submit` or `update-prs` in another one, or kept when the branch
+ * left a stack (see `clearBranchMembership`). Mutates `meta`.
+ */
+async function adoptRecordedPrs(meta: StackMetadata, tracked: Set<string>): Promise<void> {
+  const joining: [string, Branch][] = Object.values(meta.stacks)
+    .flatMap((stack) => Object.entries(stack.branches))
+    .filter(([name, b]) => b.pr == null && !tracked.has(name));
+  if (joining.length === 0) return;
+  const recorded = await allBranchMemberships();
+  for (const [name, b] of joining) {
+    const pr = recorded.get(name)?.pr;
+    if (pr != null) b.pr = pr;
+  }
 }
 
 /**

@@ -323,9 +323,9 @@ export default async function updatePrs(args: string[]): Promise<void> {
 gh-stack update-prs — Update PR descriptions with stack visualization
 
 USAGE
-  gh-stack update-prs [--force]
+  gh-stack update-prs [<branch>] [--stack <name>] [--force]
 
-Updates all PRs in the current stack with a standardized stack section
+Updates all PRs in a stack with a standardized stack section
 showing the tree structure, PR links, and per-PR stack index. Each PR's
 live description is checked, so a stack section removed by an outside
 edit (gh pr edit, the GitHub UI) is restored. PRs that already show the
@@ -333,19 +333,26 @@ current section are left alone; --force rewrites all.
 
 Tracked branches with no recorded PR are looked up on GitHub first, so a
 PR opened outside gh-stack (e.g. gh pr create) is adopted automatically.
+
+The stack is the one holding <branch>, or the one named by --stack, or else
+the current branch's. Naming it means nothing has to be checked out, so it
+works from a checkout holding other work, or on a detached HEAD.
+
+OPTIONS
+  --stack <name>  Update the stack with this name
+  --force         Rewrite every PR's stack section, even if it's current
 `);
     return;
   }
 
   const force = args.includes("--force");
+  const stackIdx = args.indexOf("--stack");
+  const stackFlag = stackIdx !== -1 ? args[stackIdx + 1] : undefined;
+  const branchArg = args.find(
+    (a, i) => !a.startsWith("-") && (stackIdx === -1 || i !== stackIdx + 1),
+  );
   const meta = await ensureMetadata();
-  const branch = await git.currentBranch();
-  const stackName = findStackForBranch(meta, branch);
-
-  if (!stackName) {
-    p.cancel(`Branch ${pc.blue(branch)} not found in any stack`);
-    process.exit(1);
-  }
+  const stackName = await resolveTargetStack(meta, stackIdx !== -1, stackFlag, branchArg);
 
   const stack = meta.stacks[stackName]!;
   const ordered = getOrderedBranches(stack);
@@ -384,6 +391,45 @@ PR opened outside gh-stack (e.g. gh pr create) is adopted automatically.
         (result.skipped > 0 ? `, ${result.skipped} without PRs` : ""),
     ),
   );
+}
+
+/**
+ * The stack to update: `--stack <name>`, else the stack holding `branchArg`,
+ * else the current branch's. Exits with a message when there's none. (#67)
+ */
+async function resolveTargetStack(
+  meta: StackMetadata,
+  stackFlagGiven: boolean,
+  stackFlag: string | undefined,
+  branchArg: string | undefined,
+): Promise<string> {
+  if (stackFlagGiven) {
+    if (!stackFlag || stackFlag.startsWith("-")) {
+      p.cancel("Usage: gh-stack update-prs --stack <name>");
+      process.exit(1);
+    }
+    if (!meta.stacks[stackFlag]) {
+      p.cancel(
+        `No active stack named ${pc.yellow(stackFlag)}. List them with ${pc.green("gh-stack stacks")}`,
+      );
+      process.exit(1);
+    }
+    return stackFlag;
+  }
+
+  const branch = branchArg ?? (await git.currentBranch().catch(() => null));
+  if (!branch) {
+    p.cancel(
+      `Not on a branch. Name the stack: ${pc.green("gh-stack update-prs --stack <name>")} or ${pc.green("gh-stack update-prs <branch>")}`,
+    );
+    process.exit(1);
+  }
+  const stackName = findStackForBranch(meta, branch);
+  if (!stackName) {
+    p.cancel(`Branch ${pc.blue(branch)} not found in any stack`);
+    process.exit(1);
+  }
+  return stackName;
 }
 
 export function buildStackViz(

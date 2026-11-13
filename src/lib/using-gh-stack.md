@@ -404,7 +404,7 @@ gh-stack rename        # rename a tracked branch (keeps metadata in sync)
 gh-stack undo          # restore from the last snapshot
 gh-stack archive <name> # archive a stack that landed outside gh-stack merge (--list, --restore <name>)
 gh-stack doctor        # migrate & repair stack metadata (splits a stack with several roots, archives empty stacks)
-gh-stack update-prs    # repair stack viz in PR descriptions + adopt PRs opened with gh pr create
+gh-stack update-prs    # repair stack viz in PR descriptions + adopt PRs opened with gh pr create (--stack <name> or <branch>: no checkout needed)
 ```
 
 ## Stack visualization

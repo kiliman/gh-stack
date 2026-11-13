@@ -61,12 +61,18 @@ describe("branch config", () => {
     expect(m.stack).toBe("s");
   });
 
-  test("clearBranchMembership removes all gh-stack keys", async () => {
+  test("clearBranchMembership removes membership but keeps the PR number (#67)", async () => {
     await $`git checkout -b feature-z`.quiet();
-    await setBranchMembership("feature-z", { stack: "s", parent: "main", pr: 1 });
+    await setBranchMembership("feature-z", {
+      stack: "s",
+      parent: "main",
+      pr: 1,
+      id: "abc",
+      gitdir: "/x",
+    });
     await clearBranchMembership("feature-z");
 
-    expect(await getBranchMembership("feature-z")).toEqual({});
+    expect(await getBranchMembership("feature-z")).toEqual({ pr: 1 });
   });
 
   test("git branch -D removes membership automatically", async () => {

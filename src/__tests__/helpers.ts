@@ -390,6 +390,8 @@ case "$1 $2" in
     echo "https://github.com/acme/widgets/pull/$n"
     ;;
   "pr edit")
+    # GH_KILL_ON_EDIT: gh-stack dies here, after creating PRs, before its last write.
+    [ -n "$GH_KILL_ON_EDIT" ] && kill -9 $PPID
     case "$*" in *--body-file*) [ -n "$GH_FAIL_BODY_EDIT" ] && exit 1 ;; esac
     ;;
 esac

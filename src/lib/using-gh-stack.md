@@ -129,6 +129,12 @@ This resolves the catch-22 where `sync`/`restack` said "not in any stack" for a
 tip you hadn't submitted yet. (`submit` still auto-tracks too — `add` is just the
 no-publish path.)
 
+Branches already on `main` **or** `origin/main` are never adopted, so a stale
+local `main` in a worktree is fine. When two branches point at the same commit
+(a backup, a review checkout of a stack branch), only one goes in the chain and
+the warning "Left out of the stack" names the others. Check it picked the right
+one with `gh-stack stacks --json`.
+
 **Handing a stack over from another worktree.** Stack files are per worktree,
 but the PR numbers gh-stack records in git config are shared. So after
 submitting from a worktree, `gh-stack add <top-branch>` in the main checkout

@@ -14,7 +14,7 @@ import { isAutoYes } from "../lib/ui.ts";
 import { ConfigError, describeSource, resolveFlag } from "../lib/config.ts";
 import type { Stack, StackMetadata } from "../types.ts";
 import { getPrNumber, getRepoNwo, prUrlFor } from "../lib/github.ts";
-import { resolveOrCreateStack } from "../lib/chain.ts";
+import { describeSkipped, resolveOrCreateStack, type SkippedBranch } from "../lib/chain.ts";
 import { reconcilePrTitles, refreshStackViz, branchToTitle } from "./update-prs.ts";
 
 const HELP = `
@@ -308,7 +308,13 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
   // Reconstruct the stack from local branch ancestry so the end state is
   // always stack registered + branches pushed + PRs created — no need to
   // remember to run `gh-stack init` first.
-  let heal: { base: string; chain: string[]; created: boolean; added: string[] } | null = null;
+  let heal: {
+    base: string;
+    chain: string[];
+    created: boolean;
+    added: string[];
+    skipped: SkippedBranch[];
+  } | null = null;
   if (!stackName) {
     const trunk = await git.trunkBranch();
 
@@ -331,6 +337,7 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
       chain: resolution.chain,
       created: resolution.created,
       added: resolution.addedBranches,
+      skipped: resolution.skipped,
     };
 
     // Persist the reconstructed/updated stack before pushing (skip on dry-run)
@@ -375,6 +382,7 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
       if (!isLast) p.print("  ┃");
     }
     p.print();
+    if (heal.skipped.length > 0) p.log.warn(describeSkipped(heal.skipped));
   }
 
   p.log.info(`Stack: ${pc.yellow(stackName)}`);

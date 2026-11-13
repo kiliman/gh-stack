@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.12
+
+### 🐛 Fixes
+- **`init`, `add` and `submit` no longer adopt branches that are already on `origin/main`.** They checked "already merged" against local `main` only. In a worktree, local `main` is often stale, so every branch cut from a newer `main` commit (review checkouts, fresh branches) was put underneath the real stack. A branch whose tip is on local `main` or `origin/main` now counts as trunk, matching `sync`. (#73, #74)
+- **Two branches at the same commit are never chained as parent and child.** Only one goes in the chain: the one gh-stack recorded in git config, else the first by name. A warning names the others. (#73, #74)
+
 ## 0.19.11
 
 ### ✨ Diagnostics

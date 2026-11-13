@@ -13,6 +13,8 @@ import {
   stackBase,
   stackRoots,
   splitMultiRootStack,
+  archiveStack,
+  emptyStacks,
 } from "../lib/metadata.ts";
 import { validateStack } from "../lib/safety.ts";
 import { legacyMetadataPath, legacyRestackStatePath, restackStateFile } from "../lib/paths.ts";
@@ -26,7 +28,8 @@ USAGE
 
 Migrates old (v2) metadata to the v3 layout (per-stack files under
 .git/.gh-stack/ + git branch config), splits any stack left with several
-root branches into one stack per root, reconciles branch config against
+root branches into one stack per root, archives stacks with no branches
+left, reconciles branch config against
 the topology files (leaving branches another worktree is stacking
 alone), flags stacks whose base stack looks already-merged into main,
 and reports stacks that still fail the checks other commands run
@@ -62,7 +65,10 @@ export default async function doctor(args: string[]): Promise<void> {
   // ── 2. Split stacks left with several roots (#60) ──
   splitMultiRootStacks(meta);
 
-  // ── 3. Reconcile branch config ↔ topology (also writes the split) ──
+  // ── 2b. Archive stacks with no branches left (#68) ──
+  archiveEmptyStacks(meta);
+
+  // ── 3. Reconcile branch config ↔ topology (also writes the split and archive) ──
   await reconcile(meta);
 
   // ── 4. Flag base-stack-merged situations (issue #13) ──
@@ -94,6 +100,22 @@ function splitMultiRootStacks(meta: StackMetadata): void {
     if (split.length === 0) continue;
     p.log.success(
       `Split ${pc.yellow(name)}, which had ${roots.length} root branches: ${pc.yellow(roots[0]!)} stays, ${split.map((s) => pc.yellow(s)).join(", ")} split off`,
+    );
+  }
+}
+
+/**
+ * A stack whose branches were all removed (`delete --keep-branch` on each, the
+ * way a sweep landed from another worktree is cleaned up) stays in `stacks` as
+ * an empty shell. Archive it: reversible, and only metadata changes. The caller
+ * writes.
+ */
+function archiveEmptyStacks(meta: StackMetadata): void {
+  for (const name of emptyStacks(meta)) {
+    const archivedAs = archiveStack(meta, name);
+    p.log.success(
+      `Archived empty stack ${pc.yellow(name)}` +
+        pc.dim(`  (restore: gh-stack archive --restore ${archivedAs})`),
     );
   }
 }

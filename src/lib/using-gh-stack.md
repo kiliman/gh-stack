@@ -397,13 +397,13 @@ cherry-pick them, don't force past it.
 ### 7. Maintenance
 
 ```bash
-gh-stack delete        # remove a branch from the stack (re-parents children; a root's several children become one stack each)
+gh-stack delete        # remove a branch from the stack (re-parents children; a root's several children become one stack each; deleting the last branch archives the stack)
 gh-stack split         # cut a stack into two at a branch
 gh-stack join <b>      # splice an existing branch/PR into the stack (--above <b>, --dry-run)
 gh-stack rename        # rename a tracked branch (keeps metadata in sync)
 gh-stack undo          # restore from the last snapshot
-gh-stack archive       # manage archived stacks
-gh-stack doctor        # migrate & repair stack metadata (splits a stack with several roots)
+gh-stack archive <name> # archive a stack that landed outside gh-stack merge (--list, --restore <name>)
+gh-stack doctor        # migrate & repair stack metadata (splits a stack with several roots, archives empty stacks)
 gh-stack update-prs    # repair stack viz in PR descriptions + adopt PRs opened with gh pr create
 ```
 

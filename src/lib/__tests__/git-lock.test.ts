@@ -167,7 +167,22 @@ describe("branch config", () => {
 });
 
 describe("isCleanWorkingTree", () => {
+  // The refresh only needs the lock when it has stale stat info to save, and
+  // that's exactly when skipping it makes a clean tree look dirty. Touch the
+  // file (same content, new mtime) so the stat info is stale.
+  async function staleStat(): Promise<void> {
+    const later = new Date(Date.now() + 5000);
+    await fs.utimes(`${tmpDir}/README.md`, later, later);
+  }
+
+  test("a briefly held lock: waits, and a clean tree reads clean", async () => {
+    await staleStat();
+    await holdLock(indexLock, 250);
+    expect(await git.isCleanWorkingTree()).toBe(true);
+  });
+
   test("a lock that never frees surfaces instead of reading as dirty", async () => {
+    await staleStat();
     await Bun.write(indexLock, "");
     await expect(git.isCleanWorkingTree()).rejects.toBeInstanceOf(git.GitLockError);
   });

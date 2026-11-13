@@ -1,7 +1,7 @@
 // Git command helpers using Bun's shell API
 import { $ } from "bun";
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import pc from "picocolors";
 
 export const STACK_SYNC_TAG_PREFIX = "stack-sync-base";
@@ -53,6 +53,8 @@ export class GitLockError extends Error {
     readonly rebaseInProgress: boolean,
     /** How long gh-stack waited for it before giving up. */
     readonly waitedMs: number,
+    /** Who had it open when gh-stack gave up. */
+    readonly holder: LockHolder,
   ) {
     super(`another git process holds ${lockPath} (${command})`);
     this.name = "GitLockError";
@@ -122,6 +124,7 @@ async function retryLocks(
   let retry: Retry = { next: args };
   let announced = false;
   let waitedMs = 0;
+  let episode: LockEpisode | null = null;
   for (let attempt = 0; ; attempt++) {
     let shell = $`git ${retry.next}`.quiet().nothrow();
     // Resuming a lock-paused pick reuses the commit's message; never stop to
@@ -141,21 +144,131 @@ async function retryLocks(
         process.stdout.write(result.stdout);
         process.stderr.write(result.stderr);
       }
+      await episode?.finish(result.exitCode === 0 ? "recovered" : "failed", attempt, waitedMs);
       return result;
     }
 
     const delay = lockRetryDelaysMs[attempt];
     if (delay === undefined) {
-      throw new GitLockError(lock, `git ${args.join(" ")}`, next.resumesRebase ?? false, waitedMs);
+      // Who has it now? With lsof, nobody means a stale lock (a crashed git).
+      const holder = await lockHolder(lock);
+      await episode?.finish("gave-up", attempt, waitedMs, holder);
+      throw new GitLockError(
+        lock,
+        `git ${args.join(" ")}`,
+        next.resumesRebase ?? false,
+        waitedMs,
+        holder,
+      );
     }
     if (!announced) {
       console.error(pc.dim(`  Another git process holds ${lock}; waiting for it to finish…`));
       announced = true;
+      episode = startLockEpisode(lock, args);
     }
     await Bun.sleep(delay);
     waitedMs += delay;
     retry = next;
   }
+}
+
+// ── Who holds the lock (#71) ───────────────────────────────────────────────
+//
+// Every wait is logged to `.git/.gh-stack/lock-waits.log` (one JSON line per
+// episode), with the process lsof found holding the lock. Git keeps the lock
+// file open from taking the lock to committing it, so lsof sees any holder,
+// including tools that use libgit2 and never show up in git's own trace2 log.
+
+/** What lsof found: the holders, none (nobody has it open), or unknown (no lsof). */
+export type LockHolder = { holders: string[] } | { unknown: true };
+
+/**
+ * Who has `lock` open right now, best effort: each holder as
+ * "pid 123: git status --porcelain ← Code Helper (Plugin) ← Electron".
+ */
+export async function lockHolder(lock: string): Promise<LockHolder> {
+  const lsof = await capture(["lsof", "-t", "--", lock]);
+  // lsof exits 1 both for "nobody has it open" and for errors; a missing
+  // binary throws (null). A file that's already gone has no holder either.
+  if (lsof === null) return { unknown: true };
+  const pids = lsof.stdout.split("\n").filter((p) => /^\d+$/.test(p.trim()));
+  const holders: string[] = [];
+  for (const pid of pids.slice(0, 3)) holders.push(await describeProcess(pid.trim()));
+  return { holders };
+}
+
+/** "pid 123: <command> ← <parent> ← <grandparent>", from ps. */
+async function describeProcess(pid: string): Promise<string> {
+  const self = await capture(["ps", "-o", "ppid=,command=", "-p", pid]);
+  const [ppid, ...command] = (self?.stdout.trim() ?? "").split(/\s+/);
+  const chain: string[] = [];
+  let parent = ppid;
+  for (let i = 0; i < 3 && parent && parent !== "0" && parent !== "1"; i++) {
+    const p = await capture(["ps", "-o", "ppid=,comm=", "-p", parent]);
+    const [pp, ...comm] = (p?.stdout.trim() ?? "").split(/\s+/);
+    if (!comm.length) break;
+    chain.push(comm.join(" ").split("/").pop()!);
+    parent = pp;
+  }
+  const what = command.join(" ").slice(0, 80) || "(exited)";
+  return [`pid ${pid}: ${what}`, ...chain].join(" ← ");
+}
+
+/** Run a helper binary (lsof, ps) with a time limit; null if it can't run. */
+async function capture(cmd: string[]): Promise<{ exitCode: number; stdout: string } | null> {
+  try {
+    const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore", timeout: 3000 });
+    const stdout = await new Response(proc.stdout).text();
+    return { exitCode: await proc.exited, stdout };
+  } catch {
+    return null;
+  }
+}
+
+export function describeHolder(holder: LockHolder): string {
+  if ("unknown" in holder) return "unknown (lsof unavailable)";
+  return holder.holders.length ? holder.holders.join("; ") : "nobody has it open";
+}
+
+interface LockEpisode {
+  finish(
+    outcome: "recovered" | "failed" | "gave-up",
+    attempt: number,
+    waitedMs: number,
+    holderAtEnd?: LockHolder,
+  ): Promise<void>;
+}
+
+/**
+ * Start logging a lock wait. The first holder lookup runs during the first
+ * wait, so it costs no extra time; finish() writes the line. Never throws.
+ */
+function startLockEpisode(lock: string, args: string[]): LockEpisode {
+  const time = new Date().toISOString();
+  const firstHolder = lockHolder(lock);
+  return {
+    async finish(outcome, attempt, waitedMs, holderAtEnd) {
+      try {
+        const entry = {
+          time,
+          lock,
+          worktree: (await $`git rev-parse --show-toplevel`.quiet().nothrow().text()).trim(),
+          command: `git ${args.join(" ")}`,
+          ghStack: process.argv.slice(2).join(" "),
+          outcome,
+          attempts: attempt + 1,
+          waitedMs,
+          holder: describeHolder(await firstHolder),
+          ...(holderAtEnd ? { holderAtEnd: describeHolder(holderAtEnd) } : {}),
+        };
+        const dir = `${await absoluteGitDir()}/.gh-stack`;
+        await mkdir(dir, { recursive: true });
+        await appendFile(`${dir}/lock-waits.log`, `${JSON.stringify(entry)}\n`);
+      } catch {
+        // Diagnostics only: never let logging break the git step.
+      }
+    },
+  };
 }
 
 /** Whether the index has unmerged (conflicted) entries. */

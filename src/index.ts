@@ -207,6 +207,10 @@ async function reportHeldLock(err: InstanceType<typeof GitLockError>): Promise<n
     `gh-stack: another git process holds ${err.lockPath}, and still did after waiting ${(err.waitedMs / 1000).toFixed(1)}s.`,
     `  Nothing conflicted: ${err.command} couldn't take the lock, so it changed nothing.`,
   ];
+  const holder = err.holder;
+  if (!("unknown" in holder) && holder.holders.length > 0) {
+    lines.push(`  Held by: ${holder.holders.join("\n           ")}`);
+  }
   if (err.rebaseInProgress) {
     lines.push(
       `  The rebase is paused, not conflicted. Once the lock is gone:`,
@@ -217,8 +221,16 @@ async function reportHeldLock(err: InstanceType<typeof GitLockError>): Promise<n
     pending
       ? `  Once the lock is gone, pick the run up where it stopped:\n    gh-stack restack --resume`
       : `  Once the lock is gone, run the command again.`,
-    `  If no other git process is running, the lock is stale; remove it:\n    rm ${err.lockPath}`,
   );
+  if ("unknown" in holder) {
+    lines.push(
+      `  If no other git process is running, the lock is stale; remove it:\n    rm ${err.lockPath}`,
+    );
+  } else if (holder.holders.length === 0) {
+    lines.push(
+      `  No process has it open, so it's stale (left by a git that crashed); remove it:\n    rm ${err.lockPath}`,
+    );
+  }
   console.error(lines.join("\n"));
   process.exit(1);
 }

@@ -53,7 +53,13 @@ describe("heldLock", () => {
     expect(
       git.heldLock("fatal: Unable to create '/r/.git/index.lock': File exists.\n\nAnother git"),
     ).toBe("/r/.git/index.lock");
-    expect(git.heldLock("error: Unable to create '.git/config.lock': File exists.")).toBe(
+    expect(git.heldLock("error: Unable to create '.git/HEAD.lock': File exists.")).toBe(
+      ".git/HEAD.lock",
+    );
+  });
+
+  test("finds the lock in git config's own wording", () => {
+    expect(git.heldLock("error: could not lock config file .git/config: File exists")).toBe(
       ".git/config.lock",
     );
   });
@@ -153,7 +159,8 @@ describe("rebase", () => {
 
 describe("branch config", () => {
   test("a write waits out config.lock instead of being dropped", async () => {
-    await holdLock(`${tmpDir}/.git/config.lock`, 250);
+    // git config waits about a second on its own; hold the lock past that.
+    await holdLock(`${tmpDir}/.git/config.lock`, 1500);
     await setBranchMembership("main", { stack: "s1", parent: "trunk-ish" });
     expect(await getBranchMembership("main")).toMatchObject({ stack: "s1", parent: "trunk-ish" });
   });

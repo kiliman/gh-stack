@@ -731,6 +731,14 @@ you at `doctor`.
 
 Before any destructive operation (restack, sync, merge, delete), gh-stack saves a snapshot of all branch HEADs as an append-only file under `snapshots/`, retained per-stack. Run `gh-stack undo` to restore.
 
+### Busy Repositories (git locks)
+
+Git doesn't wait for a lock: a checkout or rebase that finds `index.lock` held fails at once. The usual holder is a background `git status` (an editor, a watcher, another agent session), which takes the lock for a few milliseconds. So every git step gh-stack runs that takes a lock (checkout, rebase, reset, commit, branch and tag writes, branch config) waits and retries: after 0.1, 0.2, 0.4, 0.8, 1.6 and 2 seconds, about 5 seconds in all. A rebase that a lock interrupts midway is continued, not reported as a conflict.
+
+If the lock is still held after that, gh-stack names it and stops with exit 1, never "Rebase Conflict". Nothing conflicted, and the step changed nothing: once the lock is gone, run the command again, or `gh-stack restack --resume` for an interrupted restack or sync. A lock left by a crashed git process stays until you remove it.
+
+gh-stack also runs its own git calls with `GIT_OPTIONAL_LOCKS=0`, so its reads never take the lock.
+
 ## Example Workflow
 
 ```bash

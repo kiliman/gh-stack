@@ -18,6 +18,11 @@ export const STACK_SYNC_TAG_GLOB = `${STACK_SYNC_TAG_PREFIX}-*`;
 
 /** git's message for a lock file that already exists (lockfile.c). */
 const LOCK_HELD = /Unable to create '([^']+\.lock)': File exists/;
+/**
+ * `git config` words it differently, naming the config file rather than its
+ * lock (and it already waits about a second on its own before failing).
+ */
+const CONFIG_LOCK_HELD = /could not lock config file (.+): File exists/;
 
 /** Waits between attempts: quick at first, then backing off (~5 s in all). */
 const DEFAULT_LOCK_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600, 2000];
@@ -30,7 +35,10 @@ export function setLockRetryDelays(delays: number[] | null): void {
 
 /** The lock file another process holds, if git's output says one blocked it. */
 export function heldLock(output: string): string | null {
-  return LOCK_HELD.exec(output)?.[1] ?? null;
+  const lock = LOCK_HELD.exec(output)?.[1];
+  if (lock) return lock;
+  const config = CONFIG_LOCK_HELD.exec(output)?.[1];
+  return config ? `${config}.lock` : null;
 }
 
 /**

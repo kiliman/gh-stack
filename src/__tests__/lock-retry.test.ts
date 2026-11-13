@@ -143,6 +143,8 @@ describe("restack with index.lock briefly held (#69)", () => {
     expect(stopped.out).toContain("gh-stack restack --resume");
     expect(stopped.out).not.toContain("Rebase Conflict");
     expect(stopped.out).not.toContain("ShellError");
+    // The hook's `touch` left a lock file that nobody has open (#71).
+    expect(stopped.out).toContain("No process has it open, so it's stale");
     expect(await isAncestor("pr1", "pr2")).toBe(false); // stopped before pr2
 
     await fs.rm(lock);

@@ -187,3 +187,77 @@ describe("isCleanWorkingTree", () => {
     await expect(git.isCleanWorkingTree()).rejects.toBeInstanceOf(git.GitLockError);
   });
 });
+
+// #71: who holds the lock. Every wait is logged with the holder lsof found.
+describe("lock holder", () => {
+  /** A process that holds `file` open, as git holds a lock between taking and committing it. */
+  async function holdOpen(file: string): Promise<Bun.Subprocess> {
+    const proc = Bun.spawn(["sh", "-c", 'exec 3>"$1"; exec sleep 30', "sh", file]);
+    for (let i = 0; i < 100 && !(await Bun.file(file).exists()); i++) await Bun.sleep(10);
+    await Bun.sleep(50); // let `exec sleep` replace the shell
+    return proc;
+  }
+
+  async function lockWaits(): Promise<Record<string, any>[]> {
+    const text = await Bun.file(`${tmpDir}/.git/.gh-stack/lock-waits.log`).text();
+    return text
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+  }
+
+  test("lsof names the process holding the lock", async () => {
+    const holder = await holdOpen(indexLock);
+    try {
+      const found = await git.lockHolder(indexLock);
+      expect("holders" in found && found.holders.join()).toContain(`pid ${holder.pid}: sleep 30`);
+    } finally {
+      holder.kill();
+    }
+  });
+
+  test("nobody holding a leftover lock file", async () => {
+    await Bun.write(indexLock, "");
+    expect(await git.lockHolder(indexLock)).toEqual({ holders: [] });
+  });
+
+  test("a wait that recovers is logged", async () => {
+    await $`git branch side`.quiet();
+    await holdLock(indexLock, 250);
+    await git.checkout("side");
+    const [entry, ...rest] = await lockWaits();
+    expect(rest).toEqual([]);
+    expect(entry).toMatchObject({
+      lock: expect.stringContaining("index.lock"),
+      worktree: tmpDir,
+      command: "git checkout side",
+      outcome: "recovered",
+    });
+    expect(entry!.attempts).toBeGreaterThan(1);
+    expect(entry!.holder).toBeString();
+  });
+
+  test("giving up on a stale lock: logged, and the error says nobody holds it", async () => {
+    await $`git branch side`.quiet();
+    await Bun.write(indexLock, "");
+    const err = await git.checkout("side").catch((e) => e);
+    expect(err).toBeInstanceOf(git.GitLockError);
+    expect(err.holder).toEqual({ holders: [] });
+    const [entry] = await lockWaits();
+    expect(entry).toMatchObject({ outcome: "gave-up", holderAtEnd: "nobody has it open" });
+  });
+
+  test("giving up on a held lock names the holder", async () => {
+    await $`git branch side`.quiet();
+    const holder = await holdOpen(indexLock);
+    try {
+      const err = await git.checkout("side").catch((e) => e);
+      expect(err).toBeInstanceOf(git.GitLockError);
+      expect(err.holder.holders.join()).toContain(`pid ${holder.pid}`);
+      const [entry] = await lockWaits();
+      expect(entry!.holderAtEnd).toContain(`pid ${holder.pid}`);
+    } finally {
+      holder.kill();
+    }
+  });
+});

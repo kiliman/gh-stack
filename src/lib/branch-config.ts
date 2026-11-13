@@ -27,6 +27,7 @@
 import { $ } from "bun";
 import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
+import { runGit } from "./git.ts";
 
 export interface BranchMembership {
   stack?: string;
@@ -68,12 +69,16 @@ async function setOrUnset(branch: string, key: string, value: string | undefined
     await unsetKey(branch, key);
     return;
   }
-  await $`git config ${configKey(branch, key)} ${value}`.quiet().nothrow();
+  // The repo's config is shared by every worktree, so another gh-stack (or any
+  // `git config` write) can hold config.lock for a moment: runGit waits it out
+  // instead of silently dropping the write.
+  await runGit(["config", configKey(branch, key), value]);
 }
 
 async function unsetKey(branch: string, key: string): Promise<void> {
-  // `--unset` exits 5 when the key is already absent — harmless, so nothrow.
-  await $`git config --unset ${configKey(branch, key)}`.quiet().nothrow();
+  // `--unset` exits 5 when the key is already absent — harmless, so the exit
+  // code is ignored.
+  await runGit(["config", "--unset", configKey(branch, key)]);
 }
 
 /**

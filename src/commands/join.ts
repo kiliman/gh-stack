@@ -277,7 +277,7 @@ export default async function join(args: string[]): Promise<void> {
   await verifyResult(plan);
 
   if (startBranch && startBranch !== (await git.currentBranch().catch(() => null))) {
-    await $`git checkout ${startBranch}`.nothrow().quiet();
+    await git.tryCheckout(startBranch);
   }
 
   const endMeta = await freshMeta();

@@ -19,6 +19,12 @@ const colorOff =
   process.env.GH_STACK_PLAIN === "1";
 if (colorOff) process.env.NO_COLOR = "1";
 
+// gh-stack's own read-only git calls (status, diff) shouldn't take index.lock
+// to save a refreshed stat cache: that only contends with our own writes and
+// with a gh-stack running in another worktree (#69). Bun's shell reads
+// process.env at each call, so this reaches every git we run.
+process.env.GIT_OPTIONAL_LOCKS ??= "0";
+
 const { ensureGitRepo } = await import("./lib/safety.ts");
 const { parseCliArgs } = await import("./lib/cli.ts");
 const { setAutoYes } = await import("./lib/ui.ts");
@@ -64,6 +70,7 @@ const commandArgs = parsed.commandArgs;
 // A config problem (malformed TOML, a non-boolean env value) is reported as
 // one clean line, whichever command hit it.
 const { ConfigError } = await import("./lib/config.ts");
+const { GitLockError } = await import("./lib/git.ts");
 try {
   switch (command) {
     case "log":
@@ -183,8 +190,36 @@ try {
       process.exit(1);
   }
 } catch (err) {
+  if (err instanceof GitLockError) await reportHeldLock(err);
   if (!(err instanceof ConfigError)) throw err;
   console.error(`gh-stack: ${err.message}`);
+  process.exit(1);
+}
+
+/**
+ * Another git process held a lock past every retry (#69). Say so plainly:
+ * nothing conflicted, and the step runs again once the lock is gone.
+ */
+async function reportHeldLock(err: InstanceType<typeof GitLockError>): Promise<never> {
+  const { findPendingRun } = await import("./lib/run-log.ts");
+  const pending = await findPendingRun().catch(() => null);
+  const lines = [
+    `gh-stack: another git process holds ${err.lockPath}, and still did after waiting ${(err.waitedMs / 1000).toFixed(1)}s.`,
+    `  Nothing conflicted: ${err.command} couldn't take the lock, so it changed nothing.`,
+  ];
+  if (err.rebaseInProgress) {
+    lines.push(
+      `  The rebase is paused, not conflicted. Once the lock is gone:`,
+      `    git rebase --continue`,
+    );
+  }
+  lines.push(
+    pending
+      ? `  Once the lock is gone, pick the run up where it stopped:\n    gh-stack restack --resume`
+      : `  Once the lock is gone, run the command again.`,
+    `  If no other git process is running, the lock is stale; remove it:\n    rm ${err.lockPath}`,
+  );
+  console.error(lines.join("\n"));
   process.exit(1);
 }
 

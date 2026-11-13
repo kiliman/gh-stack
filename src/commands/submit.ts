@@ -226,8 +226,11 @@ export default async function submit(args: string[]): Promise<void> {
     await runSubmit(args, run, jsonMode);
   } catch (err) {
     // A ConfigError (bad config file or env value) is an expected stop too: in
-    // --json mode it becomes the document's error, like any refusal.
-    const expected = err instanceof SubmitAbort || err instanceof ConfigError;
+    // --json mode it becomes the document's error, like any refusal. So is a
+    // git lock that outlasted the retries; outside --json, index.ts explains it.
+    if (!jsonMode && err instanceof git.GitLockError) throw err;
+    const expected =
+      err instanceof SubmitAbort || err instanceof ConfigError || err instanceof git.GitLockError;
     if (!jsonMode && !expected) throw err;
     if (!expected) console.error(err);
     error = (err as Error).message;

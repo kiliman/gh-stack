@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.10
+
+### 🐛 Fixes
+- **A briefly held git lock no longer breaks a restack.** Git doesn't wait for a lock, so a checkout or rebase that found `index.lock` held by a background `git status` failed at once. That crashed `submit --restack` with a raw `ShellError`, and a rebase that never started was reported as a "Rebase Conflict". Every git write gh-stack runs (checkout, rebase, reset, commit, branch and tag writes, branch config) now waits and retries: 0.1, 0.2, 0.4, 0.8, 1.6, then 2 s, about 5 s in all. A rebase that a lock interrupts midway is continued with `git rebase --continue`. A lock that outlasts the retries is reported as a lock (exit 1) with the resume command, never as a conflict. gh-stack's own git calls run with `GIT_OPTIONAL_LOCKS=0`. (#69, #70)
+- **A clean tree no longer reads as dirty while the index is locked.** The clean-tree check's index refresh failed silently on a held lock, which left stale stat info behind. (#70)
+- **Branch config writes are no longer dropped on a `config.lock` clash** with another worktree's gh-stack. (#70)
+
 ## 0.19.9
 
 ### 🐛 Fixes

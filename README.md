@@ -441,6 +441,7 @@ delete [<branch>] [-k|--keep-branch] [--no-remote]
     works from anywhere. Interactive selector (current stack) if none
     specified. Deleting a stack's root that has several children leaves
     them side by side on the base, so each becomes its own stack.
+    Deleting a stack's last branch archives the empty stack.
     --keep-branch leaves the git branches untouched (metadata only);
     --no-remote deletes the local branch but keeps the remote.
 ```
@@ -486,8 +487,12 @@ status [--current] [--json]
 undo
     Restore the last snapshot taken before a destructive operation.
 
-archive [--restore <name>]
-    List archived stacks by default, or restore one by name.
+archive [<name>...] [--list] [--restore <name>]
+    Archive stacks by name, list archived stacks (the default), or
+    restore one. Archiving is metadata only and reversible: use it for a
+    stack that landed without `merge` (PRs merged on GitHub, or landed
+    from another worktree). A name the archive already has gets a -2,
+    -3… suffix. --restore refuses if a branch is tracked elsewhere now.
 
 config [--json]
     Show every configurable flag default, its resolved value, and where
@@ -498,7 +503,8 @@ config [--json]
 
 doctor
     Migrate old (v2) metadata to the v3 layout, split any stack left
-    with several root branches into one stack per root, reconcile git
+    with several root branches into one stack per root, archive stacks
+    with no branches left, reconcile git
     branch config against the topology files (leaving branches another
     worktree is stacking alone), flag stacks whose base
     stack appears already-merged into main, and report stacks that

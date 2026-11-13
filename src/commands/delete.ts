@@ -1,7 +1,13 @@
 // gh-stack delete — Delete a branch from the stack (re-link parent chain)
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
-import { removeBranchFromStack, getChildren, stackBase } from "../lib/metadata.ts";
+import {
+  archiveStack,
+  getChildren,
+  removeBranchFromStack,
+  stackBase,
+  writeMetadata,
+} from "../lib/metadata.ts";
 import {
   ensureMetadata,
   ensureCurrentStack,
@@ -26,6 +32,8 @@ branch was pushed, its remote counterpart is deleted too.
 
 Deleting a stack's root that has several children leaves them side by side on
 the base, so each child (with the branches above it) becomes its own stack.
+Deleting a stack's last branch archives the empty stack
+(gh-stack archive --restore <name> brings it back).
 
 If no branch is specified, shows an interactive selector.
 
@@ -132,6 +140,17 @@ OPTIONS
   if (split.length > 0) {
     p.log.success(
       `Split off ${split.map((s) => pc.yellow(s)).join(", ")} beside ${pc.blue(stackName)}`,
+    );
+  }
+
+  // The last branch left: archive the empty stack rather than leave a shell in
+  // `stacks` that nothing else would clean up (#68).
+  if (Object.keys(meta.stacks[stackName]?.branches ?? {}).length === 0) {
+    const archivedAs = archiveStack(meta, stackName);
+    await writeMetadata(meta);
+    p.log.success(
+      `Stack ${pc.blue(stackName)} is empty now, so it was archived` +
+        pc.dim(`  (restore: gh-stack archive --restore ${archivedAs})`),
     );
   }
 

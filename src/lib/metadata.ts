@@ -625,6 +625,32 @@ export async function removeBranchFromStack(
   return split;
 }
 
+/**
+ * Move an active stack to the archive (`archived/` on disk). Metadata only, and
+ * `archive --restore` brings it back. A name already in the archive gets a
+ * `-2`, `-3`… suffix, so an older archived stack is never overwritten. Clears
+ * `current_stack` if it pointed here. The caller writes. Returns the name it
+ * was archived under. (#68)
+ */
+export function archiveStack(meta: StackMetadata, stackName: string): string {
+  const stack = meta.stacks[stackName];
+  if (!stack) throw new Error(`Stack "${stackName}" not found`);
+  if (!meta.archive) meta.archive = {};
+  let name = stackName;
+  for (let n = 2; meta.archive[name]; n++) name = `${stackName}-${n}`;
+  meta.archive[name] = stack;
+  delete meta.stacks[stackName];
+  if (meta.current_stack === stackName) meta.current_stack = null;
+  return name;
+}
+
+/** Active stacks with no branches left: what `delete --keep-branch` on every branch leaves. */
+export function emptyStacks(meta: StackMetadata): string[] {
+  return Object.keys(meta.stacks).filter(
+    (name) => Object.keys(meta.stacks[name]!.branches).length === 0,
+  );
+}
+
 /** The branches sitting directly on the stack's base, in insertion order. */
 export function stackRoots(stack: Stack): string[] {
   const base = stackBase(stack);

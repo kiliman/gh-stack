@@ -600,7 +600,9 @@ auto-confirming destructive operations has to be asked for per run, with
 
 ### Smart Init
 
-`gh-stack init` auto-detects branch chains by walking git ancestry. From the top branch, it finds all local branches whose tips are strict ancestors (but not already merged into trunk) and reconstructs the chain with correct parent relationships.
+`gh-stack init` auto-detects branch chains by walking git ancestry. From the top branch, it finds all local branches whose tips are strict ancestors (but not already on trunk) and reconstructs the chain with correct parent relationships. `add` and `submit` detect chains the same way.
+
+A branch counts as already on trunk when its tip is on local `main` **or** `origin/main`, so a stale local `main` (common in a worktree) can't pull review checkouts or branches cut from newer `main` commits into the stack. Two branches at the same commit can't be parent and child, so only one of them goes in the chain: the one gh-stack has recorded in git config, else the first by name. The others are listed in a warning.
 
 ### Snapshot-Based Rebasing
 

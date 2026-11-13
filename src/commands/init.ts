@@ -12,7 +12,7 @@ import {
 } from "../lib/metadata.ts";
 import { getPrNumber } from "../lib/github.ts";
 import { isAutoYes } from "../lib/ui.ts";
-import { detectBranchChain } from "../lib/chain.ts";
+import { describeSkipped, detectChain } from "../lib/chain.ts";
 import { warnIfColocated } from "./add.ts";
 import { gateLegacyMetadata } from "../lib/safety.ts";
 import type { StackMetadata, Branch } from "../types.ts";
@@ -88,7 +88,7 @@ export default async function init(args: string[]): Promise<void> {
   // ── Detect branch chain ──
   const s = p.spinner();
   s.start("Detecting branch chain...");
-  const chain = await detectBranchChain(branch, trunk);
+  const { chain, skipped } = await detectChain(branch, trunk);
   s.stop(chain.length > 1 ? `Found ${chain.length} branches in chain` : `Single branch: ${branch}`);
 
   // Show detected chain
@@ -103,7 +103,9 @@ export default async function init(args: string[]): Promise<void> {
       if (!isLast) console.log("  ┃");
     }
     console.log();
-
+  }
+  if (skipped.length > 0) p.log.warn(describeSkipped(skipped));
+  if (chain.length > 1) {
     // Confirm chain
     if (!isAutoYes()) {
       const confirmed = await p.confirm({

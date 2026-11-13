@@ -1,7 +1,13 @@
 // Tests for branch-chain detection and stack reconciliation (issue #7).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createTempRepo, makeCommit, createBranch, checkout, cleanup } from "./helpers.ts";
-import { detectBranchChain, resolveOrCreateStack } from "../lib/chain.ts";
+import { $ } from "bun";
+import { createTempRepo, makeCommit, createBranch, checkout, cleanup, getSha } from "./helpers.ts";
+import {
+  colocatedBranches,
+  detectBranchChain,
+  detectChain,
+  resolveOrCreateStack,
+} from "../lib/chain.ts";
 import type { StackMetadata } from "../types.ts";
 
 let tmpDir: string;
@@ -224,5 +230,76 @@ describe("resolveOrCreateStack", () => {
     expect(meta.stacks["S1"]!.last_branch).toBe("pr3");
     // S0 (the parent stack) is left completely alone.
     expect(Object.keys(meta.stacks["S0"]!.branches).sort()).toEqual(["mocktip", "s0a"]);
+  });
+});
+
+// #73: in a worktree, local main is often stale while origin/main is current.
+// Branches cut from main commits newer than local main (review checkouts) must
+// not be adopted, and two branches at one commit must never be chained.
+describe("trunk is local or origin main, one branch per commit (#73)", () => {
+  /**
+   * main moves on (m1, m2), origin/main follows, then local main is put back to
+   * where it was: the stale-worktree shape. review-1 sits on m1, review-2 and
+   * review-2b on m2 (same commit). The real stack is a → b, built on m2.
+   */
+  async function staleMainRepo(): Promise<void> {
+    const stale = await getSha(tmpDir, "main");
+    await makeCommit(tmpDir, "m1.txt", "m1\n", "main: m1");
+    await createBranch(tmpDir, "review-1", "main");
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "m2.txt", "m2\n", "main: m2");
+    await createBranch(tmpDir, "review-2", "main");
+    await createBranch(tmpDir, "review-2b", "main");
+    await $`git -C ${tmpDir} update-ref refs/remotes/origin/main main`.quiet();
+    await createBranch(tmpDir, "a", "main");
+    await makeCommit(tmpDir, "a.txt", "a\n", "a: commit");
+    await createBranch(tmpDir, "b", "a");
+    await makeCommit(tmpDir, "b.txt", "b\n", "b: commit");
+    await $`git -C ${tmpDir} branch -f main ${stale}`.quiet();
+  }
+
+  test("skips branches already on origin/main when local main is stale", async () => {
+    await staleMainRepo();
+    const { chain, skipped } = await detectChain("b", "main");
+    expect(chain).toEqual(["a", "b"]);
+    expect(skipped).toEqual([]);
+  });
+
+  test("resolveOrCreateStack roots the real chain at main", async () => {
+    await staleMainRepo();
+    const meta = emptyMeta();
+    const res = await resolveOrCreateStack(meta, "b", "main");
+    const stack = meta.stacks[res.stackName]!;
+    expect(Object.keys(stack.branches).sort()).toEqual(["a", "b"]);
+    expect(stack.branches["a"]!.parent).toBe("main");
+    expect(stack.branches["b"]!.parent).toBe("a");
+  });
+
+  test("never chains two branches at the same commit", async () => {
+    await bareChain();
+    await $`git -C ${tmpDir} branch a-copy a`.quiet();
+
+    const { chain, skipped } = await detectChain("c", "main");
+    expect(chain).toEqual(["a", "b", "c"]);
+    expect(skipped).toEqual([{ branch: "a-copy", keptInstead: "a" }]);
+    expect(await detectBranchChain("c", "main")).toEqual(["a", "b", "c"]);
+  });
+
+  test("prefers the branch gh-stack recorded in git config at a shared commit", async () => {
+    await bareChain();
+    // "0-backup" sorts before "a", but "a" is the one a stack recorded.
+    await $`git -C ${tmpDir} branch 0-backup a`.quiet();
+    await $`git -C ${tmpDir} config branch.a.ghstack-stack S`.quiet();
+
+    const res = await resolveOrCreateStack(emptyMeta(), "c", "main");
+    expect(res.chain).toEqual(["a", "b", "c"]);
+    expect(res.skipped).toEqual([{ branch: "0-backup", keptInstead: "a" }]);
+  });
+
+  test("colocatedBranches ignores a branch sitting on origin/main", async () => {
+    await staleMainRepo();
+    // A zero-commit branch cut from current main shares review-2's commit.
+    await $`git -C ${tmpDir} branch fresh review-2`.quiet();
+    expect(await colocatedBranches("fresh", "main")).toEqual([]);
   });
 });

@@ -13,7 +13,7 @@ import pc from "picocolors";
 import * as git from "../lib/git.ts";
 import { gateLegacyMetadata } from "../lib/safety.ts";
 import { readMetadata, writeMetadata, findStackForBranch, stackBase } from "../lib/metadata.ts";
-import { colocatedBranches, resolveOrCreateStack } from "../lib/chain.ts";
+import { colocatedBranches, describeSkipped, resolveOrCreateStack } from "../lib/chain.ts";
 import type { StackMetadata } from "../types.ts";
 
 export default async function add(args: string[]): Promise<void> {
@@ -121,6 +121,7 @@ EXAMPLES
   for (const b of resolution.addedBranches) {
     console.log(`  ${pc.green("+")} ${b}`);
   }
+  if (resolution.skipped.length > 0) p.log.warn(describeSkipped(resolution.skipped));
   if (resolution.created && resolution.chain.length === 1) await warnIfColocated(branch, trunk);
 
   p.outro(

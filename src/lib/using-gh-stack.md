@@ -429,6 +429,7 @@ cherry-pick them, don't force past it.
 
 ```bash
 gh-stack delete        # remove a branch from the stack (re-parents children; a root's several children become one stack each; deleting the last branch archives the stack)
+gh-stack untrack <b>   # stop tracking a branch: metadata only; the branch, origin's copy and its PR stay (gh-stack add <b> puts it back)
 gh-stack split         # cut a stack into two at a branch
 gh-stack join <b>      # splice an existing branch/PR into the stack (--above <b>, --dry-run)
 gh-stack rename        # rename a tracked branch (keeps metadata in sync)
@@ -437,6 +438,10 @@ gh-stack archive <name> # archive a stack that landed outside gh-stack merge (--
 gh-stack doctor        # migrate & repair stack metadata (splits a stack with several roots, archives empty stacks)
 gh-stack update-prs    # repair stack viz in PR descriptions + adopt PRs opened with gh pr create (--stack <name> or <branch>: no checkout needed)
 ```
+
+To take a branch out of a stack without deleting it (it should stay local, or it
+belongs elsewhere), use `gh-stack untrack <branch>`. `delete` also deletes the
+git branch and origin's copy unless you pass `--keep-branch`.
 
 ## Stack visualization
 

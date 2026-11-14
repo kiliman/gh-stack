@@ -277,6 +277,29 @@ describe("sync after merge collapsed the upper PRs into the base (#81)", () => {
     expect(await getCurrentBranch(tmpDir)).toBe("c3");
   });
 
+  test("a branch above them amended since its last push is re-rooted and pushed both times", async () => {
+    await createBranch(tmpDir, "c3", "c2");
+    await makeCommit(tmpDir, "c3.txt", "c3\n", "c3: add file");
+    await publish({ c3: { parent: "c2", pr: 4, description: "PR 4" } });
+    await writePr(4, { state: "OPEN", headRefName: "c3", baseRefName: "c2" });
+    // origin's c3 is the pre-amend commit: the guard clears it (it's in the
+    // reflog) and leases the re-root's push on it. The push after the base
+    // moves must lease on what that push left, not on what the guard saw.
+    await checkout(tmpDir, "c3");
+    await git(tmpDir, "commit", "-q", "--amend", "-m", "c3: add file (amended)");
+    await collapseIntoBase();
+    await mainCommits("other.txt", "main\n");
+
+    const res = await runCli(["sync"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(res.out).not.toContain("failed");
+    expect(await git(tmpDir, "log", "--format=%s", "base..c3")).toBe("c3: add file (amended)");
+    expect(await git(remoteDir, "rev-parse", "refs/heads/c3")).toBe(
+      await git(tmpDir, "rev-parse", "c3"),
+    );
+  });
+
   test("--dry-run says what it would drop and changes nothing", async () => {
     await publish({});
     await collapseIntoBase();
@@ -293,11 +316,55 @@ describe("sync after merge collapsed the upper PRs into the base (#81)", () => {
 
     expect(res.exitCode).toBe(0);
     expect(res.out).toContain("PR #2 and PR #3 are already squashed into base");
+    expect(res.out).toContain("Would fast-forward base to origin/base first");
+    // A real run catches the base up, so the guard has nothing to report.
+    expect(res.out).not.toContain("Origin has commits");
     expect(
       await git(tmpDir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"),
     ).toBe(before);
     const meta = await readMetadata(tmpDir);
     expect(Object.keys(meta.stacks["test-stack"]!.branches)).toEqual(["base", "c1", "c2"]);
+  });
+
+  test("with main unchanged, it still moves off the dropped branch onto the base", async () => {
+    await publish({});
+    await collapseIntoBase();
+    await checkout(tmpDir, "c2");
+
+    const res = await runCli(["sync"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(res.out).toContain("already up to date with origin/main");
+    expect(await getCurrentBranch(tmpDir)).toBe("base");
+    expect(await git(tmpDir, "rev-parse", "base")).toBe(await git(remoteDir, "rev-parse", "base"));
+  });
+
+  test("run from the base itself, it fast-forwards the checked-out base", async () => {
+    await publish({});
+    await collapseIntoBase();
+    await mainCommits("other.txt", "main\n");
+    await checkout(tmpDir, "base");
+
+    const res = await runCli(["sync"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(res.out).toContain("Fast-forwarded base to origin/base");
+    await expectBaseHoldsEverything();
+  });
+
+  test("a base that has commits origin lacks is left to the remote guard, not forced", async () => {
+    await publish({});
+    await collapseIntoBase();
+    await checkout(tmpDir, "base");
+    await makeCommit(tmpDir, "local.txt", "local\n", "base: a local commit");
+    await checkout(tmpDir, "c2");
+
+    const res = await runCli(["sync"]);
+
+    expect(res.exitCode).toBe(1);
+    expect(res.out).toContain("Origin has commits that the local branches don't");
+    expect(res.out).not.toContain("Fast-forwarded");
+    expect(res.out).not.toContain("Could not fast-forward");
   });
 
   test("a child merged somewhere other than its stack parent stays in the stack", async () => {
@@ -309,6 +376,18 @@ describe("sync after merge collapsed the upper PRs into the base (#81)", () => {
     const res = await runCli(["sync", "--dry-run"]);
 
     expect(res.exitCode).toBe(0);
+    expect(res.out).not.toContain("already squashed into base");
+  });
+
+  test("a PR merged into a branch that is still open isn't a collapse into the base", async () => {
+    await publish({});
+    // PR #3 was merged into c1 on GitHub, but PR #2 is still open.
+    await squashOnGithub(3, "c2", "c1");
+    await writePr(2, { state: "OPEN", headRefName: "c1", baseRefName: "base" });
+    await checkout(tmpDir, "base");
+
+    const res = await runCli(["sync", "--dry-run"]);
+
     expect(res.out).not.toContain("already squashed into base");
   });
 });

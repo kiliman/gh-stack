@@ -873,6 +873,18 @@ describe("zeroContext: GitHub's patch text, patch-id'd as git diff -U0 would be 
     const u0 = await $`git -C ${tmpDir} show -U0 HEAD`.text();
     const patch = await $`git -C ${tmpDir} format-patch -1 --stdout HEAD`.text();
     expect(patch).toContain("\n-- \n"); // the signature a removed-line reader would trip on
+    // Line for line what git -U0 prints, hunk headers aside, "\ No newline"
+    // markers included: patch-id skips those today, but the text shouldn't
+    // depend on that.
+    const body = (text: string) =>
+      text
+        .slice(text.indexOf("diff --git"))
+        .split("\n-- \n")[0]!
+        .split("\n")
+        .filter((line) => !line.startsWith("@@"))
+        .join("\n")
+        .trimEnd();
+    expect(body(zeroContext(patch))).toBe(body(u0));
     return [await patchId(u0), await patchId(zeroContext(patch))];
   }
 
@@ -884,6 +896,13 @@ describe("zeroContext: GitHub's patch text, patch-id'd as git diff -U0 would be 
     after[5] = "line 6 changed";
     after[9] = "line 10 changed";
     const [u0, zero] = await ids(`${ten.join("\n")}\n`, after.join("\n"));
+    expect(zero).toBe(u0);
+  });
+
+  test("no newline at the end of the old file (the marker sits inside the hunk)", async () => {
+    const after = [...ten];
+    after[9] = "line 10 changed";
+    const [u0, zero] = await ids(ten.join("\n"), `${after.join("\n")}\nline 11\n`);
     expect(zero).toBe(u0);
   });
 

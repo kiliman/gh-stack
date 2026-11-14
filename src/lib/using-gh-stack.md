@@ -142,6 +142,16 @@ tracks the whole chain _with_ its PRs, and `sync`/`merge --base` work there.
 Each branch's config records the worktree that owns it, so worktrees running
 gh-stack side by side don't clear each other's; `add` takes a branch over.
 
+**A stack branch checked out in another worktree.** `restack`, `sync`,
+`merge --base` and `join` rebase it from that worktree (`git -C <path>`), so
+don't rebase it by hand or detach the other worktree. If that worktree isn't
+clean (uncommitted changes, a rebase in progress, a deleted folder), the command
+stops before changing anything and prints the fix for that worktree. A conflict
+stops inside that worktree: resolve it there, run the
+`git -C <path> rebase --continue` the message gives, then the gh-stack command
+it gives (`restack --resume`, or re-running `sync`) from the worktree you ran
+the command in.
+
 **Splice an existing branch/PR into a stack — `gh-stack join`.** For a branch
 that should have been stacked but was cut from main on its own (often with its
 own PR already open):

@@ -20,7 +20,12 @@ import {
   writeMetadata,
 } from "../lib/metadata.ts";
 import { restackStateFile } from "../lib/paths.ts";
-import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
+import {
+  ensureCleanWorkingTree,
+  ensureMetadata,
+  ensureValidStack,
+  ensureWorktreesReady,
+} from "../lib/safety.ts";
 import { takeSnapshot, resolveRestackBoundary, findRecordedBaseTip } from "../lib/snapshot.ts";
 import { guardRemoteContent } from "../lib/remote-guard.ts";
 import { setPrBase } from "../lib/github.ts";
@@ -126,7 +131,11 @@ function pushReason(push: Resolved): string {
   return push.source === "flag" ? "--no-push" : describeSource(push);
 }
 
-export default async function restack(args: string[]): Promise<void> {
+/**
+ * `opts.from` restacks from that branch instead of the current one, for
+ * `merge`, whose new bottom may be checked out in another worktree (#78).
+ */
+export default async function restack(args: string[], opts: { from?: string } = {}): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const resume = args.includes("--resume");
   const fresh = args.includes("--fresh");
@@ -226,7 +235,7 @@ ALIASES
         await resolveFlag("restack.push", args); // a bad setting stops here
         const meta = await ensureMetadata();
         if (!ontoFlag) {
-          const branch = await git.currentBranch();
+          const branch = opts.from ?? (await git.currentBranch());
           if (!findStackForBranch(meta, branch)) refuseNotInStack(branch);
         }
       };
@@ -259,7 +268,7 @@ ALIASES
     const outcome = await handleResume(meta, ctx, flagSetting("restack.push", args));
     if (outcome === "already-finished") return;
   } else {
-    await handleFreshRestack(meta, ctx);
+    await handleFreshRestack(meta, ctx, opts.from);
   }
 
   await finishRun(meta, ctx, "Stack Restack Complete!");
@@ -584,8 +593,12 @@ async function finishRebase(branch: string, onto: string, ctx: ChainContext): Pr
   await record({ branch, action: "rebased", onto });
 }
 
-/** Stop on a rebase conflict, leaving the run resumable (exit 2). */
-function conflictStop(): never {
+/**
+ * Stop on a rebase conflict, leaving the run resumable (exit 2). `rewrite`
+ * says where the rebase ran: in another worktree, the conflict waits there.
+ */
+function conflictStop(rewrite: git.RewriteResult): never {
+  const rebaseCmd = git.rebaseCommand(rewrite.worktree);
   console.log();
   console.log(pc.red("━".repeat(40)));
   console.log(pc.red("  Rebase Conflict"));
@@ -593,12 +606,19 @@ function conflictStop(): never {
   console.log();
   console.log(pc.yellow("Conflicts detected during rebase."));
   console.log();
-  console.log("  Please resolve the conflicts, then:");
-  console.log(`    ${pc.green("git rebase --continue")}`);
+  if (rewrite.worktree) {
+    console.log(
+      `  The branch is checked out in the worktree at ${rewrite.worktree}, so the rebase stopped there.`,
+    );
+    console.log("  Resolve the conflicts in that worktree, then finish from this one:");
+  } else {
+    console.log("  Please resolve the conflicts, then:");
+  }
+  console.log(`    ${pc.green(`${rebaseCmd} --continue`)}`);
   console.log(`    ${pc.green("gh-stack restack --resume")}`);
   console.log();
   console.log("  Or give up on the run:");
-  console.log(`    ${pc.red("git rebase --abort")}`);
+  console.log(`    ${pc.red(`${rebaseCmd} --abort`)}`);
   console.log(
     `    ${pc.red("gh-stack restack --fresh")}   ${pc.dim("(a resume would run this rebase again)")}`,
   );
@@ -661,6 +681,12 @@ async function handleResume(
     process.exit(1);
   }
   await ensureCleanWorkingTree();
+  // The rebase it stopped on may be paused in another worktree (#78), and the
+  // branches still to rebase may be checked out in others.
+  await ensureWorktreesReady(
+    [...(state.rebase ? [state.rebase.branch] : []), ...state.chain.slice(state.current_index)],
+    "gh-stack restack --resume",
+  );
 
   // The world may have changed since: refuse rather than resume a chain that
   // no longer matches the stack.
@@ -724,11 +750,8 @@ async function handleResume(
       if (ctx.dryRun) {
         p.log.warn(`[DRY RUN] Would rebase ${r.branch} onto ${r.onto}`);
       } else {
-        await git.checkout(r.branch);
-        const ok = r.boundary
-          ? await git.rebaseOnto(r.onto, r.boundary, r.branch)
-          : await git.rebase(r.onto);
-        if (!ok) conflictStop();
+        const rewrite = await git.rebaseBranch(r.branch, r.onto, r.boundary);
+        if (!rewrite.ok) conflictStop(rewrite);
         p.log.success("Rebase successful");
         await finishRebase(r.branch, r.onto, ctx);
       }
@@ -754,8 +777,12 @@ function refuseNotInStack(branch: string): never {
   process.exit(1);
 }
 
-async function handleFreshRestack(meta: StackMetadata, ctx: ChainContext): Promise<void> {
-  const currentBranch = await git.currentBranch();
+async function handleFreshRestack(
+  meta: StackMetadata,
+  ctx: ChainContext,
+  from?: string,
+): Promise<void> {
+  const currentBranch = from ?? (await git.currentBranch());
   const stackName = findStackForBranch(meta, currentBranch);
   if (!stackName) refuseNotInStack(currentBranch);
 
@@ -816,6 +843,7 @@ async function handleFreshRestack(meta: StackMetadata, ctx: ChainContext): Promi
   await guardRemote(meta, chain, ctx.dryRun);
 
   if (!ctx.dryRun) {
+    await ensureWorktreesReady(toRebase, "gh-stack restack");
     // Take snapshot before destructive operation. This preserves the current
     // tip of every branch so subsequent restacks (after a parent is rewritten)
     // can find the correct rebase base.
@@ -942,6 +970,7 @@ async function handleReroot(
     return;
   }
 
+  await ensureWorktreesReady(buildRebaseChain(stack, root), `gh-stack restack --onto ${newBase}`);
   const confirmed = await confirmAction(
     `Re-root ${pc.yellow(stackName)} onto ${pc.yellow(newBase)}?`,
   );
@@ -963,11 +992,10 @@ async function handleReroot(
   await beginRun({ command: "restack --onto", stackName, chain, pushOnly: [] });
 
   // Rebase the root onto the new base, dropping the old base's commits.
-  p.log.info(`Checking out ${pc.yellow(root)}...`);
-  await git.checkout(root);
   p.log.info(`Rebasing ${pc.yellow(root)} onto ${pc.yellow(newBase)}...`);
   await startRebase(root, newBase, await git.revParse(root), oldBaseTip);
-  if (!(await git.rebaseOnto(newBase, oldBaseTip, root))) conflictStop();
+  const rewrite = await git.rebaseBranch(root, newBase, oldBaseTip);
+  if (!rewrite.ok) conflictStop(rewrite);
 
   await finishRebase(root, newBase, ctx);
 
@@ -1053,12 +1081,11 @@ export async function syncChain(
       process.exit(0);
     }
 
-    p.log.info(`Checking out ${pc.yellow(root)}...`);
-    await git.checkout(root);
     await startRebase(root, trunkRef, await git.revParse(root), null);
 
-    p.log.info(`Rebasing onto ${trunkRef}...`);
-    if (!(await git.rebase(trunkRef))) conflictStop();
+    p.log.info(`Rebasing ${pc.yellow(root)} onto ${trunkRef}...`);
+    const rewrite = await git.rebaseBranch(root, trunkRef, null);
+    if (!rewrite.ok) conflictStop(rewrite);
     p.log.success("Base branch rebased onto main");
     await finishRebase(root, trunkRef, ctx);
   }
@@ -1217,11 +1244,7 @@ async function processChain(
       process.exit(1);
     }
 
-    // Checkout the branch
-    p.log.info(`Checking out ${pc.yellow(branch)}...`);
-    await git.checkout(branch);
-
-    let success: boolean;
+    let rewrite: git.RewriteResult;
     const branchTip = await git.revParse(branch);
     // Saved before the rebase starts, so a conflict (or a kill) leaves a
     // resumable run that knows whether this rebase finished or must run again.
@@ -1233,7 +1256,7 @@ async function processChain(
       p.log.info(
         `${pc.yellow(branch)} has no unique commits — moving it to ${pc.yellow(parent)}'s tip`,
       );
-      success = await git.resetHard(parent);
+      rewrite = await git.resetBranch(branch, parent);
     } else {
       const sourceLabel =
         boundary.source === "snapshot-derived" ? "snapshot (derived fork-point)" : boundary.source;
@@ -1246,10 +1269,10 @@ async function processChain(
         console.log(`  Moving ${count} commit(s)`);
       }
 
-      success = await git.rebaseOnto(parent, boundary.sha, branch);
+      rewrite = await git.rebaseBranch(branch, parent, boundary.sha);
     }
 
-    if (success) {
+    if (rewrite.ok) {
       p.log.success("Rebase successful");
       await finishRebase(branch, parent, ctx);
       ctx.touched.push(branch);
@@ -1258,7 +1281,7 @@ async function processChain(
       // branches un-pushed.
       await pushStep(meta, stackName, branch, ctx);
     } else {
-      conflictStop();
+      conflictStop(rewrite);
     }
   }
 

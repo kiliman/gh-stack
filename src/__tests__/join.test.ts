@@ -581,3 +581,46 @@ describe("join: rename collision (#46 review)", () => {
     expect(meta.archive?.incoming?.description).toBe("old");
   });
 });
+
+// #78: the incoming branch is checked out in another worktree, so its sync
+// onto the new parent runs there.
+describe("join: incoming branch checked out in another worktree (#78)", () => {
+  const worktree = () => `${tmpDir}.worktree`;
+  afterEach(async () => {
+    await cleanup(worktree());
+  });
+
+  test("syncs it in its worktree, which follows it", async () => {
+    await behindMainScenario();
+    await $`git -C ${tmpDir} worktree add -q ${worktree()} incoming`.quiet();
+
+    const res = await runCli(["join", "incoming"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(await commitCount("main", "incoming")).toBe(1);
+    expect(await commitCount("incoming", "main")).toBe(0);
+    expect(await commitCount("incoming", "pr1")).toBe(1);
+    const head = await $`git -C ${worktree()} rev-parse HEAD`.text();
+    expect(head.trim()).toBe(await git("rev-parse", "incoming"));
+    const status = await $`git -C ${worktree()} status --porcelain`.text();
+    expect(status.trim()).toBe("");
+  });
+
+  test("a sync conflict stops in that worktree, with commands aimed at it", async () => {
+    await behindMainScenario();
+    await checkout(tmpDir, "incoming");
+    await makeCommit(tmpDir, "main1.txt", "incoming's version\n", "incoming: touch main1");
+    await $`git -C ${tmpDir} push -f origin incoming`.quiet();
+    await checkout(tmpDir, "pr2");
+    await $`git -C ${tmpDir} worktree add -q ${worktree()} incoming`.quiet();
+
+    const res = await runCli(["join", "incoming"]);
+
+    expect(res.exitCode).toBe(2);
+    expect(res.out).toContain(`git -C ${worktree()} rebase --continue`);
+    expect(res.out).toContain(`git -C ${worktree()} rebase --abort`);
+    // This worktree never left pr2, so there's nothing to check out again.
+    expect(res.out).not.toContain("git checkout pr2");
+    await $`git -C ${worktree()} rebase --abort`.quiet();
+  });
+});

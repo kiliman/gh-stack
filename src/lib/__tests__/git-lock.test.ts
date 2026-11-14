@@ -105,7 +105,7 @@ describe("rebase", () => {
     await divergedFeature();
     await $`git checkout -q feature`.quiet();
     await holdLock(indexLock, 250);
-    expect(await git.rebaseOnto("main", "main~1", "feature")).toBe(true);
+    expect((await git.rebaseBranch("feature", "main", "main~1")).ok).toBe(true);
     expect(await onMain("feature")).toBe(true);
     expect(await git.isRebaseInProgress()).toBe(false);
   });
@@ -151,7 +151,7 @@ describe("rebase", () => {
     await $`git checkout -q main`.quiet();
     await makeCommit(tmpDir, "README.md", "main\n", "main edit");
     await $`git checkout -q feature`.quiet();
-    expect(await git.rebase("main")).toBe(false);
+    expect((await git.rebaseBranch("feature", "main", null)).ok).toBe(false);
     expect(await git.isRebaseInProgress()).toBe(true);
     await $`git rebase --abort`.quiet();
   });

@@ -70,7 +70,8 @@ const commandArgs = parsed.commandArgs;
 // A config problem (malformed TOML, a non-boolean env value) is reported as
 // one clean line, whichever command hit it.
 const { ConfigError } = await import("./lib/config.ts");
-const { GitLockError } = await import("./lib/git.ts");
+const { GitLockError, WorktreeBusyError, describeBlockedBranch, rebaseCommand } =
+  await import("./lib/git.ts");
 const { PrFetchError } = await import("./lib/github.ts");
 try {
   switch (command) {
@@ -192,6 +193,7 @@ try {
   }
 } catch (err) {
   if (err instanceof GitLockError) await reportHeldLock(err);
+  if (err instanceof WorktreeBusyError) await reportBusyWorktree(err);
   if (err instanceof PrFetchError) {
     console.error(
       `gh-stack: ${err.message}\n  It stopped there rather than guess the PR's state. This is usually transient; run the command again.`,
@@ -200,6 +202,26 @@ try {
   }
   if (!(err instanceof ConfigError)) throw err;
   console.error(`gh-stack: ${err.message}`);
+  process.exit(1);
+}
+
+/**
+ * A branch's worktree stopped being ready while the command ran (#78): the
+ * up-front check passed, then someone changed files there. Nothing was done
+ * to that branch.
+ */
+async function reportBusyWorktree(err: InstanceType<typeof WorktreeBusyError>): Promise<never> {
+  const { findPendingRun } = await import("./lib/run-log.ts");
+  const pending = await findPendingRun().catch(() => null);
+  console.error(
+    [
+      `gh-stack: stopped before rebasing ${err.branch}:`,
+      `  ${describeBlockedBranch(err.branch, err.worktree, err.why).join("\n  ")}`,
+      pending
+        ? "  Then pick the run up where it stopped:\n    gh-stack restack --resume"
+        : "  Then run the command again.",
+    ].join("\n"),
+  );
   process.exit(1);
 }
 
@@ -221,7 +243,7 @@ async function reportHeldLock(err: InstanceType<typeof GitLockError>): Promise<n
   if (err.rebaseInProgress) {
     lines.push(
       `  The rebase is paused, not conflicted. Once the lock is gone:`,
-      `    git rebase --continue`,
+      `    ${rebaseCommand(err.worktree)} --continue`,
     );
   }
   lines.push(

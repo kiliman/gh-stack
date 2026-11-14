@@ -323,3 +323,45 @@ describe("sync's re-root stopped on a conflict is finished by re-running sync (#
     expect(meta.stacks["test-stack"]!.branches["pr2"]!.parent).toBe("main");
   });
 });
+
+// #78: the branch that becomes the new bottom is checked out in another
+// worktree. The re-root and the restack of the tail run there, and merge no
+// longer checks it out here.
+describe("merge --base with the next branch checked out in another worktree (#78)", () => {
+  const worktree = () => `${tmpDir}.worktree`;
+  afterEach(async () => {
+    await cleanup(worktree());
+  });
+
+  test("re-roots it in its worktree and restacks the tail from it", async () => {
+    await githubSquashesPr1();
+    await checkout(tmpDir, "pr1");
+    await git(tmpDir, "worktree", "add", "-q", worktree(), "pr2");
+
+    const res = await runCli(["merge", "--base"]);
+
+    expect(res.exitCode).toBe(0);
+    const squash = await remoteSha("main");
+    expect(await contains(tmpDir, squash, "pr2")).toBe(true);
+    expect(await contains(tmpDir, "pr2", "pr3")).toBe(true);
+    expect(await remoteSha("pr3")).toBe(await git(tmpDir, "rev-parse", "pr3"));
+    // The worktree followed pr2 and is still clean.
+    expect(await git(worktree(), "rev-parse", "--abbrev-ref", "HEAD")).toBe("pr2");
+    expect(await git(worktree(), "rev-parse", "HEAD")).toBe(await git(tmpDir, "rev-parse", "pr2"));
+    expect(await git(worktree(), "status", "--porcelain")).toBe("");
+  });
+
+  test("stops before merging the PR when that worktree has uncommitted changes", async () => {
+    await githubSquashesPr1();
+    await checkout(tmpDir, "pr1");
+    await git(tmpDir, "worktree", "add", "-q", worktree(), "pr2");
+    await Bun.write(`${worktree()}/pr2.txt`, "work in progress\n");
+
+    const res = await runCli(["merge", "--base"]);
+
+    expect(res.exitCode).toBe(1);
+    expect(res.out).toContain("Stopped before changing anything");
+    expect(res.out).toContain(worktree());
+    expect(await Bun.file(`${binDir}/gh.log`).text()).not.toContain("pr merge");
+  });
+});

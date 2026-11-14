@@ -117,6 +117,36 @@ export async function ensureCleanWorkingTree(): Promise<void> {
 }
 
 /**
+ * Stop (exit 1) before anything changes when a branch about to be rewritten is
+ * checked out in another worktree that isn't ready: uncommitted changes, a
+ * rebase or merge in progress, or a folder that's gone. gh-stack rebases such
+ * a branch from its own worktree (#78), so that worktree must be clean.
+ * `rerun` is the command to run once they're fixed.
+ */
+export async function ensureWorktreesReady(
+  branches: Iterable<string>,
+  rerun: string,
+): Promise<void> {
+  const held = await git.branchesInOtherWorktrees();
+  const blocked: string[] = [];
+  for (const branch of new Set(branches)) {
+    const wt = held.get(branch);
+    const why = wt ? await git.worktreeProblem(wt) : null;
+    if (!wt || !why) continue;
+    for (const line of git.describeBlockedBranch(branch, wt, why)) blocked.push(`  ${line}`);
+    blocked.push("");
+  }
+  if (blocked.length === 0) return;
+  p.cancel(
+    "Stopped before changing anything: a branch to rebase is checked out in another worktree that isn't ready.\n\n" +
+      `${blocked.join("\n")}\n` +
+      "  gh-stack rebases a branch checked out in another worktree from that worktree,\n" +
+      `  so it has to be clean. Then re-run: ${pc.green(rerun)}`,
+  );
+  process.exit(1);
+}
+
+/**
  * Switch branches for a user-facing navigation command, rendering a clean
  * message (and exiting 1) when git refuses — most commonly because local
  * changes would be overwritten. Avoids leaking a raw ShellError stack trace.
@@ -130,7 +160,17 @@ export async function checkoutOrExit(branch: string): Promise<void> {
   const { ok, stderr } = await git.tryCheckout(branch);
   if (ok) return;
 
-  if (stderr.includes("would be overwritten by checkout")) {
+  const holder = /already (used|checked out) by worktree/.test(stderr)
+    ? await git.worktreeHolding(branch)
+    : null;
+  if (holder) {
+    // #78: git only says "already used by worktree"; say what to do about it.
+    p.cancel(
+      `${pc.yellow(branch)} is checked out in the worktree at ${holder.path}.\n\n` +
+        `  Work on it there:  ${pc.green(`cd ${git.shellQuote(holder.path)}`)}\n` +
+        "  git lets only one worktree have a branch checked out at a time.",
+    );
+  } else if (stderr.includes("would be overwritten by checkout")) {
     const files = stderr
       .split("\n")
       .filter((line) => line.startsWith("\t"))

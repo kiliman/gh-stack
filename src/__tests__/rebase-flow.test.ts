@@ -21,6 +21,16 @@ import undo from "../commands/undo.ts";
 import { RUN_STATE_VERSION, type RestackState } from "../types.ts";
 import { setAutoYes } from "../lib/ui.ts";
 
+/** `git rebase --onto <onto> <from> <branch>` here, through gh-stack's rebaseBranch. */
+async function rebaseOnto(onto: string, from: string, branch: string): Promise<boolean> {
+  return (await git.rebaseBranch(branch, onto, from)).ok;
+}
+
+/** `git rebase <onto>` of the current branch, through gh-stack's rebaseBranch. */
+async function rebaseCurrent(onto: string): Promise<boolean> {
+  return (await git.rebaseBranch(await git.currentBranch(), onto, null)).ok;
+}
+
 let tmpDir: string;
 let remoteDir: string;
 let originalCwd: string;
@@ -88,7 +98,7 @@ describe("tag-based rebase: core correctness", () => {
     await git.createTag(git.tempBaseTagName("pr2"), mb);
 
     // Now rebase pr2 onto pr1 using the tag
-    const success = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
+    const success = await rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(success).toBe(true);
 
     // Verify: pr1 is now an ancestor of pr2
@@ -121,7 +131,7 @@ describe("tag-based rebase: core correctness", () => {
     await makeCommit(tmpDir, "pr1-new.txt", "new\n", "pr1: new commit");
 
     // Rebase pr2 using tag
-    const success = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
+    const success = await rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(success).toBe(true);
 
     // Count pr2's unique commits after rebase — should still be 1
@@ -151,12 +161,12 @@ describe("full chain rebase flow", () => {
     }
 
     // Rebase pr2 onto updated pr1
-    const ok1 = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
+    const ok1 = await rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(ok1).toBe(true);
     expect(await isAncestor(tmpDir, "pr1", "pr2")).toBe(true);
 
     // Rebase pr3 onto updated pr2
-    const ok2 = await git.rebaseOnto("pr2", git.tempBaseTagName("pr3"), "pr3");
+    const ok2 = await rebaseOnto("pr2", git.tempBaseTagName("pr3"), "pr3");
     expect(ok2).toBe(true);
     expect(await isAncestor(tmpDir, "pr2", "pr3")).toBe(true);
 
@@ -199,8 +209,8 @@ describe("full chain rebase flow", () => {
     await git.createTag(git.tempBaseTagName("pr3"), mb3);
 
     // Rebase only pr2b subtree (pr2b and pr3)
-    await git.rebaseOnto("pr1", git.tempBaseTagName("pr2b"), "pr2b");
-    await git.rebaseOnto("pr2b", git.tempBaseTagName("pr3"), "pr3");
+    await rebaseOnto("pr1", git.tempBaseTagName("pr2b"), "pr2b");
+    await rebaseOnto("pr2b", git.tempBaseTagName("pr3"), "pr3");
 
     // pr2b and pr3 should now be on updated pr1
     expect(await isAncestor(tmpDir, "pr1", "pr2b")).toBe(true);
@@ -241,17 +251,17 @@ describe("sync flow: rebase base onto main then restack", () => {
 
     // Step 1: Rebase pr1 onto origin/main
     await checkout(tmpDir, "pr1");
-    const ok1 = await git.rebase("origin/main");
+    const ok1 = await rebaseCurrent("origin/main");
     expect(ok1).toBe(true);
     expect(await isAncestor(tmpDir, "origin/main", "pr1")).toBe(true);
 
     // Step 2: Restack pr2 onto updated pr1 (using tag)
-    const ok2 = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
+    const ok2 = await rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(ok2).toBe(true);
     expect(await isAncestor(tmpDir, "pr1", "pr2")).toBe(true);
 
     // Step 3: Restack pr3 onto updated pr2 (using tag)
-    const ok3 = await git.rebaseOnto("pr2", git.tempBaseTagName("pr3"), "pr3");
+    const ok3 = await rebaseOnto("pr2", git.tempBaseTagName("pr3"), "pr3");
     expect(ok3).toBe(true);
     expect(await isAncestor(tmpDir, "pr2", "pr3")).toBe(true);
 
@@ -305,14 +315,14 @@ describe("tag stability across rebases", () => {
 
     // Rebase pr1 onto origin/main — this changes pr1's history!
     await checkout(tmpDir, "pr1");
-    await git.rebase("origin/main");
+    await rebaseCurrent("origin/main");
 
     // The tag should still point to the OLD merge-base
     const tagSha = await git.revParse(git.tempBaseTagName("pr2"));
     expect(tagSha).toBe(mbPr2);
 
     // Now rebase pr2 using the tag (not the wrong new merge-base)
-    const ok = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
+    const ok = await rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(ok).toBe(true);
 
     // Verify only pr2's commits moved
@@ -441,7 +451,7 @@ describe("snapshot system", () => {
     await checkout(tmpDir, "pr2");
     const mb = (await $`git merge-base pr2 pr1`.text()).trim();
     await git.createTag(git.tempBaseTagName("pr2"), mb);
-    const rebased = await git.rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
+    const rebased = await rebaseOnto("pr1", git.tempBaseTagName("pr2"), "pr2");
     expect(rebased).toBe(true);
 
     const pr2RebasedSha = await getSha(tmpDir, "pr2");
@@ -472,7 +482,7 @@ describe("conflict handling", () => {
     await makeCommit(tmpDir, "shared.txt", "branch version\n", "branch: add shared");
 
     // This rebase should conflict
-    const success = await git.rebase("main");
+    const success = await rebaseCurrent("main");
     expect(success).toBe(false);
 
     // Abort the rebase to clean up
@@ -490,7 +500,7 @@ describe("conflict handling", () => {
     await makeCommit(tmpDir, "conflict-file.txt", "branch version\n", "branch: add conflict file");
 
     const oldBaseSha = await getSha(tmpDir, "old-base");
-    const success = await git.rebaseOnto("main", oldBaseSha, "conflict-branch");
+    const success = await rebaseOnto("main", oldBaseSha, "conflict-branch");
     expect(success).toBe(false);
 
     // Clean up
@@ -531,7 +541,7 @@ describe("deep stacks", () => {
     for (let i = 2; i <= 5; i++) {
       const branch = `b${i}`;
       const parent = `b${i - 1}`;
-      const ok = await git.rebaseOnto(parent, git.tempBaseTagName(branch), branch);
+      const ok = await rebaseOnto(parent, git.tempBaseTagName(branch), branch);
       expect(ok).toBe(true);
     }
 
@@ -680,7 +690,7 @@ describe("resolveRestackBoundary", () => {
 
     // Rebase pr1 onto origin/main (rewrites history)
     await checkout(tmpDir, "pr1");
-    await git.rebase("origin/main");
+    await rebaseCurrent("origin/main");
 
     const newPr1 = await getSha(tmpDir, "pr1");
     expect(newPr1).not.toBe(shas.pr1);
@@ -706,7 +716,7 @@ describe("resolveRestackBoundary", () => {
     await $`git -C ${tmpDir} fetch origin`.quiet();
 
     await checkout(tmpDir, "pr1");
-    await git.rebase("origin/main");
+    await rebaseCurrent("origin/main");
     const secondPr1 = await getSha(tmpDir, "pr1");
 
     // Second sync cycle — snapshot the new pr1 tip, then rewrite again
@@ -718,7 +728,7 @@ describe("resolveRestackBoundary", () => {
     await $`git -C ${tmpDir} fetch origin`.quiet();
 
     await checkout(tmpDir, "pr1");
-    await git.rebase("origin/main");
+    await rebaseCurrent("origin/main");
 
     // Two snapshots exist:
     //   [0] pre-first-sync: pr1 = firstPr1   ← what pr2 actually sits on
@@ -761,7 +771,7 @@ describe("issue #2 repro: sync → restack with rebased base", () => {
 
     // Sync rebases pr1 onto origin/main (rewrites pr1's history)
     await checkout(tmpDir, "pr1");
-    const ok1 = await git.rebase("origin/main");
+    const ok1 = await rebaseCurrent("origin/main");
     expect(ok1).toBe(true);
     const newPr1 = await getSha(tmpDir, "pr1");
     expect(newPr1).not.toBe(shas.pr1);
@@ -780,7 +790,7 @@ describe("issue #2 repro: sync → restack with rebased base", () => {
     expect(buggyBase).not.toBe(correctBase);
 
     // Use the correct base to restack pr2
-    const ok2 = await git.rebaseOnto("pr1", correctBase!, "pr2");
+    const ok2 = await rebaseOnto("pr1", correctBase!, "pr2");
     expect(ok2).toBe(true);
 
     // pr2 should have EXACTLY 1 unique commit above pr1 — its own.
@@ -817,18 +827,18 @@ describe("issue #2 repro: sync → restack with rebased base", () => {
 
     // Rebase pr1 onto origin/main
     await checkout(tmpDir, "pr1");
-    expect(await git.rebase("origin/main")).toBe(true);
+    expect(await rebaseCurrent("origin/main")).toBe(true);
 
     // Restack pr2: use snapshot's pre-rewrite tip of pr1
     const pr2Base = (await resolveRestackBoundary(preSync, "pr1", "pr2"))!.sha;
     expect(pr2Base).toBe(shas.pr1!);
-    expect(await git.rebaseOnto("pr1", pr2Base!, "pr2")).toBe(true);
+    expect(await rebaseOnto("pr1", pr2Base!, "pr2")).toBe(true);
 
     // Restack pr3: pr2's tip is now rewritten, but the snapshot still has
     // pr2's pre-restack tip recorded — that's the rebase base for pr3.
     const pr3Base = (await resolveRestackBoundary(preSync, "pr2", "pr3"))!.sha;
     expect(pr3Base).toBe(shas.pr2!);
-    expect(await git.rebaseOnto("pr2", pr3Base!, "pr3")).toBe(true);
+    expect(await rebaseOnto("pr2", pr3Base!, "pr3")).toBe(true);
 
     // Each child has exactly 1 unique commit — none of the parent's old history replayed
     const pr2Unique = parseInt(
@@ -877,12 +887,12 @@ describe("issue #5: stale snapshot child-ancestry validation", () => {
 
     // Sync rebases pr1 onto new main
     await checkout(tmpDir, "pr1");
-    expect(await git.rebase("origin/main")).toBe(true);
+    expect(await rebaseCurrent("origin/main")).toBe(true);
 
     // Restack pr2 onto rebased pr1 — using the snapshot-driven correct base
     const session1Base = (await resolveRestackBoundary(m, "pr1", "pr2"))!.sha;
     expect(session1Base).toBe(oldPr1);
-    expect(await git.rebaseOnto("pr1", session1Base!, "pr2")).toBe(true);
+    expect(await rebaseOnto("pr1", session1Base!, "pr2")).toBe(true);
 
     // After this, pr2 has been rebased — old pr1 tip is NOT in pr2's history
     const pr2AfterRestack = await getSha(tmpDir, "pr2");
@@ -935,7 +945,7 @@ describe("issue #5: stale snapshot child-ancestry validation", () => {
     // Rebase pr1 — pr2 hasn't been restacked yet, so it still has the old
     // pr1 tip in its ancestry.
     await checkout(tmpDir, "pr1");
-    expect(await git.rebase("origin/main")).toBe(true);
+    expect(await rebaseCurrent("origin/main")).toBe(true);
 
     const result = await resolveRestackBoundary(preSync, "pr1", "pr2");
     expect(result).toEqual({ sha: shas.pr1!, source: "snapshot" });
@@ -953,7 +963,7 @@ describe("issue #5: stale snapshot child-ancestry validation", () => {
     const preSync = await takeSnapshot(meta, "test-stack", "sync");
 
     await checkout(tmpDir, "pr1");
-    expect(await git.rebase("origin/main")).toBe(true);
+    expect(await rebaseCurrent("origin/main")).toBe(true);
 
     // Pass a child that doesn't exist — should fall back to parent-only check
     const result = await resolveRestackBoundary(preSync, "pr1", "nonexistent-branch");

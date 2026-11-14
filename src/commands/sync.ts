@@ -9,7 +9,12 @@ import {
   stackBase,
   writeMetadata,
 } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
+import {
+  ensureCleanWorkingTree,
+  ensureMetadata,
+  ensureValidStack,
+  ensureWorktreesReady,
+} from "../lib/safety.ts";
 import { resolveFlag } from "../lib/config.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { guardRemoteContent } from "../lib/remote-guard.ts";
@@ -126,6 +131,13 @@ adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`
   // rather than rewriting them, and after `merge --approved` they're exactly
   // where the collapse's squash commits live.
   const mergedBranches = new Set(merged.plan.steps.map((step) => step.branch));
+  // Everything else gets rebased, possibly in other worktrees (#78).
+  if (!dryRun) {
+    await ensureWorktreesReady(
+      ordered.filter((b) => !mergedBranches.has(b)),
+      "gh-stack sync",
+    );
+  }
   const verified = await guardRemoteContent(
     meta,
     ordered.filter((b) => !mergedBranches.has(b)),
@@ -392,8 +404,13 @@ async function advanceMergedBottoms(
     console.log();
     if (res.reason === "conflict") {
       p.log.error(`Rebase conflict re-rooting ${pc.yellow(res.child)} onto ${trunk}.`);
+      if (res.worktree) {
+        console.log(
+          `  It stopped in the worktree at ${res.worktree}, which has ${res.child} checked out.`,
+        );
+      }
       console.log(`  Resolve it, then finish the sync:`);
-      console.log(`    ${pc.green("git rebase --continue")}`);
+      console.log(`    ${pc.green(`${git.rebaseCommand(res.worktree ?? null)} --continue`)}`);
       console.log(
         `    ${pc.green("gh-stack sync")}   ${pc.dim(`(picks up the re-rooted ${res.child}; not restack, which would put it back on ${res.mergedBranch})`)}`,
       );

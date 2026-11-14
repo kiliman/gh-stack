@@ -32,7 +32,12 @@ import {
   readMetadata,
   writeMetadata,
 } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
+import {
+  ensureCleanWorkingTree,
+  ensureMetadata,
+  ensureValidStack,
+  ensureWorktreesReady,
+} from "../lib/safety.ts";
 import { takeSnapshot, resolveRestackBoundary } from "../lib/snapshot.ts";
 import { findOpenPrForBranch, setPrBase } from "../lib/github.ts";
 import { confirmAction, renderStackTree } from "../lib/ui.ts";
@@ -171,6 +176,15 @@ export default async function join(args: string[]): Promise<void> {
     return;
   }
 
+  // Rebased below, some maybe in other worktrees (#78).
+  await ensureWorktreesReady(
+    [
+      ...(plan.needsRebase ? [plan.incoming] : []),
+      ...plan.children.map((c) => c.branch),
+      ...plan.upstack,
+    ],
+    rerun,
+  );
   const confirmed = await confirmAction(
     `Join ${pc.yellow(plan.incoming)} into stack ${pc.yellow(plan.stackName)}?`,
   );
@@ -192,18 +206,25 @@ export default async function join(args: string[]): Promise<void> {
     p.log.info(
       `Syncing ${pc.yellow(plan.incoming)} onto ${pc.yellow(plan.newParentRef)} — replaying its ${plan.own.commits} own commit(s) ${pc.dim(`(above ${short(plan.incomingBoundary)})`)}`,
     );
-    await git.checkout(plan.incoming);
-    const ok = await git.rebaseOnto(plan.newParentTip, plan.incomingBoundary, plan.incoming);
-    if (!ok) {
+    const rewrite = await git.rebaseBranch(plan.incoming, plan.newParentTip, plan.incomingBoundary);
+    if (!rewrite.ok) {
+      const rebaseCmd = git.rebaseCommand(rewrite.worktree);
       console.log();
       p.log.error(`Rebase conflict syncing ${pc.yellow(plan.incoming)} onto ${plan.newParentRef}.`);
+      if (rewrite.worktree) {
+        console.log(
+          `  It stopped in the worktree at ${rewrite.worktree}, which has ${plan.incoming} checked out.`,
+        );
+      }
       console.log("  The stack is unchanged. Resolve the conflicts, then re-run the join:");
-      console.log(`    ${pc.green("git rebase --continue")}`);
-      if (startBranch) console.log(`    ${pc.green(`git checkout ${startBranch}`)}`);
+      console.log(`    ${pc.green(`${rebaseCmd} --continue`)}`);
+      if (startBranch && !rewrite.worktree) {
+        console.log(`    ${pc.green(`git checkout ${startBranch}`)}`);
+      }
       console.log(`    ${pc.green(rerun)}`);
       console.log();
       console.log(
-        `  Or drop it: ${pc.red("git rebase --abort")} ${pc.dim("(nothing else to undo)")}`,
+        `  Or drop it: ${pc.red(`${rebaseCmd} --abort`)} ${pc.dim("(nothing else to undo)")}`,
       );
       process.exit(2);
     }

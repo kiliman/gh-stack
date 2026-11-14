@@ -147,9 +147,9 @@ export async function fetchPrInfo(prNumber: number): Promise<PrInfo | null> {
 }
 
 /**
- * Get PR info for a specific PR number, or null when it can't be read. Only
- * for callers where a missing answer is harmless (a title for a message);
- * decisions go through fetchPrInfo.
+ * Get PR info for a specific PR number, or null when it can't be read. For
+ * callers where a missing answer is harmless (filling in a title); a caller
+ * that decides something from the PR's state uses fetchPrInfo.
  */
 export async function getPrInfo(prNumber: number): Promise<PrInfo | null> {
   try {

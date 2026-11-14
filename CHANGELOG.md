@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.15
+
+### 🐛 Fixes
+- **Stack branches checked out in another worktree are rebased from that worktree.** git refuses to check out or rebase a branch another worktree is using, so `restack`, `sync`, `merge --base` and `join` used to fail partway with "already used by worktree", sometimes after pushing earlier branches. They now run the rebase there (`git -C <path>`), and that worktree's files follow the branch. (#78, #85)
+- **They stop before changing anything when that worktree isn't ready.** Uncommitted changes, a rebase or merge in progress, or a deleted worktree folder are found up front, and the message names the branch, the worktree and the fix (`git -C <path> stash`, `… rebase --continue`, `git worktree prune`). (#85)
+- **A conflict in such a branch is reported where it is.** The conflict message says `git -C <path> rebase --continue` / `--abort`, and `restack --resume` waits until that rebase is finished. (#85)
+- `checkout`, `up`, `down`, `top` and `bottom` name the worktree that has the branch checked out, instead of git's bare refusal. (#85)
+
 ## 0.19.14
 
 ### 🐛 Fixes

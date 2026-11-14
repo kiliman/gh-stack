@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.17
+
+### 🐛 Fixes
+- **Upper PRs say not to merge them on GitHub.** GitHub shows an approved upper PR's merge button even though its base is the branch below it, and clicking it squashes the PR into that branch and closes it for good, with nothing reaching `main`. Every PR above the bottom one now opens its `📚 Stacked on` block with a warning naming the PR below and pointing at `gh-stack merge`. The bottom PR's block stays quiet, and the warning drops off a PR once the PRs below it land. The bottom of a split stack gets one too, naming its base PR in the other stack. (#76, #88)
+- The agent skill tells agents not to `gh pr merge` a stack PR whose base isn't trunk. (#88)
+
 ## 0.19.16
 
 ### 🐛 Fixes

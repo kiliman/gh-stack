@@ -19,6 +19,7 @@ import { resolveFlag } from "../lib/config.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { guardRemoteContent } from "../lib/remote-guard.ts";
 import { fetchPrMergeState } from "../lib/github.ts";
+import { loadRunState } from "../lib/run-log.ts";
 import {
   planMerges,
   advancePastMerged,
@@ -29,11 +30,14 @@ import {
   type MergedRunEntry,
   type StrandedMerge,
 } from "../lib/advance.ts";
-import type { Stack, StackMetadata } from "../types.ts";
+import type { RestackState, Stack, StackMetadata } from "../types.ts";
 import restack, {
   notePendingRun,
+  pushAfterResume,
+  type PushDecision,
   refuseRebaseInProgress,
   resolvePush,
+  returnToStartBranch,
   routePendingRun,
   syncChain,
 } from "./restack.ts";
@@ -65,8 +69,11 @@ OPTIONS
               Rewrite branches even though origin has commits they lack.
               Those commits are dropped from origin
 
-If an interrupted restack or sync is pending, sync asks whether to resume it
-(with --yes it resumes) rather than starting over on top of it.
+If an interrupted restack or sync is pending, sync asks whether to finish it
+first (with --yes it does) rather than starting over on top of it. It says
+so, then syncs the stack of the branch it was run on: main may have moved
+since that run began. The sync pushes as the finished run did, unless
+--push/--no-push says otherwise.
 
 Bottom PRs that already merged are dropped, and the branches on them re-rooted
 onto main. So are branches \`merge\` already squashed into the base (their PRs
@@ -98,8 +105,12 @@ adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`
     await refuseRebaseInProgress("sync");
   }
 
-  // An interrupted restack/sync is pending: resume it rather than starting a
-  // new sync on top of it (#29).
+  // An interrupted restack/sync is pending: finish it rather than starting a
+  // new sync on top of it (#29), then sync from the branch this was run on
+  // (#82). Even after a resumed sync of this stack: main may have moved since
+  // that run fetched it.
+  const startBranch = await git.currentBranch().catch(() => null);
+  let finished: RestackState | null = null;
   if (dryRun) {
     await notePendingRun();
   } else if (
@@ -108,11 +119,15 @@ adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`
       preflight: async () => void (await syncPreconditions(args)),
     })) === "resume"
   ) {
-    await resumeRun();
-    return;
+    await restack(["--resume", ...pushFlags], { chained: true });
+    finished = await loadRunState();
+    if (!(await returnToStartBranch(startBranch, "sync"))) return;
+    p.log.info(`Now the sync you ran, from ${pc.yellow(startBranch!)}:`);
   }
 
-  const push = await resolvePush(args);
+  // After finishing a pending run, sync pushes (or doesn't) as that run did,
+  // unless told otherwise.
+  const push: PushDecision = finished ? pushAfterResume(finished, args) : await resolvePush(args);
   const noPush = !push.value;
   const { meta, stackName } = await syncPreconditions(args);
   let stack = meta.stacks[stackName]!;

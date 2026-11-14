@@ -25,5 +25,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // tmp/ holds local working files (probes, backups), not project code.
+  "exclude": ["node_modules", "dist", "tmp"]
 }

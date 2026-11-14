@@ -328,7 +328,9 @@ merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push]
                 a single squash commit on main and leaves the unapproved
                 tail in place; after the base PR lands, run `gh-stack sync`
                 to re-root the tail onto main. All approved ⇒ same as a
-                full merge.
+                full merge. A review state that can't be read from
+                GitHub (after retries) stops the merge; it never counts
+                as unapproved.
     --base      Squash-merge ONLY the bottom PR into main as its own
                 commit, then re-root the next branch onto main (replaying
                 just its own commits). If the bottom PR has several

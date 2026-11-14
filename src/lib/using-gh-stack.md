@@ -365,7 +365,9 @@ Merge is **top-down everywhere** (collapse PRn → PRn-1 → … → base PR, th
   unapproved tail is left in place; after the base lands, run `gh-stack sync` to
   re-root the tail onto trunk (it does not block on CI). If the repo doesn't
   allow auto-merge, merge the base PR yourself once its checks pass
-  (`gh pr merge <N> --squash`), then `gh-stack sync`.
+  (`gh pr merge <N> --squash`), then `gh-stack sync`. If gh fails to read a
+  PR's review state (rate limit, network, auth switch), it retries, then stops
+  with "Couldn't read the review state" and merges nothing: run it again.
 - **`merge --base`**: squash-merge **only the bottom PR** into trunk and re-root
   the next branch onto trunk (every child, each as its own stack, when the
   bottom PR has several) — one PR per run, re-run for the next. Use this to

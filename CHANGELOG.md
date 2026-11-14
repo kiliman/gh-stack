@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.21
+
+### 🐛 Fixes
+- **A bare `sync` that finds an interrupted run finishes it, then syncs.** It used to resume the run and stop with "Stack Restack Complete!", even when the resume had nothing left to do, so the sync you asked for took a second run. Now it says plainly that it finished the interrupted run ("nothing changed" when nothing was left), goes back to the branch you ran it on (the run may have been another stack's), and syncs. A bare `restack` does the same, unless the finished run already covered that restack. The work after a resume pushes as the resumed run did, so a local-only run's branches stay local, unless the command passes `--push` or `--no-push`. (#82, #92)
+- The resume prompt reads "Finish it first?", and under `--yes` says "(auto-yes: finishing it, then the sync)". The agent skill says one command is enough. (#92)
+
 ## 0.19.20
 
 ### ✨ Features

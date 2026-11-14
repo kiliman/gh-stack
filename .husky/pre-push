@@ -7,8 +7,8 @@ unset $(git rev-parse --local-env-vars)
 # check exits the hook before its output is printed.
 if ! output=$(bun run check 2>&1); then
   echo "$output"
-  # Bun doesn't repeat the failures at the end, and gh-stack shows only the
-  # last lines of a failed push, so list the failing tests last.
+  # Bun doesn't repeat the failures at the end, so list the failing tests
+  # last: the end of a failed push's output is what's always shown.
   failed=$(echo "$output" | grep '^(fail)' || true)
   if [ -n "$failed" ]; then
     echo

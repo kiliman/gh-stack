@@ -72,7 +72,7 @@ gh-stack merge --base            # just the bottom PR; run again for the next
 
 ## Commands
 
-Put `--help` after a command's name to see its options (`gh-stack submit --help`). `log` has no help page.
+`gh-stack <command> --help` (or `gh-stack help <command>`) shows a command's options and runs nothing.
 
 ### Core Workflow
 
@@ -146,7 +146,7 @@ The `--json` document:
 gh-stack log
 ```
 
-Shows the current stack as a tree with branch numbers, PRs and descriptions. This is the default command. On an untracked branch it says what to run next (`add`, `submit` or `init`).
+Shows the current stack as a tree with branch numbers, PRs and descriptions. This is the default command. On an untracked branch it says what to run next (`submit` or `init`).
 
 ### Stack Navigation
 
@@ -157,7 +157,7 @@ gh-stack up [steps]            Move to a child branch; asks when there are sever
 gh-stack down [steps]          Move to the parent branch
 gh-stack top                   Jump to the tip of the stack; asks when there are several
 gh-stack bottom                Jump to the first branch above trunk
-gh-stack ls                    List the stack's branches with their numbers
+gh-stack ls                    List the stack's branches with their numbers (alias: list)
 gh-stack stacks [--current] [--json]
                                List all stacks and their topology
 ```
@@ -360,10 +360,11 @@ Prints the agent skill for gh-stack (Markdown, matching the installed version) t
 ```
 --yes, -y      Skip all confirmations (for agents and CI); also turns on --plain
 --plain        Plain output: no spinners, colors or boxes
+--help         List the commands; with a command, show its help and run nothing
 --version, -V  Show the version
 ```
 
-`gh-stack --help` lists the commands. A command that needs to prompt without a TTY exits 1 with the prompt it would have shown; use `--yes` or `GH_STACK_YES=1` there.
+A command that needs to prompt without a TTY exits 1 with the prompt it would have shown; use `--yes` or `GH_STACK_YES=1` there.
 
 ## Environment Variables
 
@@ -375,7 +376,7 @@ GH_STACK_NO_PUSH=1   restack, sync, join and merge --base don't push (0 = push);
 GH_STACK_DRAFT=1     submit opens new PRs as drafts (0 = ready)
 ```
 
-`GH_STACK_NO_PUSH` and `GH_STACK_DRAFT` accept `1/0`, `true/false` or `yes/no`; anything else is an error.
+Each accepts `1/0`, `true/false` or `yes/no`; anything else is an error.
 
 ## Configuration
 

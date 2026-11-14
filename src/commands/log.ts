@@ -13,7 +13,25 @@ import { gateLegacyMetadata } from "../lib/safety.ts";
 import { detectBranchChain } from "../lib/chain.ts";
 import type { StackMetadata } from "../types.ts";
 
-export default async function log(_args: string[]): Promise<void> {
+const HELP = `
+gh-stack log — Display the current stack tree
+
+USAGE
+  gh-stack log
+  gh-stack          log is the default command
+
+Shows the current stack as a tree: each branch with its position number, its
+PR and its description. On a branch that isn't tracked yet, it looks at the
+branch's ancestry and says what to run next: gh-stack submit when the branch
+sits on a stack or on untracked branches, gh-stack init when it's on trunk.
+`;
+
+export default async function log(args: string[]): Promise<void> {
+  if (args.includes("--help")) {
+    console.log(HELP);
+    return;
+  }
+
   // Check if metadata exists
   if (!(await metadataExists())) {
     await gateLegacyMetadata(); // exits with a migrate hint if a v2 file remains

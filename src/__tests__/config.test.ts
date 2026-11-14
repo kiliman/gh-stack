@@ -5,13 +5,12 @@ import { $ } from "bun";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
-  ConfigError,
   loadConfigFile,
-  parseEnvBool,
   resolveSetting,
   validateConfig,
   type ConfigLayers,
 } from "../lib/config.ts";
+import { ConfigError, parseEnvBool } from "../lib/config-error.ts";
 import { buildConfigReport } from "../commands/config.ts";
 import {
   checkout,

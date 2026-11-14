@@ -11,6 +11,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ConfigError, parseEnvBool } from "./config-error.ts";
 import { repoRoot } from "./git.ts";
 
 export type ConfigSource = "flag" | "env" | "repo" | "user" | "default";
@@ -71,23 +72,8 @@ export interface Resolved {
   origin?: string;
 }
 
-/** A config problem the user must fix: malformed TOML, a wrong-typed value. */
-export class ConfigError extends Error {}
-
 function settingByPath(section: string, key: string): BoolSetting | undefined {
   return (SETTINGS as Record<string, BoolSetting>)[`${section}.${key}`];
-}
-
-/**
- * Parse a flag-default env var: 1/true/yes or 0/false/no (any case); empty =
- * unset. Anything else is an error, so a typo can't be silently ignored.
- */
-export function parseEnvBool(name: string, raw: string | undefined): boolean | undefined {
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const v = raw.trim().toLowerCase();
-  if (["1", "true", "yes"].includes(v)) return true;
-  if (["0", "false", "no"].includes(v)) return false;
-  throw new ConfigError(`${name}=${raw} is not a boolean (use 1/0, true/false, or yes/no).`);
 }
 
 /**

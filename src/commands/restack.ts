@@ -27,7 +27,7 @@ import {
   ensureWorktreesReady,
 } from "../lib/safety.ts";
 import { takeSnapshot, resolveRestackBoundary, findRecordedBaseTip } from "../lib/snapshot.ts";
-import { guardRemoteContent } from "../lib/remote-guard.ts";
+import { guardRemoteContent, wasLocalTip } from "../lib/remote-guard.ts";
 import { setPrBase } from "../lib/github.ts";
 import { confirmAction, isAutoYes } from "../lib/ui.ts";
 import { describeSource, flagSetting, resolveFlag, type Resolved } from "../lib/config.ts";
@@ -1428,6 +1428,47 @@ async function retargetIfStale(
   }
 }
 
+/**
+ * Whether origin's tip of `branch` is one this run may overwrite without a
+ * warning: the remote guard cleared exactly that tip, or it's a version the
+ * repo had (reflog, snapshot).
+ */
+async function isKnownRemoteTip(
+  meta: StackMetadata,
+  branch: string,
+  remoteSha: string,
+): Promise<boolean> {
+  if (verifiedTips.get(branch) === remoteSha) return true;
+  return wasLocalTip((await readMetadata()) ?? meta, branch, remoteSha);
+}
+
+/**
+ * The full prompt for a push nothing vouches for: a branch with no copy on
+ * origin yet, or an origin tip this repo never had.
+ */
+async function confirmUnknownPush(
+  branch: string,
+  localSha: string,
+  remoteSha: string | null,
+): Promise<boolean> {
+  console.log();
+  console.log(pc.cyan("━".repeat(40)));
+  console.log(pc.blue(remoteSha ? "  Push Rebased Branch?" : "  Push New Branch?"));
+  console.log(pc.cyan("━".repeat(40)));
+  console.log();
+  console.log(`${pc.blue("Branch:")} ${branch}`);
+  if (remoteSha) {
+    console.log(pc.yellow("⚠ Origin has a version of this branch this repo never had"));
+    console.log(`  Local:  ${localSha.slice(0, 8)}`);
+    console.log(`  Remote: ${remoteSha.slice(0, 8)}`);
+  } else {
+    console.log(pc.yellow("⚠ Branch has no remote ref yet"));
+    console.log(`  Local:  ${localSha.slice(0, 8)}`);
+  }
+  console.log();
+  return confirmAction(remoteSha ? "Push with --force-with-lease?" : `Push ${branch} to origin?`);
+}
+
 type PushOutcome = "no-push" | "in-sync" | "local-only" | "pushed" | "failed" | "declined";
 
 /**
@@ -1467,35 +1508,25 @@ async function pushBranchRef(
 
   if (remoteSha === localSha) return "in-sync";
 
-  console.log();
-  console.log(pc.cyan("━".repeat(40)));
-  console.log(pc.blue(hasRemote ? "  Push Rebased Branch?" : "  Push New Branch?"));
-  console.log(pc.cyan("━".repeat(40)));
-  console.log();
-  console.log(`${pc.blue("Branch:")} ${branch}`);
-  if (hasRemote) {
-    console.log(pc.yellow("⚠ Branch is out of sync with remote"));
-    console.log(`  Local:  ${localSha.slice(0, 8)}`);
-    console.log(`  Remote: ${remoteSha ? remoteSha.slice(0, 8) : "(unknown)"}`);
-  } else {
-    console.log(pc.yellow("⚠ Branch has no remote ref yet"));
-    console.log(`  Local:  ${localSha.slice(0, 8)}`);
-  }
-  console.log();
-
-  const confirmed = await confirmAction(
-    hasRemote ? "Push with --force-with-lease?" : `Push ${branch} to origin?`,
-  );
+  // Origin holds a version of this branch the repo had (the usual case: the tip
+  // before this rebase, or one the remote guard cleared): overwriting it is the
+  // point of a restack, so one line, not a warning box (#82).
+  const known = remoteSha !== null && (await isKnownRemoteTip(meta, branch, remoteSha));
+  const confirmed = known
+    ? await confirmAction(
+        `Force-push ${pc.yellow(branch)}? ${pc.dim(`origin ${remoteSha!.slice(0, 8)} → ${localSha.slice(0, 8)}`)}`,
+      )
+    : await confirmUnknownPush(branch, localSha, remoteSha);
   if (!confirmed) {
     p.log.warn("Skipping push (you'll need to push manually)");
     return "declined";
   }
-  p.log.info(`Pushing ${branch}...`);
+  if (!known) p.log.info(`Pushing ${branch}...`);
   // A tip the remote guard already checked (only earlier versions of local
   // commits, or --overwrite-remote) gets an explicit lease on exactly that sha.
   const result = await git.forcePushWithLease(branch, { expect: verifiedTips.get(branch) });
   if (result.ok) {
-    p.log.success("Pushed successfully");
+    p.log.success(`Pushed ${branch}`);
     return "pushed";
   }
   p.log.error(`Push of ${branch} failed — branches above it won't be pushed onto it`);

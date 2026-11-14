@@ -135,6 +135,20 @@ export async function findRemoteOnlyContent(
   return { found, cleared, unverified };
 }
 
+/**
+ * Whether `sha` is a version of `branch` this repo had: a tip in the branch's
+ * reflog or one a snapshot recorded. Force-pushing over an origin copy like that
+ * drops nothing local didn't have and then rewrote on purpose (#82).
+ */
+export async function wasLocalTip(
+  meta: StackMetadata,
+  branch: string,
+  sha: string,
+): Promise<boolean> {
+  if (snapshotTips(meta, branch).includes(sha)) return true;
+  return (await reflogTips(branch)).includes(sha);
+}
+
 /** Earlier tips of `refs/heads/<branch>`, newest first. */
 async function reflogTips(branch: string): Promise<string[]> {
   const { stdout } = await $`git reflog show --format=%H refs/heads/${branch}`.nothrow().quiet();

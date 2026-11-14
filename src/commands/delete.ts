@@ -1,4 +1,5 @@
-// gh-stack delete — Delete a branch from the stack (re-link parent chain)
+// gh-stack delete — Delete a branch from the stack (re-link parent chain).
+// gh-stack untrack — the same removal, metadata only (untrack.ts).
 import * as p from "../lib/output.ts";
 import pc from "picocolors";
 import {
@@ -18,7 +19,35 @@ import { takeSnapshot } from "../lib/snapshot.ts";
 import { selectBranch, confirmAction } from "../lib/ui.ts";
 import * as git from "../lib/git.ts";
 
-export default async function deleteCmd(args: string[]): Promise<void> {
+const UNTRACK_HELP = `
+gh-stack untrack — Stop tracking a branch; the branch and its PR stay
+
+USAGE
+  gh-stack untrack [<branch>]
+
+Removes the branch from its stack's metadata and nothing else: the local
+branch, its copy on origin and its PR are left exactly as they are. Children
+are re-parented to the untracked branch's parent, the same as delete.
+
+The branch keeps its PR number, so gh-stack add <branch> puts it back with
+its PR. Untracking a stack's last branch archives the empty stack.
+
+If no branch is specified, shows an interactive selector.
+`;
+
+/**
+ * `delete`, or with `untrack` the metadata-only removal (same as
+ * `delete --keep-branch`, minus the confirmation: nothing leaves git).
+ */
+export default async function deleteCmd(
+  args: string[],
+  opts: { untrack?: boolean } = {},
+): Promise<void> {
+  const untrack = opts.untrack === true;
+  if (untrack && args.includes("--help")) {
+    console.log(UNTRACK_HELP);
+    return;
+  }
   if (args.includes("--help")) {
     console.log(`
 gh-stack delete — Delete a branch from the stack
@@ -37,15 +66,18 @@ Deleting a stack's last branch archives the empty stack
 
 If no branch is specified, shows an interactive selector.
 
+To take a branch out of the stack without deleting anything, use
+gh-stack untrack <branch>: the branch and its PR stay.
+
 OPTIONS
-  -k, --keep-branch   Only remove from the stack metadata; leave the
-                      local and remote git branches untouched
+  -k, --keep-branch   Only remove from the stack metadata, the same as
+                      gh-stack untrack
       --no-remote     Delete the local branch but keep the remote branch
 `);
     return;
   }
 
-  const keepBranch = args.includes("--keep-branch") || args.includes("-k");
+  const keepBranch = untrack || args.includes("--keep-branch") || args.includes("-k");
   const noRemote = args.includes("--no-remote");
   const positional = args.filter((a) => !a.startsWith("-"));
 
@@ -61,12 +93,17 @@ OPTIONS
   // Detached HEAD is fine: `delete <branch>` doesn't need a current branch.
   const currentBranch = (await git.currentBranch().catch(() => null)) ?? undefined;
 
-  p.intro(pc.cyan("Delete Branch from Stack"));
+  p.intro(pc.cyan(untrack ? "Untrack Branch" : "Delete Branch from Stack"));
 
   // Get branch to delete
   let branchName = positional[0];
   if (!branchName) {
-    branchName = (await selectBranch(stack, "Select branch to delete", currentBranch)) ?? undefined;
+    branchName =
+      (await selectBranch(
+        stack,
+        untrack ? "Select branch to untrack" : "Select branch to delete",
+        currentBranch,
+      )) ?? undefined;
     if (!branchName) {
       p.cancel("Cancelled");
       process.exit(0);
@@ -105,7 +142,9 @@ OPTIONS
     }
   }
 
-  if (keepBranch) {
+  if (untrack) {
+    p.log.info(pc.dim("Stack metadata only: the git branch, origin's copy and the PR stay"));
+  } else if (keepBranch) {
     p.log.info(pc.dim("Keeping git branch (--keep-branch) — stack metadata only"));
   } else {
     if (hasLocal) p.log.info(`Deleting local branch ${pc.yellow(branchName)}`);
@@ -115,15 +154,16 @@ OPTIONS
     }
   }
 
-  // Confirm (respects --yes / GH_STACK_YES — no interactive hang for agents)
-  const confirmed = await confirmAction(`Delete ${pc.yellow(branchName)}?`);
+  // Confirm (respects --yes / GH_STACK_YES — no interactive hang for agents).
+  // Untrack doesn't ask: nothing leaves git, and `add` undoes it.
+  const confirmed = untrack || (await confirmAction(`Delete ${pc.yellow(branchName)}?`));
   if (!confirmed) {
     p.cancel("Cancelled");
     process.exit(0);
   }
 
   // Take snapshot before destructive operation
-  await takeSnapshot(meta, stackName, "delete");
+  await takeSnapshot(meta, stackName, untrack ? "untrack" : "delete");
 
   // If we're sitting on the branch we're about to delete, git won't let us
   // remove it — move to the parent (or trunk) first.
@@ -174,5 +214,12 @@ OPTIONS
     }
   }
 
+  if (untrack) {
+    p.outro(
+      pc.green(`Untracked ${pc.yellow(branchName)} from stack ${pc.blue(stackName)}`) +
+        pc.dim(`  (put it back: gh-stack add ${branchName})`),
+    );
+    return;
+  }
   p.outro(pc.green(`Removed ${pc.yellow(branchName)} from stack ${pc.blue(stackName)}`));
 }

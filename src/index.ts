@@ -99,6 +99,10 @@ try {
       await (await import("./commands/delete.ts")).default(commandArgs);
       break;
 
+    case "untrack":
+      await (await import("./commands/untrack.ts")).default(commandArgs);
+      break;
+
     case "split":
       await (await import("./commands/split.ts")).default(commandArgs);
       break;
@@ -301,6 +305,7 @@ ${bold("STACK MANAGEMENT")}
   ${green("join")}           Splice an existing branch/PR into a stack
   ${green("rename")}         Rename a tracked branch (keeps metadata in sync)
   ${green("delete")}         Remove a branch from the stack
+  ${green("untrack")}        Stop tracking a branch (the branch and its PR stay)
 
 ${bold("INFO & MAINTENANCE")}
   ${green("status")}         PR dashboard (CI, reviews)

@@ -74,7 +74,8 @@ export GH_STACK_YES=1     # skip every confirmation, plain output
   human approves), add `--no-push` to `restack`/`sync`, or export
   `GH_STACK_NO_PUSH=1` (a repo may also set `[restack] push = false`). It wins
   over `--yes` for pushes and lists what's ahead of origin at the end; publish
-  later with `gh-stack restack --push`. `merge --base` honors `--no-push` and
+  later with `gh-stack submit --existing` (pushes only the branches that have
+  PRs, opens none) or `gh-stack restack --push`. `merge --base` honors `--no-push` and
   `GH_STACK_NO_PUSH` (not the config); other `merge` modes and `submit --restack`
   always push. `restack --resume` keeps the interrupted run's push decision unless you
   pass `--push`/`--no-push`. `--yes` itself can't come from a config file:
@@ -189,6 +190,7 @@ gh-stack submit -d                    # create new PRs as drafts
 gh-stack submit --no-draft            # ready for review despite a draft default
 gh-stack submit --dry-run             # preview, no side effects
 gh-stack submit --restack             # then propagate up to children (see below)
+gh-stack submit --existing            # push only branches that have PRs; open none
 gh-stack submit -t "<title>" -b "<body>"   # explicit title/body for new PRs
 gh-stack submit -t "<title>" --body-file /tmp/body.md
 gh-stack submit -n                    # auto-generate titles (generic — avoid)
@@ -249,14 +251,25 @@ jq -r '.branches[-1].url' /tmp/submit.json     # the current branch's PR
 ```
 
 `branches` is the submit scope (trunk → current) in stack order, so on success
-the last entry is the branch you're on. `action` is `created`, `updated`
-(pushed, or base/title/description edited), `unchanged`, or `failed` (with an
+the last entry is the branch you're on (with `--existing`: the whole stack).
+`action` is `created`, `updated` (pushed, or base/title/description edited),
+`unchanged`, `skipped` (`--existing`: no PR, left local), or `failed` (with an
 `error`). `draft` is only known for PRs created this run (else `null`). When
 the run stops early (nothing to submit, a bad `--body-file`, a push failure),
 top-level `error` is `{ "message": "..." }` and `branches` lists what happened
 before it. Exit code is 1 whenever `error` is set or any branch `failed`.
 `--json` implies `--no-edit` and can't be combined with `--dry-run` or
 `--restack`; run `gh-stack restack` as a separate step.
+
+**`submit --existing` publishes without opening PRs.** It pushes every branch
+in the stack that already has a PR (wherever you stand), retargets bases,
+refreshes titles and stack sections, and creates nothing. A branch with no PR
+on top stays local: not pushed, not counted in the `(N/M)` titles, not shown in
+the stack section; `--json` reports it with `action: "skipped"`. Use it to
+publish after `sync --no-push`/`restack --no-push`, or whenever a branch must
+stay local. Plain `submit` from the top would open a PR for that branch. If a
+branch without a PR sits under one that has a PR, it stops before pushing
+anything and names the branch: run `submit` from that branch first.
 
 **`submit -t`/`-b` also updates an existing PR in place** — pass them while on a
 branch that already has a PR to change just that one (visualization-safe).
@@ -479,6 +492,9 @@ warning in a PR body, don't merge the PR: land the stack with `gh-stack merge`.
 - **Don't restack from the top** of the stack — restack flows upward.
 - **Don't edit multiple branches then restack once** — finish each branch first.
 - **Don't hand-write a stack section** in PR bodies — `submit` owns it.
+- **Don't push stack branches by name with `git push --force-with-lease`.** Use
+  `gh-stack submit --existing`: it pushes the same branches, opens no PR, and
+  keeps PR bases, titles and stack sections in step.
 - **Don't `gh pr merge` a stack PR whose base isn't trunk.** Check first
   (`gh pr view <N> --json baseRefName`); only the bottom PR's base is trunk.
   Merging an upper PR squashes it into the PR below and closes it for good. Use

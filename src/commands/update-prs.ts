@@ -207,8 +207,9 @@ export interface TitleResult {
 /**
  * Decide which PR titles need editing and to what. Pure (no network) so it's
  * unit-testable. `items` must be the stack's published branches in order
- * (publishedBranches) — the index drives the `(N/M)` position. The base title is an explicit `override` (from
- * `submit -t`) when given, else the cached `prTitle`; a branch with neither a
+ * (publishedBranches) — the index drives the `(N/M)` position. The base title
+ * is an explicit `override` (from `submit -t`) when given, else the cached
+ * `prTitle`; a branch with neither a
  * PR nor a known base is skipped (never guess from the branch name). An edit is
  * emitted only when the desired title differs from what's cached/on GitHub.
  */

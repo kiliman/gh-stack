@@ -52,8 +52,9 @@ OPTIONS
       --restack        After submitting, restack the branches above the current
                        one onto it (propagate a downstack fix up to children)
       --json           Print the result as JSON on stdout: each branch's PR
-                       number, URL, and action (created/updated/unchanged/failed).
-                       Logs go to stderr, uncolored. Implies --no-edit.
+                       number, URL, and action (created/updated/unchanged/
+                       skipped/failed). Logs go to stderr, uncolored. Implies
+                       --no-edit.
                        Not combinable with --restack or --dry-run
       --dry-run        Show what would happen without doing anything
 

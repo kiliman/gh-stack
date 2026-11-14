@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.25
+
+### 📝 Docs
+- **The README is rewritten around the public interface.** Each command is its synopsis, what it does, and one line per flag. Implementation detail that had built up over the 0.19.x fixes is cut, since it's here in the changelog, and the README went from 937 lines to about 510. It also corrects several errors: `checkout` takes a position number from `ls`, not a branch name; the default `merge` doesn't push; `init` asks before tracking a detected chain; `GH_STACK_NO_PUSH` and `[restack] push` govern `join` too; `undo` restores local branch tips only. It adds the undocumented `merge --base --overwrite-remote`, the `restack -v`, `join -v` and `learn -g` short flags, and `lock-waits.log`. (#96, #97)
+
 ## 0.19.24
 
 ### 🏠 Housekeeping

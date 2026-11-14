@@ -37,7 +37,8 @@ afterEach(async () => {
 
 const cliPath = new URL("../index.ts", import.meta.url).pathname;
 
-async function runCli(args: string[]) {
+/** Run the CLI; `onStderr` sees all stderr so far each time more arrives. */
+async function runCli(args: string[], onStderr?: (stderrSoFar: string) => void) {
   const base = { ...process.env } as Record<string, string>;
   delete base.GH_STACK_NO_PUSH;
   const proc = Bun.spawn(["bun", "run", cliPath, ...args], {
@@ -54,9 +55,18 @@ async function runCli(args: string[]) {
     stdout: "pipe",
     stderr: "pipe",
   });
+  const readStderr = async () => {
+    let text = "";
+    const decoder = new TextDecoder();
+    for await (const chunk of proc.stderr) {
+      text += decoder.decode(chunk, { stream: true });
+      onStderr?.(text);
+    }
+    return text;
+  };
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
+    readStderr(),
     proc.exited,
   ]);
   return { exitCode, out: stdout + stderr };
@@ -100,29 +110,20 @@ exit 0
   return lock;
 }
 
-/** Remove `lock` this long after it first appears. */
-function releaseAfterAppearing(lock: string, ms: number): { stop: () => void } {
-  let timer: Timer | undefined;
-  const poll = setInterval(async () => {
-    if (!(await Bun.file(lock).exists())) return;
-    clearInterval(poll);
-    timer = setTimeout(() => fs.rm(lock, { force: true }), ms);
-  }, 10);
-  return {
-    stop: () => {
-      clearInterval(poll);
-      clearTimeout(timer);
-    },
-  };
-}
-
 describe("restack with index.lock briefly held (#69)", () => {
   test("waits out a lock taken right after a push, and finishes the chain", async () => {
     await stackNeedingRestack();
     const lock = await lockIndexWhenPr1IsPushed();
-    const releaser = releaseAfterAppearing(lock, 1000);
 
-    const { exitCode, out } = await runCli(["restack"]).finally(releaser.stop);
+    // Free the lock once gh-stack says it's waiting on it (#86). Removing it a
+    // fixed time after it appeared raced under load: when gh-stack's next
+    // locking step came later than that, it never had to wait.
+    let freed = false;
+    const { exitCode, out } = await runCli(["restack"], (stderr) => {
+      if (freed || !stderr.includes("index.lock; waiting for it to finish")) return;
+      freed = true;
+      void fs.rm(lock, { force: true });
+    });
 
     expect(out).toContain("index.lock; waiting for it to finish");
     expect(out).not.toContain("Rebase Conflict");

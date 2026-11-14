@@ -147,3 +147,23 @@ describe("git env isolation", () => {
     }
   });
 });
+
+// #86: no test reaches the real gh. The preload puts a fake first on PATH, so
+// a gh wrapper that swaps in the developer's account (and can fail under load
+// with empty stderr) never runs, in-process or in a spawned CLI.
+describe("gh isolation", () => {
+  test("gh resolves to the preload's fake, which answers 'no GitHub remote'", async () => {
+    const resolved = (await $`which gh`.text()).trim();
+    expect(path.basename(path.dirname(resolved))).toStartWith("gh-stack-test-gh-");
+
+    const r = await $`gh pr view 1 --json state`.nothrow().quiet();
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("none of the git remotes configured for this repository");
+  });
+
+  test("a bare Bun.spawn finds the fake too", () => {
+    const r = Bun.spawnSync(["gh", "api", "user"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("none of the git remotes configured for this repository");
+  });
+});

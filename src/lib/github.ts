@@ -86,6 +86,9 @@ const NO_SUCH_PR = [
   /not a git repository/i,
 ];
 
+/** gh isn't logged in: the state is unknown, and retrying won't change that. */
+const NOT_LOGGED_IN = [/gh auth login/i, /GH_TOKEN environment variable/i];
+
 /**
  * `gh pr view <n> --json <fields>`, parsed. Null when GitHub answers that
  * there's no such PR (see NO_SUCH_PR).
@@ -116,9 +119,14 @@ export async function ghPrViewJson(prNumber: number, fields: string): Promise<an
       }
     }
     const err = stderr.toString();
+    // Checked first: "no GitHub remote" also mentions `gh auth login`.
     if (NO_SUCH_PR.some((re) => re.test(err))) return null;
-    const lines = err.trim().split("\n").filter(Boolean);
-    detail = lines.at(-1) ?? `gh exited with status ${exitCode}`;
+    const lines = err
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    detail = lines.length > 0 ? lines.join(" / ") : `gh exited with status ${exitCode}`;
+    if (NOT_LOGGED_IN.some((re) => re.test(err))) break;
   }
   throw new PrFetchError(prNumber, detail);
 }

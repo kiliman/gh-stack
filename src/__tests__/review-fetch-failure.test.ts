@@ -51,6 +51,12 @@ async function runCli(args: string[]) {
   return { exitCode, out: stdout + stderr };
 }
 
+/** How many times `gh pr view <n>` ran (the stub logs every call). */
+async function viewCalls(n: number): Promise<number> {
+  const log = await Bun.file(`${stubDir}/calls.log`).text();
+  return log.split("\n").filter((l) => l.startsWith(`pr view ${n} `)).length;
+}
+
 /** Make `gh pr view <n>` answer with this PR state. */
 async function pr(n: number, state: string, reviewDecision: string): Promise<void> {
   const json = {
@@ -136,6 +142,20 @@ describe("merge --approved", () => {
     expect(out).toContain("failed to move active token in keyring");
     expect(out).not.toContain("unapproved");
     expect(await getSha(tmpDir, "pr1")).toBe(before);
+    expect(await viewCalls(2)).toBe(3); // the first try and two retries
+  });
+
+  test("gh not logged in stops it without retrying", async () => {
+    await Bun.write(
+      `${viewDir}/2.fail`,
+      "To get started with GitHub CLI, please run:  gh auth login\n",
+    );
+
+    const { exitCode, out } = await runCli(["merge", "--approved", "--dry-run"]);
+
+    expect(exitCode).toBe(1);
+    expect(out).toContain("gh auth login");
+    expect(await viewCalls(2)).toBe(1);
   });
 
   test("a failure that clears on retry plans the full approved range", async () => {

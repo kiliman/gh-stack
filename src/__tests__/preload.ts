@@ -85,6 +85,14 @@ for (const name of Object.keys(process.env)) {
   if (name.startsWith("GH_STACK_")) delete process.env[name];
 }
 
+// Tests that reach the real `gh` (in-process commands in temp repos) must get
+// the same answer everywhere: "no GitHub remote", so no PR. Logged out (CI),
+// gh answers "not logged in" instead, which gh-stack rightly treats as an
+// unknown state. A fake token makes gh go on to look at the remotes, and it
+// never lets a test act on GitHub with the developer's own account.
+process.env.GH_TOKEN = "gh-stack-test-fake-token";
+delete process.env.GH_ENTERPRISE_TOKEN;
+
 // Most tests drive real git (temp repos, a bare remote, rebases, pushes), and
 // a few run two restacks. Bun's 5 s default fails them on a loaded machine,
 // e.g. under the pre-push hook while other work runs. bunfig.toml has no

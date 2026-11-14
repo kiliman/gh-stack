@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.22
+
+### ✨ Features
+- **`gh-stack submit --existing`** pushes every branch in the stack that already has a PR and opens no new one. It works from wherever you stand, and still retargets bases and refreshes titles and stack sections. A branch with no PR on top stays local, and `--json` reports it as `skipped`. It's the way to publish after `sync --no-push` or `restack --no-push`. Until now, a plain `submit` from the top opened a PR for a branch meant to stay local, so agents pushed branches by name with `git push --force-with-lease`. If a branch without a PR sits under a PR, `--existing` stops before pushing anything and names that branch. (#82, #93)
+
+### 🐛 Fixes
+- **A local branch on top of a stack no longer shows up in its PRs.** The `(N/M)` in PR titles counted every tracked branch, and the stack section listed branches without a PR as "(no PR yet)". So tracking a new branch on top renumbered every PR on the next submit and showed that branch to reviewers. Both now count only the branches with PRs, plus any branch without one that a PR sits on (it's that PR's base). (#93)
+- The agent skill says to publish with `submit --existing` instead of pushing stack branches with `git push`. (#93)
+
 ## 0.19.21
 
 ### 🐛 Fixes

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.26
+
+### 🐛 Fixes
+- **`--help` anywhere shows the command's help and runs nothing.** A `--help` before the command name was dropped, so `gh-stack --help submit` ran submit, which pushes. Now `gh-stack --help <command>`, `gh-stack <command> --help` and `gh-stack help <command>` all print that command's help page, and work outside a git repository too. A test runs every command and alias with `--help` in all three forms and checks that nothing changed. (#96, #98)
+- **`gh-stack log --help` prints a help page** instead of the stack tree. (#98)
+- **`gh-stack list` works** as an alias of `ls`; the `checkout` and `ls` help texts already named it. (#98)
+- **`GH_STACK_YES`, `GH_STACK_PLAIN` and `GH_STACK_NO_COLOR` take `1/0`, `true/false` or `yes/no`,** like `GH_STACK_NO_PUSH`, and anything else is an error. `GH_STACK_YES=true` used to be ignored, and `GH_STACK_NO_COLOR=0` turned color off. (#98)
+- **`--yes` turns color off,** as `GH_STACK_YES` always did: both turn on plain output. (#98)
+
+### 📝 Help Improvements
+- `merge --help` documents `--overwrite-remote` (with `--base`). The help text and `config --help` include `join` among the commands `GH_STACK_NO_PUSH` keeps local. (#98)
+
 ## 0.19.25
 
 ### 📝 Docs

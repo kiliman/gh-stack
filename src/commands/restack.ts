@@ -206,7 +206,7 @@ OPTIONS
               Rewrite branches even though origin has commits they lack
               (see below). Those commits are dropped from origin
   --dry-run   Show what would happen without executing
-  --verbose   Show diagnostic info (snapshot vs merge-base)
+  --verbose   Show diagnostic info (where each rebase base came from)
 
 COMMITS ONLY ON ORIGIN
   Before rewriting anything, restack and sync check each branch's copy on

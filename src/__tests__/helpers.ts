@@ -389,6 +389,18 @@ case "$1 $2" in
     echo "$n" > "$GH_STATE"
     echo "https://github.com/acme/widgets/pull/$n"
     ;;
+  "pr view")
+    # GH_PR_VIEW_DIR/<n>.json answers \`gh pr view <n>\`; <n>.fail fails it every
+    # time with the file's text on stderr; <n>.flaky fails it once, then is removed.
+    d="$GH_PR_VIEW_DIR"
+    if [ -n "$d" ] && [ -f "$d/$3.flaky" ]; then cat "$d/$3.flaky" >&2; rm "$d/$3.flaky"; exit 1; fi
+    if [ -n "$d" ] && [ -f "$d/$3.fail" ]; then cat "$d/$3.fail" >&2; exit 1; fi
+    if [ -n "$d" ] && [ -f "$d/$3.json" ]; then cat "$d/$3.json"; exit 0; fi
+    # Description reads (getPrBody) get an empty body, as they always have.
+    case "$*" in *"--json body"*) exit 0 ;; esac
+    echo "GraphQL: Could not resolve to a PullRequest with the number of $3. (repository.pullRequest)" >&2
+    exit 1
+    ;;
   "pr edit")
     # GH_KILL_ON_EDIT: gh-stack dies here, after creating PRs, before its last write.
     [ -n "$GH_KILL_ON_EDIT" ] && kill -9 $PPID

@@ -38,6 +38,8 @@ export interface BranchReview {
   prState: string | null;
   /** "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "PENDING" | null. */
   reviewDecision: string | null;
+  /** Set when GitHub couldn't be read for this PR: prState and reviewDecision are unknown, not empty. */
+  fetchError?: string;
 }
 
 export interface PlannedStep {
@@ -50,7 +52,7 @@ export interface MergePlan {
   /** Contiguous bottom-up branches to process, in order. */
   steps: PlannedStep[];
   /** Where (and why) we stopped — null if the whole stack is included. */
-  stop: { branch: string; reason: string } | null;
+  stop: { branch: string; reason: string; fetchFailed?: true } | null;
 }
 
 /**
@@ -68,6 +70,12 @@ export function planMerges(ordered: BranchReview[], opts: { approveAndMerge: boo
   const steps: PlannedStep[] = [];
 
   for (const b of ordered) {
+    // An unknown state is not an unapproved one (#66): stop, and say why, so
+    // the caller refuses to act instead of planning a smaller range.
+    if (b.fetchError) {
+      return { steps, stop: { branch: b.branch, reason: b.fetchError, fetchFailed: true } };
+    }
+
     if (b.prState === "MERGED") {
       steps.push({ branch: b.branch, pr: b.pr, action: "advance-only" });
       continue;

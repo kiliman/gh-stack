@@ -15,6 +15,8 @@ import {
   getBranchRefSha,
   getCommitPatch,
   getPrInfo,
+  fetchPrInfo,
+  PrFetchError,
   getCommitFiles,
   getPrMergeState,
   getRepoNwo,
@@ -401,16 +403,33 @@ OPTIONS
       ordered.map(async (branch) => {
         const pr = stack.branches[branch]?.pr ?? null;
         if (pr == null) return { branch, pr: null, prState: null, reviewDecision: null };
-        const info = await getPrInfo(pr);
-        return {
-          branch,
-          pr,
-          prState: info?.state ?? null,
-          reviewDecision: info?.reviewDecision ?? null,
-        };
+        try {
+          const info = await fetchPrInfo(pr);
+          return {
+            branch,
+            pr,
+            prState: info?.state ?? null,
+            reviewDecision: info?.reviewDecision ?? null,
+          };
+        } catch (err) {
+          if (!(err instanceof PrFetchError)) throw err;
+          return { branch, pr, prState: null, reviewDecision: null, fetchError: err.message };
+        }
       }),
     );
     reviewSpinner.stop("Review status checked");
+
+    // A review state we couldn't read is unknown, not "unapproved": acting on
+    // it would quietly merge fewer PRs than asked (#66), so stop instead.
+    const unreadable = reviews.filter((r) => r.fetchError);
+    if (unreadable.length > 0) {
+      p.cancel(
+        `Couldn't read the review state from GitHub, so nothing was merged:\n` +
+          unreadable.map((r) => `    ${r.branch}: ${r.fetchError}`).join("\n") +
+          `\n\n  This is usually a transient gh failure (rate limit, network, auth switch). Run the same command again.`,
+      );
+      process.exit(1);
+    }
 
     // planMerges walks bottom-up over the contiguous run of approved (or
     // already-merged) branches, stopping at the first that isn't approved.

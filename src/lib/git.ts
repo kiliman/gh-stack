@@ -3,6 +3,7 @@ import { $ } from "bun";
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, realpath, stat } from "node:fs/promises";
 import pc from "picocolors";
+import { type LandedCopy, landedCopy } from "./landed-copies.ts";
 
 export const STACK_SYNC_TAG_PREFIX = "stack-sync-base";
 export const STACK_SYNC_TAG_GLOB = `${STACK_SYNC_TAG_PREFIX}-*`;
@@ -896,6 +897,8 @@ export class WorktreeBusyError extends Error {
 export interface RewriteResult {
   ok: boolean;
   worktree: string | null;
+  /** Commits the rebase skipped because the target already had them (#79). */
+  skipped?: LandedCopy[];
 }
 
 /**
@@ -911,12 +914,69 @@ export async function rebaseBranch(
   from: string | null,
 ): Promise<RewriteResult> {
   const args = from ? ["rebase", "--onto", onto, from] : ["rebase", onto];
+  // The branch ref stays on its old tip until the rebase finishes, so it
+  // bounds what `onto` gained when there's no explicit `from`.
+  const since = from ?? (await revParse(branch));
+  const skipped: LandedCopy[] = [];
   const wt = await readyWorktreeFor(branch);
   if (!wt) {
     await checkout(branch);
-    return { ok: await runRebase([...args, branch]), worktree: null };
+    const ok =
+      (await runRebase([...args, branch])) || (await skipLandedCopies(onto, since, skipped));
+    return { ok, worktree: null, skipped };
   }
-  return { ok: await runRebase(args, wt), worktree: wt };
+  const ok = (await runRebase(args, wt)) || (await skipLandedCopies(onto, since, skipped, wt));
+  return { ok, worktree: wt, skipped };
+}
+
+/**
+ * A rebase onto `onto` stopped: while the commit it stopped on is a copy of a
+ * change `onto` already has (#79, see landed-copies.ts), skip it, say so and
+ * add it to `skipped`.
+ * True once the rebase finishes; false when it stops on anything else, which
+ * is left paused for the user like any conflict.
+ */
+async function skipLandedCopies(
+  onto: string,
+  since: string,
+  skipped: LandedCopy[],
+  cwd?: string,
+): Promise<boolean> {
+  let last: string | null = null;
+  while (await isRebaseInProgress(cwd)) {
+    const stopped = await stoppedCommit(cwd);
+    // The same commit again means the skip itself failed: stop, don't spin.
+    if (!stopped || stopped === last) return false;
+    const copy = await landedCopy(stopped, onto, since, cwd);
+    if (!copy) return false;
+    reportSkippedCopy(copy, onto);
+    skipped.push(copy);
+    last = stopped;
+    if (await runRebase(["rebase", "--skip"], cwd)) return true;
+  }
+  return false;
+}
+
+/** The commit a paused rebase stopped on (REBASE_HEAD), or null. */
+async function stoppedCommit(cwd?: string): Promise<string | null> {
+  const r = await inDir($`git rev-parse --verify -q REBASE_HEAD`, cwd)
+    .quiet()
+    .nothrow();
+  return r.exitCode === 0 ? r.stdout.toString().trim() : null;
+}
+
+function reportSkippedCopy(copy: LandedCopy, ontoRef: string): void {
+  // join rebases onto a sha; name it the way git's own output would.
+  const onto = /^[0-9a-f]{40}$/.test(ontoRef) ? ontoRef.slice(0, 10) : ontoRef;
+  console.log(`  ${pc.yellow("↷")} Skipped ${pc.yellow(copy.commit.slice(0, 10))} ${copy.subject}`);
+  console.log(
+    pc.dim(
+      `    Already on ${onto} through ${copy.via.sha.slice(0, 10)} ${copy.via.subject} (${copy.present} of its ${copy.added} added lines are there).`,
+    ),
+  );
+  if (copy.differs.length > 0) {
+    console.log(pc.dim(`    Kept ${onto}'s version of ${copy.differs.join(", ")}.`));
+  }
 }
 
 /**

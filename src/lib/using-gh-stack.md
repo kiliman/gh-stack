@@ -311,6 +311,14 @@ it. Don't pass `--fresh` unless you were asked to abandon the run: it discards
 the run's remaining steps. `git rebase --abort` does not end the run; a resume
 runs that rebase again.
 
+**Copies of commits main already has** (a commit cherry-picked from another PR
+that has since merged, even an older version under another ticket): the rebase
+skips them by itself and prints `↷ Skipped <sha> <subject>` with the commit
+that landed it and the files that keep main's version. Check those files still
+fit the branch (run its tests). A conflict that still stops is the branch's own
+work, or a copy with changes main doesn't have: resolve it. Don't
+`git rebase --skip` it unless you've checked every change in it is on main.
+
 **Interrupted or partly pushed run** (killed, timed out, or a push failed):
 run `gh-stack restack --resume`. It continues from the saved state and retries
 the pushes, parents first. If everything already finished it prints the run's

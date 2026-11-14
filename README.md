@@ -212,6 +212,9 @@ restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--overwrite-remote]
         git rebase --continue
         gh-stack restack --resume
 
+    A commit that main already has through another PR (a copy, see
+    "Commits Main Already Has") is skipped instead of stopping.
+
     Interrupted runs: restack and sync save their progress (and a log
     of every rebase and push) in .git/.gh-stack/restack-state.json
     after each step, until the last push. `--resume` continues from
@@ -629,6 +632,17 @@ gh-stack solves this by snapshotting every branch's tip **before** any destructi
 If the child sat **behind** the parent when the snapshot was taken (a placeholder branch created before any work landed on it), the recorded tip isn't in the child's history — but it still pins the parent's pre-rewrite history, so the boundary is derived as the child's fork point on it (`merge-base(child, recorded-tip)`). A child with no unique commits is simply moved to the parent's tip, no rebase involved. When no safe boundary can be determined at all, restack refuses with a manual `git rebase --onto` recipe rather than guessing.
 
 Snapshots also power `gh-stack undo`, so the same data structure does double duty.
+
+### Commits Main Already Has
+
+A stack branch sometimes carries a copy of a commit from another PR: a shared helper or a fix cherry-picked into each branch that needs it. Once that PR squash-merges, rebasing the branch replays the copy onto a main that already has the change. git drops an identical copy by itself, but a copy is usually an older version of what landed (the original PR was amended after the copy was taken, and the copy may carry another ticket in its subject), so the rebase stops on an add/add or content conflict.
+
+When a rebase in `restack`, `sync`, `merge`, `join` or `restack --onto` stops, gh-stack checks the commit it stopped on. It skips it (`git rebase --skip`) only when both hold:
+
+- one commit the target gained since the branch's base touched every file the stopped commit touches (the squash that landed it), and
+- at least 80% of the lines it adds are already in the target's version of those files, counting at least 3 lines with real content (a lone `}` or `end` proves nothing).
+
+It prints the skipped commit, the commit that landed it, and which files keep the target's version, and the run log lists it too. Any other conflict stops as before, for you to resolve. On the Nov 11 swarm copies this skipped all six copies (91-100% of their lines were on main) and none of the branches' own conflicting commits (0-22%).
 
 ### Stack Position in PR Titles
 

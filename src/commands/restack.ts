@@ -583,14 +583,28 @@ async function startRebase(
 }
 
 /** The rebase succeeded: what's left for this branch is its push. */
-async function finishRebase(branch: string, onto: string, ctx: ChainContext): Promise<void> {
+async function finishRebase(
+  branch: string,
+  onto: string,
+  ctx: ChainContext,
+  rewrite?: git.RewriteResult,
+): Promise<void> {
   ctx.rebased.push(branch);
   ctx.unpublished.delete(branch); // a declined rebase that's now done; a failed push re-adds it
   if (!run) return;
   run.rebase = null;
   run.declined = run.declined.filter((b) => b !== branch);
   if (!run.push_only.includes(branch)) run.push_only.push(branch);
-  await record({ branch, action: "rebased", onto });
+  const skipped = rewrite?.skipped ?? [];
+  await record({
+    branch,
+    action: "rebased",
+    onto,
+    // #79: say which commits the rebase left out, since the target had them.
+    ...(skipped.length > 0 && {
+      detail: `skipped ${skipped.map((c) => c.commit.slice(0, 10)).join(", ")}: already on ${onto}`,
+    }),
+  });
 }
 
 /**
@@ -753,7 +767,7 @@ async function handleResume(
         const rewrite = await git.rebaseBranch(r.branch, r.onto, r.boundary);
         if (!rewrite.ok) conflictStop(rewrite);
         p.log.success("Rebase successful");
-        await finishRebase(r.branch, r.onto, ctx);
+        await finishRebase(r.branch, r.onto, ctx, rewrite);
       }
       pushOnly.add(r.branch);
     } else {
@@ -997,7 +1011,7 @@ async function handleReroot(
   const rewrite = await git.rebaseBranch(root, newBase, oldBaseTip);
   if (!rewrite.ok) conflictStop(rewrite);
 
-  await finishRebase(root, newBase, ctx);
+  await finishRebase(root, newBase, ctx, rewrite);
 
   // Push the moved root, then restack the children onto it.
   await processChain(meta, stackName, chain, 0, new Set([root]), ctx);
@@ -1087,7 +1101,7 @@ export async function syncChain(
     const rewrite = await git.rebaseBranch(root, trunkRef, null);
     if (!rewrite.ok) conflictStop(rewrite);
     p.log.success("Base branch rebased onto main");
-    await finishRebase(root, trunkRef, ctx);
+    await finishRebase(root, trunkRef, ctx, rewrite);
   }
 
   // Push the root, whether it was rebased or already current: a commit made on
@@ -1274,7 +1288,7 @@ async function processChain(
 
     if (rewrite.ok) {
       p.log.success("Rebase successful");
-      await finishRebase(branch, parent, ctx);
+      await finishRebase(branch, parent, ctx, rewrite);
       ctx.touched.push(branch);
 
       // Push immediately (don't batch) so an interrupt can't leave later

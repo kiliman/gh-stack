@@ -134,9 +134,9 @@ adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`
   // the base to main, and stops there if the base conflicts with main. The
   // branches it collapsed are done: their changes are on origin's base as
   // squash commits. Drop them instead of restacking their own commits onto
-  // that base, where they'd conflict with their squashed copies (#81). (After
-  // merged bottoms the advance re-roots the survivors first: a collapse above
-  // them is left for the next sync.)
+  // that base, where they'd conflict with their squashed copies (#81). Only
+  // when no bottom PR merged: a run that advances past merged bottoms doesn't
+  // also look for a collapse above them.
   const collapsed = merged.plan.steps.length === 0 ? await findCollapsed(stack, ordered) : [];
 
   // Nothing is rewritten yet: stop here if origin holds commits the local

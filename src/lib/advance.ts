@@ -247,7 +247,8 @@ export async function advancePastMerged(opts: {
   meta: StackMetadata;
   stackName: string;
   /**
-   * The merged run, every branch of it. Their commits are in the trunk, so
+   * The merged run, every branch of it. Their commits are squashed into the
+   * target (the trunk, or the base `merge` collapsed them into: #81), so
    * they're dropped without being re-rooted themselves (#54).
    */
   merged: string[];

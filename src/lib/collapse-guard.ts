@@ -11,8 +11,8 @@
 //     (what was squashed into *its* parent).
 //
 // Fail closed. "covered" needs proof: the commit is an ancestor, a commit
-// there has its patch-id (context ignored), or the tree holds every file it wrote at the blob it
-// wrote. "missing" needs proof too: the tree holds every file it touched
+// there has its patch-id (context ignored), or the tree holds every file it
+// wrote at the blob it wrote. "missing" needs proof too: the tree holds every file it touched
 // exactly as it was *before* the commit. Anything in between is "unconfirmed",
 // and a lookup that fails is "unverified". The caller must not merge on either
 // without asking (and never under --yes).

@@ -21,6 +21,7 @@
 // `env` to the scrubbed process.env.
 
 import { setDefaultTimeout } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,11 +86,29 @@ for (const name of Object.keys(process.env)) {
   if (name.startsWith("GH_STACK_")) delete process.env[name];
 }
 
-// Tests that reach the real `gh` (in-process commands in temp repos) must get
-// the same answer everywhere: "no GitHub remote", so no PR. Logged out (CI),
-// gh answers "not logged in" instead, which gh-stack rightly treats as an
-// unknown state. A fake token makes gh go on to look at the remotes, and it
-// never lets a test act on GitHub with the developer's own account.
+// No test reaches the real `gh` (#86). Commands run in-process (sync, merge,
+// restack in temp repos) and CLIs spawned without a stub of their own find this
+// fake first on PATH. It gives the answer the real gh gives in a temp repo:
+// "no GitHub remote", so no PR. The real gh could be a wrapper that swaps in
+// the developer's account (one drops GH_TOKEN and reads the keychain), and
+// under load its keychain lookup failed with empty stderr, which gh-stack
+// rightly treats as an unknown PR state: the pre-push hook flaked on it. Tests
+// that need answers put their own stub (helpers.ts createGhStub) ahead of
+// this one.
+//
+// GH_TOKEN stays fake as a second layer, for a spawn that rebuilds PATH
+// without this directory: a real gh then still can't act as the developer.
+const fakeGhDir = mkdtempSync(join(tmpdir(), "gh-stack-test-gh-"));
+writeFileSync(
+  join(fakeGhDir, "gh"),
+  `#!/bin/sh
+echo "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use \\\`gh auth login\\\`" >&2
+exit 1
+`,
+  { mode: 0o755 },
+);
+process.env.PATH = `${fakeGhDir}:${process.env.PATH}`;
+process.on("exit", () => rmSync(fakeGhDir, { recursive: true, force: true }));
 process.env.GH_TOKEN = "gh-stack-test-fake-token";
 delete process.env.GH_ENTERPRISE_TOKEN;
 

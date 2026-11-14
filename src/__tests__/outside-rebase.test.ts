@@ -205,4 +205,46 @@ describe("restack after the parent was rebased outside gh-stack (#83)", () => {
     expect(await count("A..B")).toBe(1);
     expect(await Bun.file(`${tmpDir}/a2.txt`).exists()).toBe(false);
   });
+
+  test("the reflog never stands alone: no shared history still refuses", async () => {
+    // A was replaced by an unrelated history. B still sits on A's old tip, and
+    // the reflog knows it, but with no merge-base and no snapshot there is no
+    // boundary to raise, so restack refuses as it always has (#30).
+    await createBranch(tmpDir, "A", "main");
+    await makeCommit(tmpDir, "a.txt", "a\n", "A: add a.txt");
+    await createBranch(tmpDir, "B", "A");
+    await makeCommit(tmpDir, "b.txt", "b\n", "B: add b.txt");
+    const bTip = await sha("B");
+    await $`git -C ${tmpDir} checkout -q --orphan fresh`.quiet();
+    await $`git -C ${tmpDir} rm -rqf .`.quiet();
+    await makeCommit(tmpDir, "other.txt", "other\n", "an unrelated history");
+    await $`git -C ${tmpDir} branch -f A fresh`.quiet();
+    await seed();
+
+    const m = (await readLibMetadata())!;
+    expect(await resolveRestackBoundary(m, "A", "B")).toBeNull();
+
+    await checkout(tmpDir, "B");
+    expect(await runExpectingExit(() => restack([]))).toBe(1);
+    expect(await rebaseInProgress()).toBe(false);
+    expect(await sha("B")).toBe(bTip);
+  });
 });
+
+// Swallow an intentional process.exit so it doesn't kill the runner; return the code.
+async function runExpectingExit(fn: () => Promise<void>): Promise<number | undefined> {
+  const origExit = process.exit;
+  let exitCode: number | undefined;
+  process.exit = ((code?: number) => {
+    exitCode = code ?? 0;
+    throw new Error("__process_exit__");
+  }) as never;
+  try {
+    await fn();
+  } catch (err) {
+    if (!(err instanceof Error) || err.message !== "__process_exit__") throw err;
+  } finally {
+    process.exit = origExit;
+  }
+  return exitCode;
+}

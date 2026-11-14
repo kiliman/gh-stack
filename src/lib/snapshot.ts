@@ -55,7 +55,8 @@ export type RestackBoundary = { sha: string; source: BoundarySource };
  *    former tip the child is built on and the parent no longer reaches (see
  *    reflogBoundary) replaces the result of steps 1–3 whenever it sits above
  *    it. Everything at or below a former parent tip was the parent's, so the
- *    higher boundary is the safe one, as in step 2.
+ *    higher boundary is the safe one, as in step 2. It never stands alone:
+ *    when steps 1–3 find nothing, the result is still null.
  *
  * Returns null when nothing resolves (no snapshot evidence and no common
  * history) — the caller must refuse rather than guess.
@@ -107,13 +108,11 @@ export async function resolveRestackBoundary(
   );
 
   // 4. A former tip from the parent's reflog wins whenever it sits above what
-  //    the snapshots and merge-base found (#83).
-  const reflog =
-    currentParentTip && currentChildTip ? await reflogBoundary(parentBranch, childBranch) : null;
-  if (
-    reflog &&
-    (!recorded || (reflog !== recorded.sha && (await git.isAncestor(recorded.sha, reflog))))
-  ) {
+  //    the snapshots and merge-base found (#83). It only raises a boundary:
+  //    with none from steps 1–3, the caller still refuses.
+  if (!recorded) return null;
+  const reflog = await reflogBoundary(parentBranch, childBranch);
+  if (reflog && reflog !== recorded.sha && (await git.isAncestor(recorded.sha, reflog))) {
     return { sha: reflog, source: "reflog" };
   }
   return recorded;

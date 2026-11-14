@@ -2,24 +2,27 @@
 
 Stacked PR manager for squash-merge workflows.
 
-Manages stacked pull requests with metadata stored locally under `.git/.gh-stack/` (never committed). Designed for repositories that use squash-merge (where tools like Graphite break down). Inspired by [Graphite](https://graphite.dev/) (`gt`) but works directly against GitHub — no backend required.
+gh-stack manages chains of dependent pull requests in repositories that squash-merge, where tools like [Graphite](https://graphite.dev/) break down. It works directly against GitHub through `git` and the `gh` CLI, with no backend. Stack metadata lives locally under `.git/.gh-stack/` and is never committed.
 
 ## Install
 
 ```bash
-# From source (requires Bun)
+bun install -g gh-stack
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/iamclaudia-ai/gh-stack.git && cd gh-stack
 bun install
 bun run build
-ln -s $(pwd)/dist/gh-stack ~/.local/bin/gh-stack
-
-# Or install globally
-bun install -g gh-stack
+ln -sf "$(pwd)/dist/gh-stack" ~/.local/bin/gh-stack
 ```
 
 ### Prerequisites
 
-- [Bun](https://bun.sh) runtime
-- [GitHub CLI](https://cli.github.com/) (`gh`) — authenticated
+- [Bun](https://bun.sh) (the npm package runs under Bun)
+- [GitHub CLI](https://cli.github.com/) (`gh`), authenticated
 - Git 2.30+
 
 ## Terms
@@ -34,675 +37,390 @@ bun install -g gh-stack
 ## Quick Start
 
 ```bash
-# You have branches: main → feat-1 → feat-2
-# Go to the top of the chain and init:
+# Already have branches main → feat-1 → feat-2? Init from the top of the chain:
 git checkout feat-2
-gh-stack init                    # Auto-detects the chain!
+gh-stack init                    # detects the chain and offers to track all of it
 
-# Or start fresh:
-git checkout kiliman/first-pr
-gh-stack init                    # Creates stack with this branch
-gh-stack create kiliman/second-pr  # Branch off current, add to stack
+# Or start fresh from one branch:
+git checkout feat-1
+gh-stack init
+gh-stack create feat-2           # branch off the current branch and track it
 
-# Push everything to GitHub and create PRs
+# Push the stack and open PRs (you don't need init first: submit tracks the chain)
 gh-stack submit
 
-# View the stack
-gh-stack log                     # tree view (default)
+# Look around
+gh-stack log                     # tree view (the default command)
 gh-stack ls                      # numbered list
+gh-stack status                  # live PR dashboard: reviews, CI, mergeability
 
-# Navigate
-gh-stack up                      # move to child branch
-gh-stack down                    # move to parent branch
-gh-stack top                     # jump to tip of stack
-gh-stack bottom                  # jump to base of stack
+# Move around
+gh-stack up / down / top / bottom
+gh-stack checkout 2              # jump to branch #2 from `ls`
 
-# Sync with main and restack
+# Fixed something low in the stack? Push it and carry it up to the children
+gh-stack submit --restack
+
+# main moved: rebase the stack onto it
 gh-stack sync
 
-# Check PR status
-gh-stack status
-
-# Split a long in-review chain so new work becomes its own stack
-gh-stack split feat-12           # feat-12.. → new stack based on feat-11
-# ...later, after the original stack merges to main:
-gh-stack restack --onto main     # re-root the split stack onto main
-
-# Splice a branch (and its open PR) that was cut from main on its own into the stack
-gh-stack join fix-auth --dry-run # preview the resulting stack + each PR's diff
-gh-stack join fix-auth           # make it the new bottom (or --above <branch>)
+# Land it
+gh-stack merge                   # the whole stack → one squash commit on main
+gh-stack merge --approved        # only the approved run, from the bottom up
+gh-stack merge --base            # just the bottom PR; run again for the next
 ```
 
 ## Commands
 
+Put `--help` after a command's name to see its options (`gh-stack submit --help`). `log` has no help page.
+
 ### Core Workflow
 
+#### `init`
+
 ```
-init [--name <name>] [--description <desc>] [--parent <branch>]
-    Create a new stack from the current branch. Auto-detects branch
-    chains — if you're at the top of main → feat-1 → feat-2, all
-    branches are added to the stack automatically.
-
-create <branch-name> [--description <desc>]
-    Create a new git branch off the current branch and add it to
-    the stack. The current branch must already be tracked.
-
-add [branch] [--parent <branch>]
-    Track an EXISTING local branch (default: the current branch) in a
-    stack — without pushing or opening a PR. Walks local ancestry: if the
-    branch sits on top of an existing stack it's adopted into it (parent
-    auto-detected); otherwise a new stack is created from the chain.
-    A PR that gh-stack already recorded for a branch in git config (in
-    another worktree of the repo) is kept, so a stack submitted from a
-    worktree can be tracked in the main checkout and merged from there.
-    The adding worktree takes the branch over from then on.
-
-    --parent <branch>: stack it directly on <branch> (which it must
-    already be based on), tracking <branch> first if needed. Use this
-    for a branch with no commits of its own yet — it sits AT its
-    parent's tip, so ancestry can't tell which is the parent and it
-    would otherwise be rooted at trunk (init/add warn when this
-    happens). It also re-homes an already-tracked branch, but only
-    when it's alone in its stack and has no PR.
-
-    Use this for a WIP branch you've created with `git checkout -b` but
-    aren't ready to submit. It fills the gap between creating a branch and
-    `submit`: until a branch is tracked, `sync`/`restack`/navigation don't
-    know about it, and `add` is how you track it without publishing. (When
-    you do run `submit`, it auto-tracks too — `add` is the no-push path.)
-
-submit [-d|--draft|--no-draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--existing] [--restack] [--json] [--dry-run]
-    Push all downstack branches to GitHub, create PRs for branches
-    that don't have them, number each PR title with its stack position
-    `(N/M)`, and update all PR descriptions with stack visualization.
-    Idempotent — safe to run repeatedly.
-
-    The `(N/M)` count and the stack section cover the branches with PRs,
-    plus any branch without one that a PR sits on (it's that PR's base).
-    A branch with no PR above it is local work: it isn't counted or
-    shown, so tracking a new branch on top never renumbers the PRs.
-
-    --existing pushes only the branches that already have PRs, across the
-    whole stack wherever you stand, and opens no new PR. It still
-    retargets bases and refreshes titles and stack sections. A branch
-    with no PR on top is left alone (not pushed). This is the way to
-    publish after `sync --no-push` or `restack --no-push`, instead of
-    pushing branches by name with `git push --force-with-lease`. If a
-    branch without a PR sits under one that has a PR, --existing stops
-    before pushing anything: give that branch a PR with `submit` first.
-    -t/-b need the current branch to have a PR; not combinable with
-    --restack.
-
-    --draft creates new PRs as drafts; --no-draft creates them ready for
-    review. Draft is create-time only: submit never changes the draft
-    state of an existing PR. A repo can make drafts the default with
-    `[submit] draft = true` in .gh-stack.toml (see Configuration).
-
-    --restack: after submitting, restack the branches above the current
-    one onto it. submit covers DOWNSTACK (trunk → current); restack covers
-    UPSTACK (the children), so together they sync the whole stack from
-    wherever you're standing. The everyday loop: drop downstack, fix an
-    issue, commit, then `submit --restack` to push the fix and propagate
-    it up in one command. Skips cleanly when nothing sits above you.
-
-    Self-healing: if the current branch isn't tracked in a stack yet,
-    submit auto-detects the chain from trunk → current, registers (or
-    reconciles into) a stack, then pushes + creates PRs for the whole
-    chain. You never need to run `gh-stack init` first — running submit
-    from the top of a bare chain of local branches converges to the
-    expected end state (stack registered, branches pushed, PRs created).
-
-    --title/-t and --body/-b set the title/body for the branch you're on.
-    They work whether the PR is new OR already exists — on an existing PR
-    they update it in place: the title keeps its (N/M) stack position and
-    the body is replaced with the "📚 Stacked on" block re-merged in. Use
-    this instead of `gh pr edit` (which would wipe the stack viz block) to
-    let an agent or script regenerate a PR's title/description safely.
-    --body-file reads the body from a file. In --yes mode without --title,
-    titles are auto-generated from branch names.
-
-    --json prints the result as one JSON document on stdout, on every
-    exit, so a script or agent gets the PR it just created without a
-    follow-up `gh pr view`:
-      { stack, current_branch,
-        branches: [{ branch, parent, pr, url, title, action, pushed,
-                     draft, error? }],
-        error: null | { message, hint?, log? } }
-    branches is the submit scope (trunk → current; the whole stack with
-    --existing) in stack order. action is created (new PR), updated
-    (pushed, or base/title/description edited), unchanged, skipped
-    (--existing: no PR, so left local), or failed (see the entry's
-    error). draft is
-    true/false for PRs created this run, null otherwise. The top-level
-    error is set when the run stopped early (bad flags, nothing to
-    submit, a push failure): branches then lists what happened before
-    it, and stack/current_branch may be null. For a refused push, the
-    message and the branch's error name the line that looks like the
-    failure (a pre-push hook's failing check, say), hint holds the
-    lines printed to stderr, and log is the absolute path of git's full
-    output (push-failure.log). Exits 1 if error is set or
-    any branch failed. Logs go to stderr, plain and uncolored. Implies
-    --no-edit; can't be combined with --dry-run or --restack (run
-    `gh-stack restack` separately).
+gh-stack init [--name <name>] [--description <desc>] [--parent <branch>]
 ```
+
+Creates a stack from the current branch. If the branch sits on a chain of local branches (main → feat-1 → feat-2), init detects the chain and asks whether to add all of it (with `--yes` it does). Run it from the top of the chain so every branch is found.
+
+- `--name <name>`: stack name (default: the current branch)
+- `--description <desc>`: stack description
+- `--parent <branch>`: trunk branch (default: `main`)
+
+#### `create`
+
+```
+gh-stack create <branch-name> [--description <desc>]
+```
+
+Creates a branch off the current one and adds it to the current stack. The current branch must already be tracked.
+
+- `--description <desc>`: description for the branch
+
+#### `add`
+
+```
+gh-stack add [branch] [--parent <branch>]
+```
+
+Tracks an existing local branch (default: the current one) without pushing or opening a PR, so `sync`, `restack` and navigation know about it. If the branch sits on top of a stack, it joins that stack; otherwise a new stack is created from its chain. A PR that gh-stack recorded for the branch in another worktree is kept.
+
+- `--parent <branch>`: stack it directly on `<branch>`, which it must already be based on. Needed for a branch with no commits of its own yet: it sits at its parent's tip, so ancestry can't tell which is the parent. Also re-homes an already-tracked branch that is alone in its stack and has no PR.
+
+#### `submit`
+
+```
+gh-stack submit [-d|--draft|--no-draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>]
+                [--body-file <f>] [--existing] [--restack] [--json] [--dry-run]
+```
+
+Pushes every branch from trunk up to the current one, opens PRs for branches that don't have one, numbers each PR title with its stack position `(N/M)`, and refreshes the stack section in every PR description. Safe to run repeatedly. If the current branch isn't tracked yet, submit detects its chain and tracks it first.
+
+Branches without a PR at the top of the stack are local work: they aren't counted in `(N/M)` or shown in the stack section, so tracking a new branch on top doesn't renumber anything.
+
+- `-d, --draft` / `--no-draft`: open new PRs as drafts, or ready for review. Only affects PRs created by this run. The default comes from `[submit] draft` (see [Configuration](#configuration)).
+- `-n, --no-edit`: don't prompt for titles; generate them from branch names (`--yes` does this too unless `--title` is given)
+- `-t, --title <title>` / `-b, --body <body>`: title or body for the current branch's PR. On an existing PR they update it in place, keeping the `(N/M)` position and the stack section, which `gh pr edit` would wipe.
+- `--body-file <f>`: read the body from a file
+- `--existing`: push only the branches that already have PRs, across the whole stack, and open no new PR. Bases, titles and stack sections are still refreshed. Use it to publish after `sync --no-push` or `restack --no-push`. It refuses if a branch without a PR sits under one that has a PR.
+- `--restack`: afterwards, restack the branches above the current one onto it. submit covers downstack, restack covers upstack, so this updates the whole stack from wherever you stand.
+- `--json`: print one JSON document on stdout on every exit (logs go to stderr, uncolored). Implies `--no-edit`.
+- `--dry-run`: show what would happen
+
+`--existing` and `--json` can't be combined with `--restack`; `--json` can't be combined with `--dry-run`.
+
+The `--json` document:
+
+```
+{ "stack": "...", "current_branch": "...",
+  "branches": [{ "branch", "parent", "pr", "url", "title", "action", "pushed", "draft", "error"? }],
+  "error": null | { "message": "...", "hint"?: [...], "log"?: "..." } }
+```
+
+`branches` is the submit scope in stack order. `action` is `created`, `updated`, `unchanged`, `skipped` (no PR under `--existing`) or `failed`. `draft` is true/false for PRs created this run, otherwise null. The top-level `error` is set when the run stopped early; for a refused push, `log` is the path of git's full output. The exit code is 1 if `error` is set or any branch failed.
+
+#### `log`
+
+```
+gh-stack log
+```
+
+Shows the current stack as a tree with branch numbers, PRs and descriptions. This is the default command. On an untracked branch it says what to run next (`add`, `submit` or `init`).
 
 ### Stack Navigation
 
 ```
-checkout [<branch>]
-    Switch to a branch by name, or interactive picker.
-    --stack    Switch between stacks instead of branches
-    (alias: co)
+gh-stack checkout [<number>]   Switch to a branch by its number from `ls`; no number opens a picker (alias: co)
+gh-stack checkout --stack      Switch between stacks (interactive)
+gh-stack up [steps]            Move to a child branch; asks when there are several
+gh-stack down [steps]          Move to the parent branch
+gh-stack top                   Jump to the tip of the stack; asks when there are several
+gh-stack bottom                Jump to the first branch above trunk
+gh-stack ls                    List the stack's branches with their numbers
+gh-stack stacks [--current] [--json]
+                               List all stacks and their topology
+```
 
-up [steps]
-    Move to child branch (upstack). Prompts if multiple children.
+`stacks` is read-only and makes no network calls. Its `--json` output is the stable interface for scripts, rather than reading `.git/.gh-stack/`:
 
-down [steps]
-    Move to parent branch (downstack).
-
-top
-    Jump to the tip (leaf) of the current stack.
-
-bottom
-    Jump to the base (first branch above trunk).
-
-ls
-    List branches with position numbers.
+```
+{ "current_stack", "current_branch",
+  "stacks": [{ "name", "description", "base", "is_current",
+               "branches": [{ "branch", "parent", "pr", "description" }] }] }
 ```
 
 ### Stack Management
 
+#### `restack`
+
 ```
-restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--overwrite-remote] [--verbose]
-    Rebase the current branch and all descendants onto their parents.
-    Uses metadata snapshots and the parent's reflog to recover the
-    correct rebase base even after a parent's history has been
-    rewritten, by gh-stack or by plain git.
-
-    --no-push (or GH_STACK_NO_PUSH=1, or `[restack] push = false` in
-    config): rebase locally only, and list the refs left ahead of
-    origin. It overrides --yes for pushes, so an agent can restack
-    unattended without publishing anything. --push pushes even when the
-    env var or a config default says not to. --resume keeps the push
-    decision of the run it resumes (an interrupted local-only run stays
-    local) unless the resume itself passes --push or --no-push.
-
-    On conflict:
-        git rebase --continue
-        gh-stack restack --resume
-
-    A commit that main already has through another PR (a copy, see
-    "Commits Main Already Has") is skipped instead of stopping.
-
-    Interrupted runs: restack and sync save their progress (and a log
-    of every rebase and push) in .git/.gh-stack/restack-state.json
-    after each step, until the last push. `--resume` continues from
-    there: after a conflict, a kill, or failed pushes. If the run had
-    already finished, it prints the run's log and exits 0. A bare
-    `restack` or `sync` with an interrupted run pending asks whether to
-    finish it first (with --yes it does) instead of starting a different
-    run on top of it. It then says it finished that run ("nothing
-    changed" when nothing was left to do) and goes on to its own work
-    from the branch it was run on: `sync` always syncs (main may have
-    moved since the run began), and `restack` restacks unless the
-    finished run already covered that restack. That work pushes as the
-    finished run did, unless the command passes --push or --no-push.
-    Run from a branch in no stack, it stops after the finished run.
-    `--fresh` discards the interrupted run and starts over. `git rebase --abort` ends the rebase, not the run: a resume
-    runs that rebase again (so does one killed before git started it),
-    and earlier branches' failed or held pushes stay queued. To abandon
-    the run, use `--fresh`. A state file from an older gh-stack is
-    refused with that same pointer, never upgraded. `merge` and `join`
-    refuse to run while a restack/sync is pending, and `undo` discards
-    the run it rolls back.
-
-    A branch is never pushed onto a parent that isn't on origin at the
-    commit the branch sits on (the parent's push failed or was declined,
-    or it has unpushed commits): its PR would be diffed against the
-    parent's old history. It's held back, the run exits 1 listing the
-    refs that aren't in sync, and `--resume` retries the pushes, parents
-    first.
-
-    Commits only on origin: before rewriting anything, restack and sync
-    check each branch's copy on origin. If it has commits the local
-    branch never had, e.g. the squash commit `merge --collapse` adds to
-    a parent PR's branch on GitHub, rewriting would drop them from the
-    PR, so the run stops, names them, and prints the pull or
-    cherry-pick that brings them in. Earlier versions of local commits
-    left on origin by a --no-push or interrupted run (found in the
-    branch's reflog or a snapshot, or patch-equivalent) don't count, and
-    neither do commits from origin's main (GitHub's "Update branch").
-    A branch whose origin copy couldn't be checked at all (not fetched,
-    or git failed) is treated the same way, never as clean. Interactive
-    runs ask; --yes stops. --overwrite-remote rewrites anyway, dropping
-    them. Sync skips bottom branches whose PRs already merged: it
-    advances past them rather than rewriting them. When an advance past
-    a merged bottom can't push the new bottom, its PR keeps its old base
-    until a later push of that branch lands, which retargets it.
-
-    Every gh-stack force-push (restack, sync, merge, submit, join) uses
-    --force-with-lease --force-if-includes: git refuses to overwrite an
-    origin tip you fetched but never brought into the local branch, and
-    gh-stack explains the refusal. A tip the check above cleared is
-    pushed with an explicit lease on exactly that commit instead.
-
-    A push over an origin tip that's a version of the branch this repo
-    had (its pre-rebase tip, from the reflog or a snapshot, or one the
-    check above cleared) prints one line, "Force-push <branch>? origin
-    <old> → <new>". The full prompt with a warning is kept for an origin
-    tip the repo never had, and for a branch with no copy on origin yet.
-
-    (alias: rebase)
-
-restack --onto <ref>
-    Re-root the current stack onto a new base ref, changing the stack's
-    base. Use this to move a split stack off its parent-stack branch and
-    onto main once the parent stack has merged — only the stack's own
-    commits replay onto the new base.
-
-sync [--dry-run] [--no-push|--push] [--resume | --fresh] [--overwrite-remote]
-    Fetch main, rebase the base branch onto main, push it, then restack
-    all children (every branch above it, in one resumable run). Snapshots every branch's pre-sync tip so children can be
-    correctly rebased even though their parent's history was rewritten.
-    If the bottom PR(s) already merged outside gh-stack (e.g. the GitHub
-    web UI, or the base of a `merge --approved` landing with the PRs
-    collapsed into it), sync detects this and advances the stack past
-    them: it drops every merged branch and re-roots each unmerged branch
-    sitting on them onto main with `--onto`, so only their own commits
-    replay, instead of replaying the now-squashed commits and conflicting.
-    When a merged branch had several children, each child (with the
-    branches above it) becomes its own stack and is synced in turn. It
-    warns about a merged PR whose changes never reached main (merged
-    into a branch after that branch's own PR had landed).
-    When `merge` collapsed the upper PRs into the base and then stopped
-    because the base conflicts with main, those branches are done: their
-    PRs merged into their stack parents, and their changes are squash
-    commits on origin's base. sync drops them from the stack, fast-
-    forwards the local base to origin's copy if it's behind, re-roots
-    any unmerged branch above them onto the base, and rebases only the
-    base onto main. Restacking them would replay their commits onto
-    their own squashed copies and conflict.
-
-    --no-push / --push (and their defaults): as for restack. Also skips
-    retargeting a PR's base after advancing past a merged bottom;
-    the next `submit` pushes and retargets together. --resume and
-    --fresh: as for restack (`sync --resume` is `restack --resume`).
-    Commits only on origin / --overwrite-remote: as for restack.
-
-merge [--dry-run] [-d|--delete-branch] [--collapse] [--skip-collapse-check]
-merge --approved [--collapse] [--dry-run] [-d|--delete-branch]
-merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push]
-    Default (top-down collapse): squash-merge the whole stack top-down
-    via GitHub (PR3 → PR2 → PR1), then enables auto-merge for the base PR
-    into main. The whole stack lands on main as a single squash commit.
-    All merges happen on GitHub so PRs show as "Merged", Linear tickets
-    close automatically, and GitHub Actions fire normally. Squash commit
-    subjects leave out the ` (N/M)` stack position that `submit` adds to
-    PR titles. Skips already-
-    merged PRs (safe to re-run). Waits for GitHub between merges, and
-    self-heals its spurious "Head branch is out of date" (a stale PR
-    head pointer after a child squash) by re-syncing and retrying. Before
-    handing the base PR to auto-merge it confirms the PR is mergeable: a
-    real conflict with main stops the merge (the stack is left intact —
-    resolve with `gh-stack sync`, which rebases only the base and drops
-    the branches already squashed into it, then re-run), while merely
-    waiting on pending checks is fine (auto-merge gates on them). In a
-    linked worktree, where main is checked out elsewhere, the final
-    local sync says which worktree to pull instead of switching to main.
-
-    Collapse check: before the base PR goes to main (and at the end of
-    --collapse), merge checks that each collapsed child's squash commit
-    is still in what it was squashed into: the base branch on origin,
-    or the parent PR's head when it merged. A rebased copy counts (same
-    patch-id, context ignored, so a base rebased onto main through a
-    conflict next to the squash commit's lines still proves it), and so
-    does a base tree holding every file the squash commit wrote. It
-    fails closed:
-      - proven missing (the base has every file the squash commit
-        touched exactly as before it): merge stops (exit 2), names the
-        PR, and prints how to put the commit back (via its patch from
-        GitHub when the commit itself can't be fetched);
-      - anything it can't establish (a GitHub or fetch failure, a
-        shallow clone, content that matches neither version): the PR is
-        UNVERIFIED, not called missing. Interactive runs ask (default
-        stop, with a retry when the failure looks transient); --yes
-        stops (exit 2) with the checks to run by hand.
-    `merge --base` runs the same check when the base PR carries PRs
-    collapsed into it by an earlier `merge --collapse` (found from
-    GitHub: merged PRs whose base was their stack parent).
-    --skip-collapse-check turns the check off.
-
-    --approved  Collapse only the approved run. Walks approval from the
-                BASE up and stops at the first PR that isn't approved
-                (contiguous — an unapproved PR4 caps the run at PR3 even
-                if PR5 is approved). Collapses base..highest-approved into
-                a single squash commit on main and leaves the unapproved
-                tail in place; after the base PR lands, run `gh-stack sync`
-                to re-root the tail onto main. All approved ⇒ same as a
-                full merge. A review state that can't be read from
-                GitHub (after retries) stops the merge; it never counts
-                as unapproved.
-    --base      Squash-merge ONLY the bottom PR into main as its own
-                commit, then re-root the next branch onto main (replaying
-                just its own commits). If the bottom PR has several
-                children, each is re-rooted and becomes its own stack.
-                One PR per run — run it again to land the next. Approval is enforced by GitHub branch
-                protection, not gh-stack. A base PR already merged outside
-                gh-stack is detected and advanced past, along with
-                PRs already collapsed into it. The re-root waits
-                until origin's main shows the merge commit, and stops (exit
-                2) if it never does. When a re-root stops (a conflict, or
-                main not showing the merge yet), finish it by re-running
-                `gh-stack merge --base` after `git rebase --continue`: it
-                advances past the merged PR and picks up a branch that's
-                already re-rooted. Don't run `restack` there: it would put
-                the branch back on the merged one.
-                --no-push (or GH_STACK_NO_PUSH=1) still merges the PR on
-                GitHub but keeps the re-root and the restack above it
-                local, PR bases included, until `gh-stack submit`. The
-                `[restack] push` config default doesn't apply to merge.
-    --collapse  With the default or --approved, stop after collapsing into
-                the base PR WITHOUT merging it to main, so you can review
-                the cumulative diff on GitHub. Re-run `gh-stack merge` to
-                finish. Alias: --stop-at-base.
-
-split [<branch>] [--name <name>]
-    Cut a stack into two at <branch>. The cut branch and every branch
-    above it move into a NEW stack whose base is the cut branch's parent
-    (which stays in the original stack). The target stack is the one
-    containing <branch>, so this works from anywhere — not only while
-    standing on it. Purely a metadata operation — no git branches are
-    moved or rebased. Interactive selector (current stack) if no branch
-    is given; you can't split at the stack's root.
-
-    Use it when a long chain is in review and can't merge yet, but new
-    work is piling on top: split at the first "new work" branch so the
-    original stack stays the review unit and the new stack rides on its
-    tip. Once the original stack merges, re-root the new stack with
-    `gh-stack restack --onto main`.
-
-join <branch> [--above <branch>] [--dry-run] [--push|--no-push] [--verbose]
-    Splice an existing branch — usually one that already has a PR —
-    into a stack. Without --above it becomes the new bottom of the
-    current stack; with --above <branch> it goes between <branch> and
-    its children (--above main = the bottom). The <branch> named by
-    --above picks the stack, so that form works from anywhere.
-
-    The incoming branch is synced FIRST: only its own commits (those
-    above its fork point with main) replay onto the current tip of its
-    new parent. Otherwise a branch that's behind main would carry the
-    main commits it was missing into every child's diff once they're
-    restacked onto it. Then the branches above it are restacked onto it
-    (restack's own loop), each branch is pushed with --force-with-lease,
-    and the PR bases are retargeted on GitHub (the incoming PR onto its
-    new parent, each re-parented child PR onto the incoming branch).
-    Pushing follows the same setting as restack: --no-push,
-    GH_STACK_NO_PUSH, or `[restack] push = false` in .gh-stack.toml or
-    the user config keeps the join local; --push overrides them.
-    An open PR for the incoming branch is adopted into the metadata.
-
-    A stack named after its old bottom branch is renamed after the new
-    bottom (the old stack file is tombstoned under deleted/); a custom
-    name, or a name already used by another active or archived stack,
-    is kept. A branch alone in its own one-branch stack (what `submit`
-    makes of a standalone PR) is absorbed; a branch in a larger stack
-    is refused.
-
-    Without --no-push the incoming branch must already be on origin
-    (`git push -u origin <branch>` first), and if its push is declined
-    or rejected, join stops before touching anything above it. A branch
-    above the insertion point that was cut from an older, since-
-    rewritten version of the incoming branch is refused, with the
-    `git rebase --onto` that drops its stale copies. (A child cut from
-    an earlier tip that was only appended to is handled automatically.)
-    Unknown options are an error.
-
-    --dry-run   Show the resulting stack and, for every affected PR,
-                its projected commits / files changed vs its new parent,
-                plus how far the incoming branch is behind main. Changes
-                nothing (uses the last fetch of origin/main).
-    --no-push   As for restack: rebase and update metadata locally, and
-                leave origin and the PR bases alone. The next `submit`
-                pushes and retargets together.
-
-    Takes a snapshot first (`gh-stack undo` restores every branch,
-    including the incoming one). Refuses on a dirty tree, and when the
-    branches above the insertion point need a restack first. On a
-    conflict syncing the incoming branch the stack is left unchanged:
-    resolve, `git rebase --continue`, and re-run the same join (or
-    `git rebase --abort`). A conflict restacking the branches above it
-    resumes like restack: `git rebase --continue`, then
-    `gh-stack restack --resume`.
-
-rename [<old-name>] <new-name>
-    Rename a tracked branch (runs `git branch -m`) and re-key the stack
-    topology so it stays tracked, re-parenting any children that pointed
-    at the old name. With one argument, renames the current branch. Built
-    for the throwaway-branch → ticketed-PR flow (`feature-wip` →
-    `feature-BEE-1234`) without hand-editing metadata.
-
-    You don't strictly need this command: gh-stack also auto-reconciles
-    after a plain `git branch -m` (the per-branch git config is rename-
-    proof, so the next gh-stack command heals the name-keyed topology).
-    Renaming a branch that already has a PR is local-only — the GitHub PR
-    still tracks the old remote branch.
-
-delete [<branch>] [-k|--keep-branch] [--no-remote]
-    Remove a branch from its stack and re-parent its children, then
-    delete the underlying local git branch (and the remote branch if
-    it was pushed). The <branch> argument names its own stack, so this
-    works from anywhere. Interactive selector (current stack) if none
-    specified. Deleting a stack's root that has several children leaves
-    them side by side on the base, so each becomes its own stack.
-    Deleting a stack's last branch archives the empty stack.
-    --keep-branch leaves the git branches untouched (metadata only),
-    and the branch keeps its PR number, so adding it back restores it;
-    --no-remote deletes the local branch but keeps the remote.
-
-untrack [<branch>]
-    Stop tracking a branch: remove it from its stack's metadata and
-    re-parent its children, leaving the local branch, origin's copy
-    and its PR untouched (delete --keep-branch, without the
-    confirmation). The branch keeps its PR number, so
-    gh-stack add <branch> puts it back.
+gh-stack restack [--resume | --fresh] [--no-push | --push] [--overwrite-remote] [--dry-run] [-v|--verbose]
+gh-stack restack --onto <ref>
 ```
+
+Rebases the current branch and every branch above it onto their parents, then force-pushes them. It finds the right rebase base even after a parent was rewritten, by gh-stack or by plain git (see [Rebasing After a Parent Changes](#rebasing-after-a-parent-changes)). Interactive runs ask before rebasing and pushing; `--yes` doesn't. Refuses on a dirty working tree. Alias: `rebase`.
+
+- `--no-push`: rebase locally only. Also `GH_STACK_NO_PUSH=1` or `[restack] push = false`. Wins over `--yes`.
+- `--push`: push even when the env var or config says not to
+- `--resume`: continue an interrupted run (after a conflict, a failed push or a kill). It keeps that run's push decision unless you pass `--push` or `--no-push`.
+- `--fresh`: discard an interrupted run and start over
+- `--overwrite-remote`: rewrite branches even though origin has commits they lack (see below), dropping those commits
+- `--onto <ref>`: re-root the stack onto a new base, replaying only the stack's own commits. Use it to move a split stack onto `main` once the stack it was split from has merged.
+- `--dry-run`: show what would happen
+- `-v, --verbose`: show where each rebase base came from
+
+On a conflict, resolve it, run `git rebase --continue`, then `gh-stack restack --resume`.
+
+- **Interrupted runs.** restack and sync save their progress after every rebase and push. A bare `restack` or `sync` with a run pending asks to finish it first (with `--yes` it does), says when it has, then does its own work. `git rebase --abort` ends the rebase, not the run; use `--fresh` to abandon it. `merge` and `join` refuse to start while a run is pending.
+- **Commits only on origin.** Before rewriting anything, restack checks each branch's copy on origin. If it has commits the local branch never had (the squash commit `merge --collapse` adds on GitHub, say), the run stops and names them so you can pull or cherry-pick them first. Interactive runs ask; `--yes` stops.
+- **Safe pushes.** Pushes use `--force-with-lease --force-if-includes`. A branch whose parent isn't on origin (its push failed or was declined) is held back, since its PR would be diffed against the parent's old history. The run exits 1, and `--resume` retries the pushes, parents first.
+
+#### `sync`
+
+```
+gh-stack sync [--no-push | --push] [--resume | --fresh] [--overwrite-remote] [--dry-run]
+```
+
+Fetches main, rebases the stack's bottom branch onto it, pushes, and restacks every branch above, all in one resumable run. Bottom PRs that already merged (on GitHub, or by `merge`) are dropped and the branches on them re-rooted onto main, so only their own commits replay. When a merged branch had several children, each becomes its own stack. Refuses on a dirty working tree.
+
+- `--no-push` / `--push`: as for restack. `--no-push` also leaves PR bases alone; the next `submit` pushes and retargets together.
+- `--resume`: same as `restack --resume`
+- `--fresh`, `--overwrite-remote`, `--dry-run`: as for restack
+
+#### `merge`
+
+```
+gh-stack merge [--collapse] [-d|--delete-branch] [--skip-collapse-check] [--dry-run]
+gh-stack merge --approved [--collapse] [-d|--delete-branch] [--dry-run]
+gh-stack merge --base [--no-push | --push] [--overwrite-remote] [-d|--delete-branch] [--dry-run]
+```
+
+Lands PRs by merging them on GitHub, so they show as "Merged", linked tickets close and Actions fire as usual. Already-merged PRs are skipped, so it's safe to re-run. Takes a snapshot first.
+
+- **Default (top-down collapse).** Squash-merges the stack from the top down (PR3 into PR2, PR2 into PR1), then hands the base PR to GitHub auto-merge, so the whole stack lands on main as one squash commit once checks pass. The stack is archived. If the base PR conflicts with main, merge stops and leaves the stack intact: run `gh-stack sync`, then `merge` again.
+- **`--approved`.** The same collapse, but only up to the highest PR in an unbroken approved run from the bottom (an unapproved PR4 caps it at PR3 even if PR5 is approved). The rest stays stacked; after the base PR lands, `gh-stack sync` re-roots it onto main.
+- **`--base`.** Squash-merges only the bottom PR into main, then re-roots the next branch onto main and restacks above it. One PR per run. If the re-root stops on a conflict, resolve it, `git rebase --continue`, and re-run `merge --base`. `--no-push` (or `GH_STACK_NO_PUSH=1`) still merges the PR but keeps the re-root local until `submit`; the `[restack] push` config doesn't apply here. `--overwrite-remote` is passed on to that restack.
+- `--collapse`: with the default or `--approved`, stop after collapsing into the base PR so you can review the combined diff on GitHub; re-run `merge` to finish. Alias: `--stop-at-base`.
+- `-d, --delete-branch`: delete the remote branches after merging
+- `--skip-collapse-check`: skip the check below
+- `--dry-run`: show what would happen
+
+Before the base PR goes to main, merge checks that every PR collapsed into it is still in the base branch, so a base rewritten without them can't silently drop their changes. A PR proven missing stops the merge (exit 2) with how to restore it. One it can't verify (a GitHub or fetch failure, a shallow clone) is reported as unverified, not missing: interactive runs ask, `--yes` stops (exit 2).
+
+Only `--approved` reads approvals. Otherwise, approval is up to GitHub's branch protection.
+
+#### `split`
+
+```
+gh-stack split [<branch>] [--name <name>]
+```
+
+Cuts a stack in two at `<branch>`: it and every branch above it become a new stack based on its parent. Metadata only, nothing is rebased. Use it when a long stack is stuck in review and new work piles on top. Once the original stack merges, run `gh-stack restack --onto main` in the new one. With no branch it opens a picker; you can't split at the root.
+
+- `--name <name>`: name of the new stack (default: the cut branch)
+
+#### `join`
+
+```
+gh-stack join <branch> [--above <branch>] [--no-push | --push] [--dry-run] [-v|--verbose]
+```
+
+Splices an existing branch, usually one with its own PR, into the current stack: as the new bottom, or between `--above <branch>` and its children. The incoming branch is first rebased onto its new parent (only its own commits), then the branches above it are restacked onto it and pushed, and the PR bases are retargeted on GitHub. Its open PR is adopted. A stack named after its old bottom is renamed after the new one.
+
+The branch must exist locally and, unless `--no-push`, on origin. A branch alone in a one-branch stack is absorbed; one in a larger stack is refused. Refuses on a dirty tree. Takes a snapshot first.
+
+- `--above <branch>`: insert between `<branch>` and its children; this also picks the stack, so it works from anywhere (`--above main` is the default)
+- `--dry-run`: show the resulting stack and each affected PR's projected commits and files. Changes nothing.
+- `--no-push` / `--push`: as for restack (`GH_STACK_NO_PUSH` and `[restack] push` apply)
+- `-v, --verbose`: show rebase-boundary diagnostics
+
+A conflict rebasing the incoming branch leaves the stack untouched: resolve, `git rebase --continue`, and re-run the same join (or `git rebase --abort`). A conflict in the branches above resumes like restack.
+
+#### `rename`
+
+```
+gh-stack rename [<old-name>] <new-name>
+```
+
+Renames a tracked branch (`git branch -m`) and updates the stack so it stays tracked, children included. With one argument it renames the current branch. A plain `git branch -m` heals on the next gh-stack command too. A branch with a PR is renamed locally only; the PR keeps tracking the old remote branch.
+
+#### `delete`
+
+```
+gh-stack delete [<branch>] [-k|--keep-branch] [--no-remote]
+```
+
+Removes a branch from its stack, re-parents its children, and deletes the local branch and its remote copy. Deleting a root with several children makes each child its own stack; deleting the last branch archives the stack. With no branch it opens a picker.
+
+- `-k, --keep-branch`: remove it from the stack only, like `untrack`
+- `--no-remote`: delete the local branch but keep the remote one
+
+#### `untrack`
+
+```
+gh-stack untrack [<branch>]
+```
+
+Removes a branch from its stack's metadata and nothing else: the local branch, its copy on origin and its PR stay. Children are re-parented. It keeps its PR number, so `gh-stack add <branch>` puts it back.
 
 ### Info & Maintenance
 
+#### `status`
+
 ```
-log
-    Display the current stack as a tree with branch numbers,
-    PR info, and descriptions. This is the default command.
-
-    If the current branch isn't tracked yet, log inspects its ancestry
-    and points at the next step: if it sits on top of an existing stack,
-    `gh-stack submit` to add it; if it's stacked on untracked branches,
-    submit to create the stack and open PRs; if it's on trunk, `init`.
-
-update-prs [<branch>] [--stack <name>] [--force]
-    Refresh the "📚 Stacked on" visualization block in every PR
-    description of a stack: the one named by --stack, else the one
-    holding <branch>, else the current branch's. Naming the stack means
-    nothing has to be checked out (a checkout holding other work, or a
-    detached HEAD). Each PR's live description is
-    checked, so a block removed by an outside edit (`gh pr edit`, the
-    GitHub UI) is restored; PRs already showing the current block are
-    skipped, and --force rewrites all of them. A tracked branch with no
-    recorded PR is looked up on GitHub first, so a PR opened with
-    `gh pr create` is adopted. (submit refreshes the block too, but
-    compares against what it last wrote — use update-prs to repair.)
-
-stacks [--current] [--json]
-    List all stacks and their topology. Read-only and network-free —
-    emits stack membership straight from local metadata, so external
-    tools (status scripts, dashboards) can consume --json as a stable
-    interface instead of parsing the .git/.gh-stack/ store directly.
-    --current  Only the stack containing the current branch
-    --json     Topology as JSON: { current_stack, current_branch,
-               stacks: [{ name, description, base, is_current,
-               branches: [{ branch, parent, pr, description }] }] }
-
-status [--current] [--json]
-    PR dashboard showing review state, CI status, and merge readiness.
-    Unlike `stacks`, this hits the network to fetch live PR/CI status.
-    --current  Show only the current stack or standalone PR
-    --json     Structured JSON output (progress goes to stderr)
-
-undo
-    Restore the last snapshot taken before a destructive operation.
-
-archive [<name>...] [--list] [--restore <name>]
-    Archive stacks by name, list archived stacks (the default), or
-    restore one. Archiving is metadata only and reversible: use it for a
-    stack that landed without `merge` (PRs merged on GitHub, or landed
-    from another worktree). A name the archive already has gets a -2,
-    -3… suffix. --restore refuses if a branch is tracked elsewhere now.
-
-config [--json]
-    Show every configurable flag default, its resolved value, and where
-    it came from (flag/env/repo config/user config/built-in), plus the
-    config file paths. Answers "why did this PR open as a draft?" in
-    one command. Works outside a git repo too (user and env layers
-    only). Read-only; edit the TOML files directly.
-
-doctor
-    Migrate old (v2) metadata to the v3 layout, split any stack left
-    with several root branches into one stack per root, archive stacks
-    with no branches left, reconcile git
-    branch config against the topology files (leaving branches another
-    worktree is stacking alone), flag stacks whose base
-    stack appears already-merged into main, and report stacks that
-    still fail the checks other commands run before loading a stack.
-    Safe to run repeatedly.
-
-learn [--skill] [--harness <name>] [--global] [--force]
-    Teach a coding agent how to drive gh-stack. By default prints the
-    canonical skill (Markdown, stamped with the running version) to
-    stdout — the text is compiled into the binary, so it never drifts
-    out of sync with the installed version. --skill installs it as a
-    skill file instead, choosing the path from the harness:
-      Claude Code  <root>/.claude/skills/using-gh-stack/SKILL.md
-      Codex        <root>/.codex/skills/using-gh-stack/SKILL.md
-      Cursor       <root>/.cursor/skills/using-gh-stack/SKILL.md
-    --harness  claude | codex | cursor | all, or a comma list such as
-               claude,codex (skips the interactive prompt). Each target
-               is checked and installed on its own.
-    --global   Install under ~/.<harness>/ instead of the project root
-    --force    Overwrite an existing skill file without confirming, and
-               write through a symlinked skill dir or SKILL.md
-    If the skill dir or SKILL.md is a symlink (say, into a skills repo
-    you keep under version control), the install refuses and names the
-    link target. Only --force writes through it; --yes / GH_STACK_YES
-    does not. A dangling link is never written through: remove it to
-    install there. Harnesses that resolve to the same SKILL.md (a linked
-    skill dir or a shared skills/ dir) are written once and reported as
-    installed via the first. Cancelling an overwrite prompt lists what
-    was installed and what was not attempted, and exits non-zero. The
-    closing refresh hint repeats the --global and --harness you used.
+gh-stack status [--current] [--json]
 ```
+
+Live PR dashboard across stacks: review state, CI and merge readiness. Unlike `stacks`, it queries GitHub.
+
+- `--current`: only the current stack (or the current PR if it's standalone)
+- `--json`: JSON on stdout; progress goes to stderr
+
+#### `update-prs`
+
+```
+gh-stack update-prs [<branch>] [--stack <name>] [--force]
+```
+
+Restores the stack section in every PR description of a stack, including one removed by an outside edit. A tracked branch whose PR was opened outside gh-stack (`gh pr create`) is found and adopted. The stack is the one named by `--stack`, else the one holding `<branch>`, else the current branch's, so nothing has to be checked out.
+
+- `--stack <name>`: the stack to update
+- `--force`: rewrite every PR's section, even ones already current
+
+#### `undo`
+
+```
+gh-stack undo
+```
+
+Moves the local branches back to the last snapshot, taken before every restack, sync, merge, join and delete. Only local branch tips are restored: metadata, origin, and PRs and their bases are left as they are, so re-push afterwards if needed. Discards an interrupted run on that stack.
+
+#### `archive`
+
+```
+gh-stack archive <name>...
+gh-stack archive [--list]
+gh-stack archive --restore <name>
+```
+
+Archives stacks, lists archived ones (the default), or restores one. Metadata only and reversible. Use it for a stack that landed without `gh-stack merge`. `merge`, `delete` and `doctor` archive stacks themselves when they land or empty them.
+
+#### `config`
+
+```
+gh-stack config [--json]
+```
+
+Shows every configurable default, its resolved value, where it came from, and the config file paths. Works outside a repo (user and env layers only).
+
+#### `doctor`
+
+```
+gh-stack doctor
+```
+
+Migrates v2 metadata, splits stacks left with several root branches, archives empty stacks, reconciles git branch config with the stack files, and flags stacks whose base looks already merged into main. Safe to run repeatedly.
+
+#### `learn`
+
+```
+gh-stack learn [--skill] [--harness <name>] [-g|--global] [--force]
+```
+
+Prints the agent skill for gh-stack (Markdown, matching the installed version) to stdout.
+
+- `--skill`: install it as a skill file instead, at `<root>/.<harness>/skills/using-gh-stack/SKILL.md`
+- `--harness <name>`: `claude`, `codex`, `cursor`, `all`, or a comma list; skips the prompt
+- `-g, --global`: install under your home directory instead of the project root
+- `--force`: overwrite an existing skill file without asking, and write through a symlinked skill directory or `SKILL.md` (otherwise refused, even with `--yes`)
 
 ## Global Options
 
 ```
---yes, -y      Skip all confirmations (for agents/CI)
---plain        Plain output — no spinners, colors, or banner boxes
---help         Show help for a command
---version, -V  Show version
+--yes, -y      Skip all confirmations (for agents and CI); also turns on --plain
+--plain        Plain output: no spinners, colors or boxes
+--version, -V  Show the version
 ```
 
-`--plain` is auto-enabled when `--yes` / `GH_STACK_YES=1` is set, so agents get clean, easily-filtered output by default. Use `--plain` alone if you want plain output but still interactive prompts.
-
-If a command needs to prompt but stdin isn't a TTY, it exits 1 with the prompt it would have shown, instead of waiting for an answer that can't arrive. Set `GH_STACK_YES=1` (or pass `--yes`) in that context.
+`gh-stack --help` lists the commands. A command that needs to prompt without a TTY exits 1 with the prompt it would have shown; use `--yes` or `GH_STACK_YES=1` there.
 
 ## Environment Variables
 
 ```
-GH_STACK_YES=1         Skip all confirmations (same as --yes; also enables --plain)
-GH_STACK_PLAIN=1       Plain output (same as --plain)
-GH_STACK_NO_PUSH=1     restack, sync and merge --base never push (same as --no-push; wins over --yes; 0 = push)
-GH_STACK_DRAFT=1       submit creates new PRs as drafts (same as --draft; 0 = ready)
-                       (both accept 1/0, true/false, yes/no; anything else is an error)
-GH_STACK_NO_COLOR=1    Disable colored output
+GH_STACK_YES=1       Same as --yes
+GH_STACK_PLAIN=1     Same as --plain
+GH_STACK_NO_COLOR=1  Disable colors
+GH_STACK_NO_PUSH=1   restack, sync, join and merge --base don't push (0 = push); wins over --yes
+GH_STACK_DRAFT=1     submit opens new PRs as drafts (0 = ready)
 ```
+
+`GH_STACK_NO_PUSH` and `GH_STACK_DRAFT` accept `1/0`, `true/false` or `yes/no`; anything else is an error.
 
 ## Configuration
 
-Flags that encode a repo's conventions can get a default, so nobody has to
-remember to type them:
+Flags that encode a repo's conventions can have defaults:
 
 ```toml
 # .gh-stack.toml at the repo root (commit it), or
 # ~/.config/gh-stack/config.toml for personal defaults (honors XDG_CONFIG_HOME)
 [submit]
-draft = true # new PRs open as drafts; --no-draft overrides for one PR
+draft = true # new PRs open as drafts; --no-draft overrides
 
 [restack]
-push = false # restack and sync stay local; --push overrides
+push = false # restack, sync and join stay local; --push overrides
 ```
-
-Precedence, highest first: **CLI flag > env var > repo config > user config >
-built-in default**. `gh-stack config` prints each resolved value and its
-source. When a default (rather than a flag) decides draft or push, the command
-says so in its output.
 
 | Key              | Flags                    | Env                           | Built-in |
 | ---------------- | ------------------------ | ----------------------------- | -------- |
 | `[submit] draft` | `--draft` / `--no-draft` | `GH_STACK_DRAFT`              | `false`  |
 | `[restack] push` | `--push` / `--no-push`   | `GH_STACK_NO_PUSH` (inverted) | `true`   |
 
-`[restack] push` governs `restack` and `sync` only. `merge` and
-`submit --restack` push the branches they restack whatever the config says:
-publishing is their job, and child PRs left stale on GitHub would be worse
-than any default. Only `merge --base` can be kept local, and only by an
-explicit `--no-push` or `GH_STACK_NO_PUSH=1`. A
-`restack --resume` keeps the push decision of the run it resumes unless you
-pass `--push` or `--no-push`. So does the work a bare `restack` or `sync` goes
-on to after finishing an interrupted run.
+Precedence, highest first: CLI flag > env var > repo config > user config > built-in default. `gh-stack config` shows each value and its source, and a command says so when a default rather than a flag decides.
 
-Unknown keys print a warning and are ignored. Malformed TOML, an unreadable
-config file, a non-boolean value for a known key, or an env value other than
-`1/0`, `true/false`, `yes/no` is an error naming the file or variable. It is
-reported before the command changes anything, and a command given an explicit
-flag (`--draft`, `--push`, ...) never reads the config for that setting. `--yes` can't be set in a config file:
-auto-confirming destructive operations has to be asked for per run, with
-`--yes` or `GH_STACK_YES=1`.
+`merge` and `submit --restack` always push what they restack: publishing is their job. Only `merge --base` can be kept local, with `--no-push` or `GH_STACK_NO_PUSH=1`.
+
+Unknown keys print a warning. Malformed TOML, a non-boolean value or a bad env value is an error, reported before anything changes. `--yes` can't be set in a config file.
 
 ## How It Works
 
-### Smart Init
+### Finding the Chain
 
-`gh-stack init` auto-detects branch chains by walking git ancestry. From the top branch, it finds all local branches whose tips are strict ancestors (but not already on trunk) and reconstructs the chain with correct parent relationships. `add` and `submit` detect chains the same way.
+`init`, `add` and `submit` find a branch's chain by walking git ancestry: every local branch whose tip is an ancestor of it and not already on trunk (local `main` or `origin/main`). Two branches at the same commit can't be parent and child, so only one goes in the chain and the others are named in a warning.
 
-A branch counts as already on trunk when its tip is on local `main` **or** `origin/main`, so a stale local `main` (common in a worktree) can't pull review checkouts or branches cut from newer `main` commits into the stack. Two branches at the same commit can't be parent and child, so only one of them goes in the chain: the one gh-stack has recorded in git config, else the first by name. The others are listed in a warning.
+### Rebasing After a Parent Changes
 
-### Snapshot-Based Rebasing
+After a parent branch is rewritten (rebased onto a new main, say), `git merge-base` with its child falls back to the old main, and rebasing from there would replay the parent's old commits onto the child. gh-stack instead records every branch's tip before each destructive operation, and restacks a child from its parent's *old* tip: `git rebase --onto <new-parent-tip> <old-parent-tip> <child>`, which replays only the child's own commits. For a parent rewritten with plain git, which gh-stack never saw, it finds the old tip in the parent's reflog. When no safe base can be found, restack refuses and prints a manual `git rebase --onto` rather than guessing.
 
-The critical insight: after a parent branch's history is rewritten (e.g., rebased onto a new main), `git merge-base(child, parent)` falls all the way back to the original main — and using that as a rebase base would replay the parent's old commits onto the child, producing ghost-conflicts on the parent's own work.
-
-gh-stack solves this by snapshotting every branch's tip **before** any destructive operation. When restacking a child whose parent has been rewritten, gh-stack walks the snapshots newest-first and finds the most recent recorded tip that's no longer an ancestor of the parent's current tip. That orphaned SHA is the correct rebase base — `git rebase --onto <new-parent-tip> <orphaned-old-tip> <child>` replays only the child's unique commits.
-
-If the child sat **behind** the parent when the snapshot was taken (a placeholder branch created before any work landed on it), the recorded tip isn't in the child's history — but it still pins the parent's pre-rewrite history, so the boundary is derived as the child's fork point on it (`merge-base(child, recorded-tip)`). A child with no unique commits is simply moved to the parent's tip, no rebase involved. When no safe boundary can be determined at all, restack refuses with a manual `git rebase --onto` recipe rather than guessing.
-
-Snapshots only see what gh-stack did. A parent rebased or amended with plain git (`git rebase origin/main` on the bottom branch, say) leaves no snapshot of its old tip, or only a stale one from before later commits. Its old tip is still in its reflog, though, so gh-stack also walks the commits the child would replay, newest first, and stops at the first one the parent's reflog records as a former tip. When that sits above the boundary the snapshots or merge-base found, it wins: everything at or below a former parent tip was the parent's. One exception: a tip the parent was moved *back* from (its next reflog position is an ancestor) is skipped. That is the "committed the child's work on the parent, cut the child there, moved the parent back" fix, where the parent's old tip is the child's own work. The reflog only ever raises a boundary; when nothing else resolves, restack still refuses.
-
-Snapshots also power `gh-stack undo`, so the same data structure does double duty.
+The same snapshots power `gh-stack undo`.
 
 ### Commits Main Already Has
 
-A stack branch sometimes carries a copy of a commit from another PR: a shared helper or a fix cherry-picked into each branch that needs it. Once that PR squash-merges, rebasing the branch replays the copy onto a main that already has the change. git drops an identical copy by itself, but a copy is usually an older version of what landed (the original PR was amended after the copy was taken, and the copy may carry another ticket in its subject), so the rebase stops on an add/add or content conflict.
-
-When a rebase in `restack`, `sync`, `merge`, `join` or `restack --onto` stops, gh-stack checks the commit it stopped on. It skips it (`git rebase --skip`) only when both hold:
-
-- one commit the target gained since the branch's base touched every file the stopped commit touches (the squash that landed it), and
-- at least 80% of the lines it adds are already in the target's version of those files, counting at least 3 lines with real content (a lone `}` or `end` proves nothing).
-
-It prints the skipped commit, the commit that landed it, and which files keep the target's version, and the run log lists it too. Any other conflict stops as before, for you to resolve. On the Nov 11 swarm copies this skipped all six copies (91-100% of their lines were on main) and none of the branches' own conflicting commits (0-22%).
+A branch sometimes carries a copy of another PR's commit (a shared fix cherry-picked where it was needed). Once that PR squash-merges, rebasing replays the copy onto a main that already has a newer version of it and stops on a conflict. When a rebase stops, gh-stack skips the commit only if a commit the target gained touched every file it touches and at least 80% of the lines it adds are already there. It prints what it skipped and why. Any other conflict stops for you to resolve.
 
 ### Stack Position in PR Titles
 
-`submit` keeps each PR's **title** suffixed with its stack position as `(N/M)`,
-so you can see the order from a bare "needs your review" list — where only
-titles show, not descriptions — and review bottom-up:
+`submit` suffixes each PR title with its position, so the order shows even in a review list where only titles appear:
 
 ```
 feat(paid-subs): tiers overview list [BEE-20531] (1/4)
@@ -711,15 +429,11 @@ feat(paid-subs): tier create wizard [BEE-20579] (3/4)
 feat(paid-subs): advanced settings step [BEE-20587] (4/4)
 ```
 
-Parentheses (not brackets) avoid colliding with `[BEE-1234]` ticket tags. It's
-self-healing and idempotent: re-running `submit` after adding or reordering a
-branch renumbers the whole stack, and a no-op re-submit changes nothing. The
-position is the only managed part of the title — your text (and ticket tags)
-are preserved. Single-PR stacks get no suffix.
+Parentheses avoid colliding with `[TICKET-123]` tags. Re-running `submit` after adding or reordering branches renumbers the stack; the rest of the title is yours. Single-PR stacks get no suffix, and `merge` leaves the suffix out of squash commit subjects.
 
 ### Stack Visualization
 
-`submit` also adds a stack section to every PR description:
+`submit` also keeps a stack section in every PR description:
 
 ```
 ### 📚 Stacked on
@@ -730,206 +444,66 @@ are preserved. Single-PR stacks get no suffix.
 ┗━ #124 feat: frontend UI (2/2) 👈
 ```
 
-Every PR above the bottom one opens its block with a warning, since its base on
-GitHub is the branch below it, not `main`, and the merge button would squash it
-into that branch and close it for good:
+Every PR above the bottom one also gets a warning, because its base on GitHub is the branch below it: merging it there squashes it into that branch and closes it, and nothing reaches `main`.
 
 > [!WARNING]
 > **Don't merge this PR on GitHub.** Its base is #123's branch, not `main`: merging it here squashes it into that branch and closes it for good, with nothing reaching `main`. Merge #123 first, or land the stack with `gh-stack merge`.
 
-The bottom PR's block has no warning. Once the bottom PR lands and `sync` (or
-`merge`) re-roots the stack, the new bottom PR's warning goes away. The bottom
-of a split stack keeps one, naming the PR in the other stack it is based on.
+The section is built from local metadata, and `submit` only rewrites descriptions whose section changed. Use `gh-stack update-prs` to repair one.
 
-The block is rendered entirely from local metadata plus one repo-identity
-lookup for links — no per-PR API call — and `submit` only rewrites a PR
-description whose block actually changed (membership/order/title), so a
-re-submit that touched one branch on a 12-PR stack does ~1 update, not 12.
-Review/CI status is intentionally not shown here. Run `gh-stack update-prs`
-(`--force` to rewrite all) to refresh manually.
+### Metadata
 
-### Metadata (v3)
-
-Stack metadata lives under `.git/.gh-stack/` (never committed) — a folder of
-per-stack files plus git-native branch config, rather than a single JSON blob.
-A linked worktree keeps its own folder in its own git dir
-(`.git/worktrees/<name>/.gh-stack/`), so each worktree has its own stacks:
+Metadata lives under `.git/.gh-stack/` and is never committed. A linked worktree keeps its own under `.git/worktrees/<name>/.gh-stack/`, so each worktree has its own stacks.
 
 ```
 .git/.gh-stack/
-  current                      derived stack of the current branch (self-heals on read)
-  active/<stack>.json          topology of a live stack (ordered branches, base, description)
-  archived/<stack>.json        merged/closed stacks
-  deleted/<stack>.json         tombstones (recoverable)
-  snapshots/<ts>__<stack>.json append-only, retained per-stack
-  restack-state.json           the last restack/sync/join run: resume point + action log
-  push-failure.log             full output of the last refused push (a failing pre-push hook, say)
+  active/<stack>.json          live stacks: branches, parents, PR numbers, base
+  archived/<stack>.json        landed or archived stacks
+  deleted/<stack>.json         tombstones
+  snapshots/                   branch tips before each destructive operation
+  restack-state.json           the last restack/sync/join run, for --resume
+  push-failure.log             git's full output from the last refused push
+  lock-waits.log               every wait on a git lock (see below)
 ```
 
-A single `active/<stack>.json` looks like:
+Each branch's stack, parent, PR and a stable id are also kept in git config (`branch.<name>.ghstack-*`), so a plain `git branch -m` is healed on the next command. `gh-stack doctor` reconciles the two if they drift. For scripts, read `gh-stack stacks --json` rather than these files.
 
-```json
-{
-  "description": "",
-  "last_branch": "kiliman/feature-2",
-  "base": "main",
-  "branches": {
-    "kiliman/feature-1": { "parent": "main", "pr": 21729 },
-    "kiliman/feature-2": { "parent": "kiliman/feature-1", "pr": 21730 }
-  }
-}
-```
+Repos from before this layout have a single `.git/gh-stack-metadata.json`; commands refuse to run until `gh-stack doctor` migrates it.
 
-Per-branch membership is _also_ recorded in git's own config, so renaming or
-deleting a branch updates/cleans it automatically:
+### Worktrees
 
-```
-branch.<name>.ghstack-stack   <stack>
-branch.<name>.ghstack-parent  <parent-branch>
-branch.<name>.ghstack-pr      <number>
-branch.<name>.ghstack-id      <uuid>   stable identity (survives rename)
-branch.<name>.ghstack-gitdir  <path>   git dir of the worktree that owns it
-```
+Git won't rebase a branch that another worktree has checked out, so `restack`, `sync`, `merge --base` and `join` rebase such a branch inside its own worktree. That worktree must be clean: the command checks first and stops before changing anything if one has uncommitted changes, a rebase in progress, or a missing folder, and prints the fix. A conflict there is resolved in that worktree, then resumed from the one that ran the command.
 
-Git config is shared by every worktree, so each branch records the worktree
-that owns it. A write in one worktree never clears or overwrites a branch
-another live worktree owns. `add` (or any command that starts tracking a
-branch) takes a branch over, which is how a stack is handed from one worktree
-to another. Once a worktree is removed, or its checkout is deleted, the next
-write anywhere clears the config it left behind.
+### Busy Repositories
 
-Clearing a branch's membership keeps `ghstack-pr`: the PR belongs to the
-branch, not the stack. A branch that leaves a stack (`delete --keep-branch`, a
-removed worktree's branches) gets its PR back when any worktree tracks it
-again, and `submit` records each PR the moment it creates it.
-
-The two representations cross-check each other; `gh-stack doctor` reconciles
-any drift. Why this shape:
-
-- **A stack can't silently vanish** — lifecycle transitions are file moves
-  (`active/ → archived/ → deleted/`), and a stale stack file is tombstoned, never
-  just unlinked.
-- **No `current_stack` drift** — the stack you're on is derived from the branch
-  you've checked out (its own membership, or the nearest tracked ancestor for a
-  new branch stacked on top), re-resolved and self-healed on every read, so a
-  written pointer can never contradict reality.
-- **No all-or-nothing blast radius** — one bad write can't corrupt other stacks.
-- **Renames heal themselves** — `git branch -m old new` moves the whole
-  `branch.<old>` config section to `branch.<new>` (id and all), but the JSON is
-  keyed by name and goes stale. On the next command, gh-stack matches the moved
-  config to its stale JSON entry by `ghstack-id` (or PR number for older
-  branches), re-keys it, and re-points any children. So `gh-stack rename` — or
-  even a raw `git branch -m` — never needs manual metadata surgery.
-
-#### Migrating from v2
-
-Repos created before v3 store a single `.git/gh-stack-metadata.json`. Run
-`gh-stack doctor` once — it fans the monolith out into the layout above,
-backfills branch config, explodes snapshots into per-file records, and keeps a
-`.bak` of the old file. Commands refuse to run on unmigrated metadata and point
-you at `doctor`.
-
-### Snapshots
-
-Before any destructive operation (restack, sync, merge, delete), gh-stack saves a snapshot of all branch HEADs as an append-only file under `snapshots/`, retained per-stack. Run `gh-stack undo` to restore.
-
-### Branches Checked Out in Another Worktree
-
-Git won't check out or rebase a branch that another worktree has checked out (`fatal: '<branch>' is already used by worktree at '<path>'`). So `restack`, `sync`, `merge --base` and `join` rebase such a branch from its own worktree (`git -C <path> rebase …`), and that worktree's files move along with the branch. Nothing is detached or checked out behind its back.
-
-That only works when the worktree is clean, so these commands check every branch they're about to rebase first. If one is checked out in a worktree with uncommitted changes, a rebase or merge in progress, or a folder that no longer exists, the command stops before changing anything (exit 1), names the branch and worktree, and gives the fix: `git -C <path> stash`, `git -C <path> rebase --continue`, or `git worktree prune` for a deleted folder.
-
-A conflict in such a branch pauses its rebase in that worktree. The conflict message aims its commands there: resolve the files in that worktree, run `git -C <path> rebase --continue`, then run the gh-stack command the message gives (`gh-stack restack --resume`, or re-run `sync`, `merge --base` or `join`) from the worktree that ran the command, since each worktree keeps its own run state.
-
-`gh-stack checkout`, `up`, `down`, `top` and `bottom` can't move this worktree onto such a branch either; they say which worktree has it.
-
-### Busy Repositories (git locks)
-
-Git doesn't wait for a lock: a checkout or rebase that finds `index.lock` held fails at once. The usual holder is a background `git status` (an editor, a watcher, another agent session), which takes the lock for a few milliseconds. So every git step gh-stack runs that takes a lock (checkout, rebase, reset, commit, branch and tag writes, branch config) waits and retries: after 0.1, 0.2, 0.4, 0.8, 1.6 and 2 seconds, about 5 seconds in all. A rebase that a lock interrupts midway is continued, not reported as a conflict.
-
-If the lock is still held after that, gh-stack names it and stops with exit 1, never "Rebase Conflict". Nothing conflicted, and the step changed nothing: once the lock is gone, run the command again, or `gh-stack restack --resume` for an interrupted restack or sync. gh-stack uses `lsof` to say which process holds the lock. When no process has it open, the lock was left by a git that crashed, and the message says to remove it.
-
-Every wait is logged to `.git/.gh-stack/lock-waits.log` (in a worktree, its own git dir), one JSON line each: when, which lock and command, whether it recovered, and the holder `lsof` found. To find out what keeps taking your locks, look there.
-
-gh-stack also runs its own git calls with `GIT_OPTIONAL_LOCKS=0`, so its reads never take the lock.
-
-## Example Workflow
-
-```bash
-# Start from an existing branch with a PR
-git checkout kiliman/api-layer-WEB-1234
-gh-stack init
-
-# Create second PR on top
-gh-stack create kiliman/frontend-WEB-1234
-# ... code, commit ...
-
-# Push everything and create PRs
-gh-stack submit
-
-# Later: sync everything with main
-gh-stack sync
-
-# Navigate the stack
-gh-stack up          # go to child
-gh-stack down        # go to parent
-gh-stack top         # jump to tip
-
-# Check status
-gh-stack status
-
-# When the whole stack is approved, merge it down as one squash commit
-gh-stack merge       # squash-merges down, pushes, enables auto-merge
-
-# Or: only the approved part is ready — collapse the approved run into one
-# commit and leave the rest stacked (re-root the tail later with `sync`)
-gh-stack merge --approved   # collapses base..highest-approved → main, keeps the tail
-
-# Or: land just the bottom PR, one at a time
-gh-stack merge --base       # merges the bottom PR → main, re-roots the next
-
-# Or: collapse first to review the cumulative diff before shipping
-gh-stack merge --collapse   # squash-merges PRn..PR2 into PR1, stops there
-# ...review base PR on GitHub...
-gh-stack merge              # finishes base PR → main + archives the stack
-```
+A background `git status` (an editor, a watcher, another agent) briefly holds `index.lock`, and git fails at once instead of waiting. gh-stack retries every locking git step for about 5 seconds. If the lock is still held, it exits 1 naming the process that holds it (or saying it was left by a crashed git and can be removed). Nothing changed, so run the command again (or `restack --resume`). Each wait is logged to `lock-waits.log`.
 
 ## Agent/CI Usage
 
-gh-stack is designed to be used by AI agents and CI pipelines. The fastest way
-to onboard an agent is `gh-stack learn` — it prints a version-matched skill (or
-installs one with `--skill`) so the agent learns the current commands, flags,
-and gotchas straight from the binary:
+The quickest way to teach an agent gh-stack is `gh-stack learn`, which prints a skill matching the installed version:
 
 ```bash
-# Teach an agent the current API (always in sync with the installed version)
-gh-stack learn                              # print the skill to stdout
+gh-stack learn                              # print the skill
 gh-stack learn --skill --harness claude     # install it for Claude Code
 gh-stack learn --skill -g --harness all     # every harness, in your home dir
 ```
 
 ```bash
-# Non-interactive mode — all prompts auto-resolved
-export GH_STACK_YES=1
+export GH_STACK_YES=1                       # no prompts, plain output
 
-gh-stack init                    # No confirmations
-gh-stack submit -t "Title [WEB-1234]" -b "Description"  # Explicit PR details
-gh-stack submit -n               # Or auto-generate titles
+gh-stack submit -t "Title [WEB-1234]" -b "Description"
+gh-stack submit -n                          # or generate titles
 gh-stack sync
-gh-stack restack
 
-# Rebase without publishing (e.g. before a human approves the push)
-GH_STACK_NO_PUSH=1 gh-stack restack
-gh-stack submit --existing       # ...then push the branches that have PRs, open none
-
-# Check which defaults apply here (.gh-stack.toml, user config, env)
-gh-stack config
+# Rebase without publishing, then push only the branches that have PRs
+gh-stack restack --no-push
+gh-stack submit --existing
 
 # Structured output
-gh-stack submit --json -t "Title" --body-file body.md   # PR number + URL per branch
-gh-stack status --json
+gh-stack submit --json -t "Title" --body-file body.md
+gh-stack stacks --json
 gh-stack status --current --json
-gh-stack ls
+gh-stack config --json
 ```
 
 ## License

@@ -167,4 +167,42 @@ describe("restack after the parent was rebased outside gh-stack (#83)", () => {
     expect(await count("A..B")).toBe(1);
     expect(await Bun.file(`${tmpDir}/c.txt`).exists()).toBe(true);
   });
+
+  test("a lower reflog tip never overrides a higher snapshot", async () => {
+    // gh-stack recorded A at its second commit and B was built there; then A
+    // was moved back off that commit (so the reflog skips it as a retreat) and
+    // rebased. The snapshot still knows B starts above it. The reflog's best
+    // is one lower, and taking it would replay the dropped commit into B.
+    await createBranch(tmpDir, "A", "main");
+    await makeCommit(tmpDir, "a.txt", "a\n", "A: add a.txt");
+    const recordedTip = await makeCommit(tmpDir, "a2.txt", "a2\n", "A: a2, dropped later");
+    await createBranch(tmpDir, "B", "A");
+    await makeCommit(tmpDir, "b.txt", "b\n", "B: add b.txt");
+    await seed([
+      {
+        timestamp: "2026-11-01T00:00:00.000Z",
+        operation: "submit",
+        stack: "S",
+        branches: { A: recordedTip },
+      },
+    ]);
+    await checkout(tmpDir, "A");
+    await $`git -C ${tmpDir} reset -q --hard HEAD~1`.quiet();
+    await checkout(tmpDir, "main");
+    await makeCommit(tmpDir, "main-new.txt", "new\n", "main: advance");
+    await $`git -C ${tmpDir} rebase main A`.quiet();
+
+    const m = (await readLibMetadata())!;
+    expect(await resolveRestackBoundary(m, "A", "B")).toEqual({
+      sha: recordedTip,
+      source: "snapshot",
+    });
+
+    await checkout(tmpDir, "B");
+    await restack([]);
+
+    expect(await rebaseInProgress()).toBe(false);
+    expect(await count("A..B")).toBe(1);
+    expect(await Bun.file(`${tmpDir}/a2.txt`).exists()).toBe(false);
+  });
 });

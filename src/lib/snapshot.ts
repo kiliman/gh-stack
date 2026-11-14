@@ -151,14 +151,13 @@ async function snapshotBoundary(
  *
  * Candidates are the commits a merge-base rebase would replay (child minus
  * parent), walked descendants-first, so the first one the reflog knows is the
- * highest. A tip the parent ever retreated from (its next position a strict
+ * highest. A tip the parent ever retreated from (its next position an
  * ancestor) is skipped: that is the "committed on the wrong branch, cut the
  * child there, moved the parent back" fix, where the parent's old tip is the
  * child's own work, and trusting it would drop that work from the child.
  */
 async function reflogBoundary(parentBranch: string, childBranch: string): Promise<string | null> {
   const positions = await git.branchReflog(parentBranch);
-  if (positions.length < 2) return null;
   const known = new Set(positions);
 
   for (const commit of await git.commitsNotIn(childBranch, parentBranch)) {
@@ -168,12 +167,14 @@ async function reflogBoundary(parentBranch: string, childBranch: string): Promis
   return null;
 }
 
-/** Whether the reflog ever moved from `tip` back to one of its ancestors. */
+/**
+ * Whether the reflog ever moved from `tip` back to one of its ancestors.
+ * (`positions` is newest first, so the move away from entry i is entry i-1.
+ * Git writes no reflog entry for a no-op update, so a tip never follows itself.)
+ */
 async function retreatedFrom(positions: string[], tip: string): Promise<boolean> {
   for (let i = 1; i < positions.length; i++) {
-    if (positions[i] !== tip) continue;
-    const next = positions[i - 1]!;
-    if (next !== tip && (await git.isAncestor(next, tip))) return true;
+    if (positions[i] === tip && (await git.isAncestor(positions[i - 1]!, tip))) return true;
   }
   return false;
 }

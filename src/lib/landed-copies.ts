@@ -13,7 +13,7 @@
 //      the copy touches (the squash that landed it), and
 //   2. nearly all the lines the copy adds are already in the target's version
 //      of those files.
-// Measured on the swarm copies from Nov 11 (ENT-948, ENT-951, ENT-960): 92-100%
+// Measured on the swarm copies from Nov 11 (ENT-948, ENT-951, ENT-960): 91-100%
 // of their added lines were on main; the real commits that conflicted in the
 // same syncs had 0-22%.
 import { $ } from "bun";

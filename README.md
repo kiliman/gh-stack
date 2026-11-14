@@ -642,7 +642,7 @@ When a rebase in `restack`, `sync`, `merge`, `join` or `restack --onto` stops, g
 - one commit the target gained since the branch's base touched every file the stopped commit touches (the squash that landed it), and
 - at least 80% of the lines it adds are already in the target's version of those files, counting at least 3 lines with real content (a lone `}` or `end` proves nothing).
 
-It prints the skipped commit, the commit that landed it, and which files keep the target's version, and the run log lists it too. Any other conflict stops as before, for you to resolve. On the Nov 11 swarm copies this skipped all six copies (92-100% of their lines were on main) and none of the branches' own conflicting commits (0-22%).
+It prints the skipped commit, the commit that landed it, and which files keep the target's version, and the run log lists it too. Any other conflict stops as before, for you to resolve. On the Nov 11 swarm copies this skipped all six copies (91-100% of their lines were on main) and none of the branches' own conflicting commits (0-22%).
 
 ### Stack Position in PR Titles
 

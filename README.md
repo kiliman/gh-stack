@@ -442,7 +442,8 @@ delete [<branch>] [-k|--keep-branch] [--no-remote]
     specified. Deleting a stack's root that has several children leaves
     them side by side on the base, so each becomes its own stack.
     Deleting a stack's last branch archives the empty stack.
-    --keep-branch leaves the git branches untouched (metadata only);
+    --keep-branch leaves the git branches untouched (metadata only),
+    and the branch keeps its PR number, so adding it back restores it;
     --no-remote deletes the local branch but keeps the remote.
 ```
 
@@ -458,9 +459,12 @@ log
     `gh-stack submit` to add it; if it's stacked on untracked branches,
     submit to create the stack and open PRs; if it's on trunk, `init`.
 
-update-prs [--force]
+update-prs [<branch>] [--stack <name>] [--force]
     Refresh the "📚 Stacked on" visualization block in every PR
-    description for the current stack. Each PR's live description is
+    description of a stack: the one named by --stack, else the one
+    holding <branch>, else the current branch's. Naming the stack means
+    nothing has to be checked out (a checkout holding other work, or a
+    detached HEAD). Each PR's live description is
     checked, so a block removed by an outside edit (`gh pr edit`, the
     GitHub UI) is restored; PRs already showing the current block are
     skipped, and --force rewrites all of them. A tracked branch with no
@@ -708,6 +712,11 @@ another live worktree owns. `add` (or any command that starts tracking a
 branch) takes a branch over, which is how a stack is handed from one worktree
 to another. Once a worktree is removed, or its checkout is deleted, the next
 write anywhere clears the config it left behind.
+
+Clearing a branch's membership keeps `ghstack-pr`: the PR belongs to the
+branch, not the stack. A branch that leaves a stack (`delete --keep-branch`, a
+removed worktree's branches) gets its PR back when any worktree tracks it
+again, and `submit` records each PR the moment it creates it.
 
 The two representations cross-check each other; `gh-stack doctor` reconciles
 any drift. Why this shape:

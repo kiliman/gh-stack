@@ -556,6 +556,10 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
             branchMeta.prTitle = title;
             branchMeta.prBase = parentBranch;
             metadataChanged = true;
+            // Record it now, not only in the write at the end of the run: the
+            // PR exists on GitHub either way, and a later step that fails or a
+            // killed process must not leave it unrecorded (#67).
+            await writeMetadata(meta);
             s.stop(`Created PR #${newPrNumber} for ${pc.blue(branchName)}`);
           } else {
             s.stop(`Created PR for ${pc.blue(branchName)} (could not parse PR number)`);

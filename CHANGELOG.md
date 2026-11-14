@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.18
+
+### 🐛 Fixes
+- **Rebases skip commits main already has through another PR.** A stack branch carrying a copy of a commit from another PR (cherry-picked before that PR was amended, sometimes under another ticket) used to stop `sync` on an add/add or content conflict once the PR squash-merged, and agents skipped the copies by hand. When a rebase stops, gh-stack now skips the commit if one commit on the target touched all its files and at least 80% of its added lines are already there, and prints what it skipped, the commit that landed it, and the files that keep the target's version. The run log lists it too. Any other conflict stops as before. (#79, #89)
+- The agent skill says what a skipped copy looks like, and not to `git rebase --skip` a conflict by hand without checking that every change in it is on main. (#89)
+
 ## 0.19.17
 
 ### 🐛 Fixes

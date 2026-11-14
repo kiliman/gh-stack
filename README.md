@@ -151,14 +151,18 @@ submit [-d|--draft|--no-draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [
       { stack, current_branch,
         branches: [{ branch, parent, pr, url, title, action, pushed,
                      draft, error? }],
-        error: null | { message } }
+        error: null | { message, hint?, log? } }
     branches is the submit scope (trunk → current) in stack order. action
     is created (new PR), updated (pushed, or base/title/description
     edited), unchanged, or failed (see the entry's error). draft is
     true/false for PRs created this run, null otherwise. The top-level
     error is set when the run stopped early (bad flags, nothing to
     submit, a push failure): branches then lists what happened before
-    it, and stack/current_branch may be null. Exits 1 if error is set or
+    it, and stack/current_branch may be null. For a refused push, the
+    message and the branch's error name the line that looks like the
+    failure (a pre-push hook's failing check, say), hint holds the
+    lines printed to stderr, and log is the absolute path of git's full
+    output (push-failure.log). Exits 1 if error is set or
     any branch failed. Logs go to stderr, plain and uncolored. Implies
     --no-edit; can't be combined with --dry-run or --restack (run
     `gh-stack restack` separately).

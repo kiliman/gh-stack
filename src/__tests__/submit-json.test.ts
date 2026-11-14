@@ -2,6 +2,7 @@
 // against a stub `gh` on PATH, so stdout can be checked to hold only the JSON.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
+import { $ } from "bun";
 import {
   buildSubmitJson,
   submitAction,
@@ -157,7 +158,7 @@ describe("buildSubmitJson for an early exit", () => {
         outcomes: [],
         edited: new Set(),
         nwo: null,
-        error: "Could not read body file: nope.md",
+        error: { message: "Could not read body file: nope.md" },
       }),
     ).toEqual({
       stack: null,
@@ -296,12 +297,50 @@ describe("submit --json (CLI)", () => {
       ["feat-a", "created", 101],
       ["feat-b", "failed", 77],
     ]);
-    expect(result.branches[1]!.error).toBe("push to origin/feat-b failed");
+    expect(result.branches[1]!.error).toBe(
+      "push to origin/feat-b failed: ! [remote rejected] feat-b -> feat-b (pre-receive hook declined)",
+    );
 
     // Both PRs (created, and found by lookup) were saved before the abort.
     const meta = await readMetadata(tmpDir);
     const stack = Object.values(meta.stacks)[0]!;
     expect([stack.branches["feat-a"]!.pr, stack.branches["feat-b"]!.pr]).toEqual([101, 77]);
+  }, 30_000);
+
+  test("a failing pre-push hook: the error names the failing check, with the hint and log (#80)", async () => {
+    // A hook that fails one check early, then prints pages of warnings.
+    const hooksDir = `${tmpDir}/test-hooks`;
+    await fs.mkdir(hooksDir);
+    const warningsLoop =
+      'i=1; while [ $i -le 40 ]; do echo "  ! Unexpected any. ($i)"; i=$((i+1)); done';
+    await Bun.write(
+      `${hooksDir}/pre-push`,
+      `#!/bin/sh\necho "❌ Rubocop found issues on your changed lines."\n${warningsLoop}\necho "husky - pre-push script failed (code 1)"\nexit 1\n`,
+    );
+    await fs.chmod(`${hooksDir}/pre-push`, 0o755);
+    await $`git -C ${tmpDir} config core.hooksPath ${hooksDir}`.quiet();
+
+    const { stdout, exitCode } = await runSubmit(["--json", "-t", "Add things"]);
+
+    expect(exitCode).toBe(1);
+    const result = JSON.parse(stdout) as SubmitJson;
+    const log = result.error?.log;
+    // Absolute, so it opens from any directory.
+    expect(log).toMatch(/^\/.*\.gh-stack\/push-failure\.log$/);
+    expect(result.error?.message).toBe(
+      `Push failed for feat-a: ❌ Rubocop found issues on your changed lines. Full output: ${log}. Aborting.`,
+    );
+    expect(result.error?.hint?.[0]).toContain("look like the failure");
+    expect(result.error?.hint).toContain("  ❌ Rubocop found issues on your changed lines.");
+    expect(result.error?.hint?.at(-1)).toContain(log!);
+    expect(await Bun.file(log!).text()).toContain("Unexpected any. (1)");
+    expect(result.branches.map((b) => [b.branch, b.action, b.error])).toEqual([
+      [
+        "feat-a",
+        "failed",
+        "push to origin/feat-a failed: ❌ Rubocop found issues on your changed lines",
+      ],
+    ]);
   }, 30_000);
 
   test("--dry-run finds a PR opened outside gh-stack instead of planning a new one", async () => {

@@ -328,10 +328,13 @@ the process holding the lock; if it says no process has it open, the lock is
 stale: remove the file it names. Every wait is logged, with its holder, to
 `.git/.gh-stack/lock-waits.log`.
 
-**Why did the push fail?** gh-stack prints the last lines of `git push`'s
-output, which includes a pre-push hook's own messages, and saves all of it to
-`.git/.gh-stack/push-failure.log`. Fix the cause (a failing check, say), then
-`--resume`.
+**Why did the push fail?** gh-stack prints the lines of `git push`'s output
+that look like the failure (a pre-push hook's failing check, marked ❌,
+`(fail)`, `error` and the like), then the last lines, and saves all of it to
+`.git/.gh-stack/push-failure.log` (the message gives the absolute path). With
+`submit --json`, `error.message` names the failing line, `error.hint` has the
+printed lines and `error.log` the path, so there's no need to grep the log
+first. Fix the cause, then re-run submit (or `--resume` a restack/sync).
 
 **"Origin has commits that the local branches don't"** (restack/sync exit 1
 before changing anything): a branch's copy on origin has commits it never had,

@@ -72,7 +72,7 @@ gh-stack merge --base            # just the bottom PR; run again for the next
 
 ## Commands
 
-Every command takes `--help` after its name (`gh-stack submit --help`).
+Put `--help` after a command's name to see its options (`gh-stack submit --help`). `log` has no help page.
 
 ### Core Workflow
 

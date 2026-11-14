@@ -89,6 +89,22 @@ describe("restack pushes (#82)", () => {
     expect(res.out).not.toContain("Push Rebased Branch?");
     expect(res.out).not.toContain("never had");
   });
+
+  test("so is pushing over a tip the remote guard cleared that the reflog never had", async () => {
+    // Origin's pr2 back at main: an ancestor of local pr2 (nothing new, so the
+    // guard clears it), but never a tip of pr2, so only the guard vouches for it.
+    const main = await sha("main");
+    await $`git -C ${remoteDir} update-ref refs/heads/pr2 ${main}`.quiet();
+    await checkout(tmpDir, "pr1");
+    await makeCommit(tmpDir, "pr1-fix.txt", "fix\n", "fix on pr1");
+
+    const res = await runCli(["restack"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(res.out).toContain(`Force-push pr2? origin ${main.slice(0, 8)}`);
+    expect(res.out).not.toContain("Push Rebased Branch?");
+    expect(await remoteSha("pr2")).toBe(await sha("pr2"));
+  });
 });
 
 describe("wasLocalTip", () => {

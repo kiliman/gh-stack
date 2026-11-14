@@ -69,8 +69,11 @@ OPTIONS
               Rewrite branches even though origin has commits they lack.
               Those commits are dropped from origin
 
-If an interrupted restack or sync is pending, sync asks whether to resume it
-(with --yes it resumes) rather than starting over on top of it.
+If an interrupted restack or sync is pending, sync asks whether to finish it
+first (with --yes it does) rather than starting over on top of it. It says
+so, then syncs the stack of the branch it was run on: main may have moved
+since that run began. The sync pushes as the finished run did, unless
+--push/--no-push says otherwise.
 
 Bottom PRs that already merged are dropped, and the branches on them re-rooted
 onto main. So are branches \`merge\` already squashed into the base (their PRs

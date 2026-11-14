@@ -306,8 +306,12 @@ up pushed).
 **On rebase conflict:** resolve, `git add <files>`, `git rebase --continue`,
 then `gh-stack restack --resume` to finish the remaining branches. That's the
 command even when the conflict came from `sync`. If you forget `--resume`, a
-bare `restack`/`sync` notices the interrupted run and, under `--yes`, resumes
-it. Don't pass `--fresh` unless you were asked to abandon the run: it discards
+bare `restack`/`sync` notices the interrupted run and, under `--yes`, finishes
+it ("Finished the interrupted …", with "nothing changed" when nothing was left),
+then does its own work: `sync` syncs, `restack` restacks unless the finished run
+covered it. One command is enough; no need to run it twice. An interrupted run
+can be another session's, in another stack: the command goes back to your branch
+before its own work. Don't pass `--fresh` unless you were asked to abandon the run: it discards
 the run's remaining steps. `git rebase --abort` does not end the run; a resume
 runs that rebase again.
 

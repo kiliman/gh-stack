@@ -221,9 +221,15 @@ restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--overwrite-remote]
     there: after a conflict, a kill, or failed pushes. If the run had
     already finished, it prints the run's log and exits 0. A bare
     `restack` or `sync` with an interrupted run pending asks whether to
-    resume it (with --yes it resumes) instead of starting a different
-    run on top of it. `--fresh` discards the interrupted run and starts
-    over. `git rebase --abort` ends the rebase, not the run: a resume
+    finish it first (with --yes it does) instead of starting a different
+    run on top of it. It then says it finished that run ("nothing
+    changed" when nothing was left to do) and goes on to its own work
+    from the branch it was run on: `sync` always syncs (main may have
+    moved since the run began), and `restack` restacks unless the
+    finished run already covered that restack. That work pushes as the
+    finished run did, unless the command passes --push or --no-push.
+    Run from a branch in no stack, it stops after the finished run.
+    `--fresh` discards the interrupted run and starts over. `git rebase --abort` ends the rebase, not the run: a resume
     runs that rebase again (so does one killed before git started it),
     and earlier branches' failed or held pushes stay queued. To abandon
     the run, use `--fresh`. A state file from an older gh-stack is
@@ -631,7 +637,8 @@ publishing is their job, and child PRs left stale on GitHub would be worse
 than any default. Only `merge --base` can be kept local, and only by an
 explicit `--no-push` or `GH_STACK_NO_PUSH=1`. A
 `restack --resume` keeps the push decision of the run it resumes unless you
-pass `--push` or `--no-push`.
+pass `--push` or `--no-push`. So does the work a bare `restack` or `sync` goes
+on to after finishing an interrupted run.
 
 Unknown keys print a warning and are ignored. Malformed TOML, an unreadable
 config file, a non-boolean value for a known key, or an env value other than

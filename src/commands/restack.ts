@@ -219,8 +219,11 @@ COMMITS ONLY ON ORIGIN
 INTERRUPTED RUNS
   A restack or sync saves its progress after every rebase and push. If one
   was interrupted, a bare \`gh-stack restack\` (or \`sync\`) asks whether to
-  resume it; with --yes it resumes. It never starts a different run on top
-  of an unfinished one unless you pass --fresh.
+  finish it first; with --yes it does. It never starts a different run on
+  top of an unfinished one unless you pass --fresh. Once that run is done,
+  it says so, then restacks from the branch it was run on, unless the
+  finished run already covered that restack. That restack pushes as the
+  finished run did, unless --push/--no-push says otherwise.
 
   A branch whose parent's push failed (or was declined) is not pushed:
   its PR would be diffed against the parent's old history. Run

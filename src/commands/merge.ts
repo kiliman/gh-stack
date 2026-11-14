@@ -9,7 +9,12 @@ import {
   stackBase,
   writeMetadata,
 } from "../lib/metadata.ts";
-import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib/safety.ts";
+import {
+  ensureCleanWorkingTree,
+  ensureMetadata,
+  ensureValidStack,
+  ensureWorktreesReady,
+} from "../lib/safety.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import {
   getBranchRefSha,
@@ -1190,6 +1195,12 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
     return;
   }
 
+  // The survivors and everything above them get rebased, some maybe in other
+  // worktrees (#78): check those before the PR merges.
+  await ensureWorktreesReady(
+    ordered.filter((b) => !mergedRun.includes(b)),
+    "gh-stack merge --base",
+  );
   const confirmed = await confirmAction(
     survivors.length > 0
       ? `Merge base PR #${basePr} into ${trunk} and re-root ${survivors.join(", ")}?`
@@ -1340,8 +1351,13 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
       console.log();
       if (res.reason === "conflict") {
         p.log.error(`Rebase conflict re-rooting ${pc.yellow(res.child)} onto ${trunk}.`);
+        if (res.worktree) {
+          console.log(
+            `  It stopped in the worktree at ${res.worktree}, which has ${res.child} checked out.`,
+          );
+        }
         console.log(`  Resolve the conflict, then finish with:`);
-        console.log(`    ${pc.green("git rebase --continue")}`);
+        console.log(`    ${pc.green(`${git.rebaseCommand(res.worktree ?? null)} --continue`)}`);
         console.log(
           `    ${pc.green("gh-stack merge --base")}   ${pc.dim(`(pushes ${res.child}, retargets its PR, restacks the rest)`)}`,
         );
@@ -1404,11 +1420,14 @@ async function mergeBaseOnly(deleteFlag: boolean, dryRun: boolean, args: string[
     p.log.info(
       `Restacking ${pc.yellow(name)} (${tail.length} branch(es)) onto ${pc.yellow(newBottom)}...`,
     );
-    await git.checkout(newBottom);
+    // Land on the new bottom, unless another worktree has it checked out (#78).
+    if (!(await git.worktreeHolding(newBottom))) await git.checkout(newBottom);
     // Push unless this run is local-only (--no-push / GH_STACK_NO_PUSH): the
     // tail must match the re-root above. An explicit flag also means the
     // `[restack] push` config isn't read mid-merge.
-    await restack([push ? "--push" : "--no-push", ...(overwrite ? ["--overwrite-remote"] : [])]);
+    await restack([push ? "--push" : "--no-push", ...(overwrite ? ["--overwrite-remote"] : [])], {
+      from: newBottom,
+    });
   }
 
   p.outro(

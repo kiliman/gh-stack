@@ -750,6 +750,16 @@ you at `doctor`.
 
 Before any destructive operation (restack, sync, merge, delete), gh-stack saves a snapshot of all branch HEADs as an append-only file under `snapshots/`, retained per-stack. Run `gh-stack undo` to restore.
 
+### Branches Checked Out in Another Worktree
+
+Git won't check out or rebase a branch that another worktree has checked out (`fatal: '<branch>' is already used by worktree at '<path>'`). So `restack`, `sync`, `merge --base` and `join` rebase such a branch from its own worktree (`git -C <path> rebase …`), and that worktree's files move along with the branch. Nothing is detached or checked out behind its back.
+
+That only works when the worktree is clean, so these commands check every branch they're about to rebase first. If one is checked out in a worktree with uncommitted changes, a rebase or merge in progress, or a folder that no longer exists, the command stops before changing anything (exit 1), names the branch and worktree, and gives the fix: `git -C <path> stash`, `git -C <path> rebase --continue`, or `git worktree prune` for a deleted folder.
+
+A conflict in such a branch pauses its rebase in that worktree. The conflict message aims its commands there: resolve the files in that worktree, run `git -C <path> rebase --continue`, then run the gh-stack command the message gives (`gh-stack restack --resume`, or re-run `sync`, `merge --base` or `join`) from the worktree that ran the command, since each worktree keeps its own run state.
+
+`gh-stack checkout`, `up`, `down`, `top` and `bottom` can't move this worktree onto such a branch either; they say which worktree has it.
+
 ### Busy Repositories (git locks)
 
 Git doesn't wait for a lock: a checkout or rebase that finds `index.lock` held fails at once. The usual holder is a background `git status` (an editor, a watcher, another agent session), which takes the lock for a few milliseconds. So every git step gh-stack runs that takes a lock (checkout, rebase, reset, commit, branch and tag writes, branch config) waits and retries: after 0.1, 0.2, 0.4, 0.8, 1.6 and 2 seconds, about 5 seconds in all. A rebase that a lock interrupts midway is continued, not reported as a conflict.

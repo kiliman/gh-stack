@@ -227,6 +227,8 @@ export type AdvanceResult =
       mergedBranch: string;
       reason: "conflict" | "no-fork-point" | "bad-fork-point";
       forkPoint?: string;
+      /** For a conflict: the other worktree the rebase stopped in, or null for this one (#78). */
+      worktree?: string | null;
     };
 
 /**
@@ -287,8 +289,17 @@ export async function advancePastMerged(opts: {
       p.log.info(
         `Re-rooting ${pc.yellow(child)} onto ${pc.green(recordedBase)} ${pc.dim(`(base: ${forkPoint.slice(0, 8)})`)}`,
       );
-      const ok = await git.rebaseOnto(targetRef, forkPoint, child);
-      if (!ok) return { ok: false, child, mergedBranch, reason: "conflict", forkPoint };
+      const rewrite = await git.rebaseBranch(child, targetRef, forkPoint);
+      if (!rewrite.ok) {
+        return {
+          ok: false,
+          child,
+          mergedBranch,
+          reason: "conflict",
+          forkPoint,
+          worktree: rewrite.worktree,
+        };
+      }
     }
 
     if (push) {

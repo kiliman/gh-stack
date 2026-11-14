@@ -214,7 +214,7 @@ describe("rebaseOnto", () => {
 
     // Rebase feature-2 onto feature-1
     const mainSha = (await $`git merge-base feature-2 main`.text()).trim();
-    const success = await git.rebaseOnto("feature-1", mainSha, "feature-2");
+    const { ok: success } = await git.rebaseBranch("feature-2", "feature-1", mainSha);
 
     expect(success).toBe(true);
 

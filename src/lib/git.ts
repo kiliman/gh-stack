@@ -1,7 +1,7 @@
 // Git command helpers using Bun's shell API
 import { $ } from "bun";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, realpath, stat } from "node:fs/promises";
 import pc from "picocolors";
 
 export const STACK_SYNC_TAG_PREFIX = "stack-sync-base";
@@ -55,6 +55,8 @@ export class GitLockError extends Error {
     readonly waitedMs: number,
     /** Who had it open when gh-stack gave up. */
     readonly holder: LockHolder,
+    /** The other worktree the command ran in, if not this one (#78). */
+    readonly worktree: string | null = null,
   ) {
     super(`another git process holds ${lockPath} (${command})`);
     this.name = "GitLockError";
@@ -74,10 +76,14 @@ export interface GitResult {
  * run out; any other failure is returned for the caller to judge.
  *
  * `echo` replays git's output to the terminal (rebase progress and conflict
- * messages), leaving out the attempts a lock blocked.
+ * messages), leaving out the attempts a lock blocked. `cwd` runs it in
+ * another worktree (#78).
  */
-export async function runGit(args: string[], opts: { echo?: boolean } = {}): Promise<GitResult> {
-  return retryLocks(args, opts.echo ?? false, async () => ({ next: args }));
+export async function runGit(
+  args: string[],
+  opts: { echo?: boolean; cwd?: string } = {},
+): Promise<GitResult> {
+  return retryLocks(args, opts.echo ?? false, opts.cwd, async () => ({ next: args }));
 }
 
 /** Run `git <args>` with lock retries, throwing if it fails for another reason. */
@@ -100,13 +106,14 @@ interface Retry {
  * runs again as is. A lock that turns up midway makes git reschedule the
  * pick it couldn't apply and pause, with nothing conflicted: `git rebase
  * --continue` picks it up. Returns false only for a real conflict.
- * (Exported for tests; commands use rebaseOnto and rebase.)
+ * `cwd` runs it in the worktree that has the branch checked out (#78).
+ * (Exported for tests; commands use rebaseBranch.)
  */
-export async function runRebase(args: string[]): Promise<boolean> {
-  const result = await retryLocks(args, true, async () => {
-    if (!(await isRebaseInProgress())) return { next: args };
+export async function runRebase(args: string[], cwd?: string): Promise<boolean> {
+  const result = await retryLocks(args, true, cwd, async () => {
+    if (!(await isRebaseInProgress(cwd))) return { next: args };
     // A conflict leaves unmerged paths; a lock-paused rebase doesn't.
-    if (await hasUnmergedPaths()) return null;
+    if (await hasUnmergedPaths(cwd)) return null;
     return { next: ["rebase", "--continue"], resumesRebase: true };
   });
   return result.exitCode === 0;
@@ -119,6 +126,7 @@ export async function runRebase(args: string[]): Promise<boolean> {
 async function retryLocks(
   args: string[],
   echo: boolean,
+  cwd: string | undefined,
   onLocked: () => Promise<Retry | null>,
 ): Promise<GitResult> {
   let retry: Retry = { next: args };
@@ -127,6 +135,7 @@ async function retryLocks(
   let episode: LockEpisode | null = null;
   for (let attempt = 0; ; attempt++) {
     let shell = $`git ${retry.next}`.quiet().nothrow();
+    if (cwd) shell = shell.cwd(cwd);
     // Resuming a lock-paused pick reuses the commit's message; never stop to
     // open an editor for it.
     if (retry.resumesRebase) shell = shell.env({ ...process.env, GIT_EDITOR: "true" });
@@ -159,6 +168,7 @@ async function retryLocks(
         next.resumesRebase ?? false,
         waitedMs,
         holder,
+        cwd ?? null,
       );
     }
     if (!announced) {
@@ -271,9 +281,17 @@ function startLockEpisode(lock: string, args: string[]): LockEpisode {
   };
 }
 
+/** Run a shell command in the worktree at `cwd`, or here when it's undefined. */
+function inDir(shell: ReturnType<typeof $>, cwd: string | undefined): ReturnType<typeof $> {
+  return cwd ? shell.cwd(cwd) : shell;
+}
+
 /** Whether the index has unmerged (conflicted) entries. */
-async function hasUnmergedPaths(): Promise<boolean> {
-  const out = await $`git diff --name-only --diff-filter=U`.quiet().nothrow().text();
+async function hasUnmergedPaths(cwd?: string): Promise<boolean> {
+  const out = await inDir($`git diff --name-only --diff-filter=U`, cwd)
+    .quiet()
+    .nothrow()
+    .text();
   return out.trim() !== "";
 }
 
@@ -314,8 +332,8 @@ export async function gitDir(): Promise<string> {
  * Absolute path to this worktree's git dir. `gitDir()` is relative (`.git`) in
  * the main checkout, which can't identify a worktree from another one.
  */
-export async function absoluteGitDir(): Promise<string> {
-  const result = await $`git rev-parse --absolute-git-dir`.text();
+export async function absoluteGitDir(cwd?: string): Promise<string> {
+  const result = await inDir($`git rev-parse --absolute-git-dir`, cwd).text();
   return result.trim();
 }
 
@@ -328,18 +346,19 @@ export async function repoRoot(): Promise<string> {
 }
 
 /**
- * Check if working tree is clean (no uncommitted changes).
+ * Check if working tree is clean (no uncommitted changes), here or in the
+ * worktree at `cwd`. Untracked files don't count.
  * Refreshes the index first to avoid false positives from stale stat info.
  */
-export async function isCleanWorkingTree(): Promise<boolean> {
+export async function isCleanWorkingTree(cwd?: string): Promise<boolean> {
   // Refresh index to avoid false positives from stat changes (timestamps, etc.).
   // Outside the try: a lock that never frees must surface, not read as dirty.
   // No -q: it also hides the lock message, and a refresh the lock blocked
   // leaves stale stat info that makes a clean tree look dirty. The output
   // ("needs update" lines) is captured and dropped.
-  await runGit(["update-index", "--refresh"]);
+  await runGit(["update-index", "--refresh"], { cwd });
   try {
-    await $`git diff-index --quiet HEAD --`.quiet();
+    await inDir($`git diff-index --quiet HEAD --`, cwd).quiet();
     return true;
   } catch {
     return false;
@@ -347,10 +366,10 @@ export async function isCleanWorkingTree(): Promise<boolean> {
 }
 
 /**
- * Check if a rebase is currently in progress.
+ * Check if a rebase is currently in progress, here or in the worktree at `cwd`.
  */
-export async function isRebaseInProgress(): Promise<boolean> {
-  const dir = await gitDir();
+export async function isRebaseInProgress(cwd?: string): Promise<boolean> {
+  const dir = cwd ? await absoluteGitDir(cwd) : await gitDir();
 
   // Check if either directory exists by trying to read a known file
   try {
@@ -651,34 +670,232 @@ export async function refExists(ref: string): Promise<boolean> {
   return exitCode === 0;
 }
 
+// ── Branches in use by another worktree (#78) ──────────────────────────────
+//
+// git won't check out or rebase a branch another worktree is using: "fatal:
+// '<branch>' is already used by worktree at '<path>'". A worktree uses a branch
+// while it has it checked out, and also while it's rebasing it (HEAD is
+// detached then, so `git worktree list` shows no branch for it). gh-stack
+// rewrites such a branch from its own worktree instead, and that worktree's
+// files move along with it. That's only safe when the worktree is clean and
+// not in the middle of something, so the rewrite checks right before it runs,
+// and commands check every branch up front (safety.ensureWorktreesReady) so
+// they can stop before changing anything.
+
+export interface Worktree {
+  path: string;
+  /** The branch it's using (checked out, or being rebased), or null. */
+  branch: string | null;
+  /** Its folder is gone; git still counts its branch as in use until it's pruned. */
+  missing: boolean;
+}
+
+/** Every worktree of this repo, with the branch each one is using. */
+export async function listWorktrees(): Promise<Worktree[]> {
+  const out = await $`git worktree list --porcelain`.quiet().nothrow().text();
+  const worktrees: Worktree[] = [];
+  for (const block of out.split(/\n\n+/)) {
+    const lines = block.split("\n");
+    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
+    if (!path) continue;
+    const ref = lines.find((l) => l.startsWith("branch "))?.slice("branch ".length);
+    const missing = lines.some((l) => l.startsWith("prunable")) || !(await isDir(path));
+    let branch = ref ? shortBranch(ref) : null;
+    if (!branch && !missing) branch = await branchBeingRebased(path);
+    worktrees.push({ path, branch, missing });
+  }
+  return worktrees;
+}
+
+/** The branches the other worktrees are using, each with its worktree. */
+export async function branchesInOtherWorktrees(): Promise<Map<string, Worktree>> {
+  const here = await canonicalPath(await repoRoot());
+  const held = new Map<string, Worktree>();
+  for (const wt of await listWorktrees()) {
+    if (wt.branch && (await canonicalPath(wt.path)) !== here) held.set(wt.branch, wt);
+  }
+  return held;
+}
+
+/** The worktree, other than this one, that's using `branch`; null when none is. */
+export async function worktreeHolding(branch: string): Promise<Worktree | null> {
+  return (await branchesInOtherWorktrees()).get(branch) ?? null;
+}
+
+export interface WorktreeProblem {
+  /** Completes "…, and <problem>", e.g. "it has uncommitted changes". */
+  problem: string;
+  /** Commands that clear it, run from anywhere. */
+  fixes: string[];
+}
+
 /**
- * Perform a rebase: rebase branch onto newBase, starting from oldBase.
- * Uses `git rebase --onto <newBase> <oldBase> <branch>`.
- * Returns true if successful, false if conflicts occurred.
+ * Why a branch can't be rewritten in `wt` right now, with the commands that
+ * clear it; null when it can.
  */
-export async function rebaseOnto(
-  newBase: string,
-  oldBase: string,
+export async function worktreeProblem(wt: Worktree): Promise<WorktreeProblem | null> {
+  const at = shellQuote(wt.path);
+  if (wt.missing) {
+    return {
+      problem: "its folder is gone",
+      fixes: ["git worktree prune   (forgets the missing worktree, which frees the branch)"],
+    };
+  }
+  const op = await operationInProgress(wt.path);
+  if (op) {
+    return {
+      problem: `it's in the middle of a ${op}`,
+      fixes: [`git -C ${at} ${op} --continue`, `git -C ${at} ${op} --abort`],
+    };
+  }
+  if (!(await isCleanWorkingTree(wt.path))) {
+    return {
+      problem: "it has uncommitted changes",
+      fixes: [`git -C ${at} stash   (or commit them there)`],
+    };
+  }
+  return null;
+}
+
+/** The refusal for a branch whose worktree isn't ready, fixes included. */
+export function describeBlockedBranch(
   branch: string,
-): Promise<boolean> {
-  return runRebase(["rebase", "--onto", newBase, oldBase, branch]);
+  wt: Worktree,
+  why: WorktreeProblem,
+): string[] {
+  return [
+    `${pc.yellow(branch)} is checked out in the worktree at ${wt.path}, and ${why.problem}.`,
+    ...why.fixes.map((fix) => `    ${pc.green(fix)}`),
+  ];
 }
 
 /**
- * Move the current branch's ref to `ref` (working tree included).
- * Returns true if successful. Caller must have verified the tree is clean.
+ * A rewrite found the branch's worktree not ready. Commands check up front,
+ * so this only fires when the worktree changed while the command ran.
  */
-export async function resetHard(ref: string): Promise<boolean> {
-  const { exitCode } = await runGit(["reset", "--hard", ref]);
-  return exitCode === 0;
+export class WorktreeBusyError extends Error {
+  constructor(
+    readonly branch: string,
+    readonly worktree: Worktree,
+    readonly why: WorktreeProblem,
+  ) {
+    super(`${branch} is checked out in the worktree at ${worktree.path}, and ${why.problem}`);
+    this.name = "WorktreeBusyError";
+  }
+}
+
+/** Where a rewrite ran: `worktree` is the other worktree's path, or null for this one. */
+export interface RewriteResult {
+  ok: boolean;
+  worktree: string | null;
 }
 
 /**
- * Simple rebase onto a target.
- * Returns true if successful, false if conflicts occurred.
+ * Rebase `branch` onto `onto`, replaying the commits after `from`
+ * (`git rebase --onto`), or with `from` null every commit `onto` lacks. Runs
+ * in the worktree that has the branch checked out if another one does (#78);
+ * otherwise checks it out here first. `ok` is false for a conflict, which
+ * stays paused in the worktree the rebase ran in.
  */
-export async function rebase(target: string): Promise<boolean> {
-  return runRebase(["rebase", target]);
+export async function rebaseBranch(
+  branch: string,
+  onto: string,
+  from: string | null,
+): Promise<RewriteResult> {
+  const args = from ? ["rebase", "--onto", onto, from] : ["rebase", onto];
+  const wt = await readyWorktreeFor(branch);
+  if (!wt) {
+    await checkout(branch);
+    return { ok: await runRebase([...args, branch]), worktree: null };
+  }
+  return { ok: await runRebase(args, wt), worktree: wt };
+}
+
+/**
+ * Move `branch` to `ref`, files included, for a branch with no commits of its
+ * own. Like rebaseBranch, it runs in the branch's worktree when another one
+ * has it checked out.
+ */
+export async function resetBranch(branch: string, ref: string): Promise<RewriteResult> {
+  const wt = await readyWorktreeFor(branch);
+  if (!wt) {
+    await checkout(branch);
+    const { exitCode } = await runGit(["reset", "--hard", ref]);
+    return { ok: exitCode === 0, worktree: null };
+  }
+  // --keep rather than --hard: in someone else's worktree it refuses instead
+  // of overwriting anything.
+  const { exitCode } = await runGit(["reset", "--keep", ref], { cwd: wt });
+  return { ok: exitCode === 0, worktree: wt };
+}
+
+/**
+ * The path of the other worktree that has `branch` checked out, once it's
+ * confirmed ready for the rewrite; null when no other worktree has it.
+ */
+async function readyWorktreeFor(branch: string): Promise<string | null> {
+  const wt = await worktreeHolding(branch);
+  if (!wt) return null;
+  const why = await worktreeProblem(wt);
+  if (why) throw new WorktreeBusyError(branch, wt, why);
+  console.log(`  ${pc.yellow(branch)} is checked out in its worktree at ${wt.path}: working there`);
+  return wt.path;
+}
+
+/** The rebase, merge, cherry-pick, revert or am the worktree at `path` is in the middle of. */
+async function operationInProgress(path: string): Promise<string | null> {
+  const dir = await absoluteGitDir(path).catch(() => null);
+  if (!dir) return null;
+  const has = (name: string) => Bun.file(`${dir}/${name}`).exists();
+  if (await isDir(`${dir}/rebase-merge`)) return "rebase";
+  if (await isDir(`${dir}/rebase-apply`)) {
+    return (await has("rebase-apply/applying")) ? "am" : "rebase";
+  }
+  if (await has("MERGE_HEAD")) return "merge";
+  if (await has("CHERRY_PICK_HEAD")) return "cherry-pick";
+  if (await has("REVERT_HEAD")) return "revert";
+  return null;
+}
+
+/** The branch the detached worktree at `path` is rebasing, if any. */
+async function branchBeingRebased(path: string): Promise<string | null> {
+  const dir = await absoluteGitDir(path).catch(() => null);
+  if (!dir) return null;
+  for (const name of ["rebase-merge/head-name", "rebase-apply/head-name"]) {
+    const file = Bun.file(`${dir}/${name}`);
+    if (!(await file.exists())) continue;
+    const ref = (await file.text()).trim();
+    if (ref.startsWith("refs/heads/")) return shortBranch(ref);
+  }
+  return null;
+}
+
+function shortBranch(ref: string): string {
+  return ref.replace(/^refs\/heads\//, "");
+}
+
+async function isDir(path: string): Promise<boolean> {
+  return stat(path)
+    .then((s) => s.isDirectory())
+    .catch(() => false);
+}
+
+/** The path with symlinks resolved (macOS's /tmp is /private/tmp), or as given if it's gone. */
+async function canonicalPath(path: string): Promise<string> {
+  return realpath(path).catch(() => path);
+}
+
+/**
+ * `git rebase`, aimed at the worktree a rebase stopped in when that's not this
+ * one, for "resolve, then <cmd> --continue" advice.
+ */
+export function rebaseCommand(worktree: string | null): string {
+  return worktree ? `git -C ${shellQuote(worktree)} rebase` : "git rebase";
+}
+
+/** `s` as one shell word, quoted only when it needs to be. */
+export function shellQuote(s: string): string {
+  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 /**

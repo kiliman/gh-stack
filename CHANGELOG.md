@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.16
+
+### 🐛 Fixes
+- **A refused push shows the check that failed, not just the last lines.** A pre-push hook that fails one check early and then prints pages of warnings used to push the reason out of view. The lines that look like the failure (`❌`, `×`, `(fail)`, `FAIL`, `error`, an error count, a non-zero exit) now come first, with a little context, then the end of git's output, then the path of the full log. (#80, #87)
+- **`submit --json` says why a push failed.** `error.message` names the failing line and the log, `error.hint` holds the lines printed to stderr, and `error.log` the log's path. The branch's own `error` names the line too. (#87)
+- `push-failure.log`'s path is absolute, so it opens from any directory. (#87)
+
 ## 0.19.15
 
 ### 🐛 Fixes

@@ -126,16 +126,49 @@ export async function resolvePush(args: string[]): Promise<Resolved> {
   return push;
 }
 
+/**
+ * A push decision, possibly taken over from a run a bare restack/sync just
+ * finished (`inherited`): one invocation pushes, or doesn't, throughout (#82).
+ */
+export type PushDecision = Resolved & { inherited?: boolean };
+
+const INHERITED_NO_PUSH = "resumed a local-only run; its push decision is kept";
+
 /** What to call the source of a "don't push" decision in the summary. */
-function pushReason(push: Resolved): string {
+function pushReason(push: PushDecision): string {
+  if (push.inherited) return INHERITED_NO_PUSH;
   return push.source === "flag" ? "--no-push" : describeSource(push);
+}
+
+/**
+ * The push decision for the work a bare restack/sync does after finishing a
+ * pending run: the command's own --push/--no-push, else the finished run's
+ * decision (which a resume keeps, #47), so a local-only run's branches aren't
+ * then pushed by the same command.
+ */
+export function pushAfterResume(finished: RestackState, args: string[]): PushDecision {
+  return (
+    flagSetting("restack.push", args) ?? {
+      value: finished.push,
+      source: "default",
+      inherited: true,
+    }
+  );
 }
 
 /**
  * `opts.from` restacks from that branch instead of the current one, for
  * `merge`, whose new bottom may be checked out in another worktree (#78).
+ *
+ * `opts.chained`: this `--resume` finishes a pending run before another
+ * command (sync) does its own work, so it ends with a "Finished the
+ * interrupted …" line rather than "Stack Restack Complete!", and leaves the
+ * rest to that command (#82).
  */
-export default async function restack(args: string[], opts: { from?: string } = {}): Promise<void> {
+export default async function restack(
+  args: string[],
+  opts: { from?: string; chained?: boolean } = {},
+): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const resume = args.includes("--resume");
   const fresh = args.includes("--fresh");
@@ -227,7 +260,11 @@ ALIASES
   // An interrupted run is pending: resume it (or, on request, discard it)
   // rather than silently starting a different run on top of it (#29).
   let resuming = resume;
+  // Where a bare restack was run: it restacks from here once a pending run it
+  // resumes is finished, wherever that run leaves the checkout.
+  let startBranch: string | null = null;
   if (!resume) {
+    startBranch = opts.from ?? (await git.currentBranch().catch(() => null));
     if (dryRun) await notePendingRun();
     else {
       const preflight = async () => {
@@ -267,10 +304,90 @@ ALIASES
   } else if (resuming) {
     const outcome = await handleResume(meta, ctx, flagSetting("restack.push", args));
     if (outcome === "already-finished") return;
+    if (resume && !opts.chained) {
+      await finishRun(meta, ctx, "Stack Restack Complete!");
+      return;
+    }
+    // The pending run was finished on the way to another command's own work:
+    // say so plainly, then do that work (#82). Under --yes nobody chose the
+    // resume, so "Stack Restack Complete!" alone would read as if what was
+    // asked for had happened.
+    const finished = run!;
+    await finishRun(meta, ctx, finishedMessage(finished, outcome.logBefore));
+    if (opts.chained) return; // sync goes on from here
+    await restackAfterResume(args, finished, startBranch, verbose);
+    return;
   } else {
     await handleFreshRestack(meta, ctx, opts.from);
   }
 
+  await finishRun(meta, ctx, "Stack Restack Complete!");
+}
+
+/** "Finished the interrupted restack, started …", and whether it changed anything. */
+function finishedMessage(state: RestackState, logBefore: number): string {
+  const what = `Finished the interrupted ${describeRun(state)}`;
+  return state.log.length > logBefore ? what : `${what}: nothing changed`;
+}
+
+/**
+ * After a resume, go back to the branch a bare restack/sync was run on, for
+ * its own run. False (with a note) when there's nothing to run it on: the
+ * command was run detached or from a branch in no stack. Then the resume was
+ * all it could do.
+ */
+export async function returnToStartBranch(
+  startBranch: string | null,
+  command: "restack" | "sync",
+): Promise<boolean> {
+  const meta = await ensureMetadata();
+  if (!startBranch || !findStackForBranch(meta, startBranch)) {
+    p.outro(
+      pc.green(
+        `${startBranch ?? "HEAD"} isn't in a stack, so there's no ${command} of its own to run.`,
+      ),
+    );
+    return false;
+  }
+  if ((await git.currentBranch().catch(() => null)) !== startBranch) {
+    await git.checkout(startBranch);
+  }
+  return true;
+}
+
+/**
+ * A bare restack resumed a pending run: now the restack that was asked for,
+ * from the branch it was run on. Skipped when the finished run already did
+ * exactly that (same stack, every branch of this chain): a restack only
+ * follows local parents, so a second pass would change nothing. It pushes,
+ * or doesn't, as the finished run did (see pushAfterResume). (A sync always
+ * goes on: it fetches main, which may have moved since the interrupted run
+ * started.)
+ */
+async function restackAfterResume(
+  args: string[],
+  finished: RestackState,
+  startBranch: string | null,
+  verbose: boolean,
+): Promise<void> {
+  if (!(await returnToStartBranch(startBranch, "restack"))) return;
+  const branch = startBranch!;
+  const meta = await ensureMetadata();
+  const stackName = findStackForBranch(meta, branch)!;
+  const asked = buildRebaseChain(meta.stacks[stackName]!, branch);
+  if (stackName === finished.stack_name && asked.every((b) => finished.chain.includes(b))) {
+    p.outro(pc.green(`That run covered the restack from ${branch} too. Stack Restack Complete!`));
+    return;
+  }
+
+  p.log.info(`Now the restack you ran, from ${pc.yellow(branch)}:`);
+  run = null;
+  verifiedTips = new Map();
+  const push = pushAfterResume(finished, args);
+  noPush = !push.value;
+  noPushReason = pushReason(push);
+  const ctx = newContext(false, verbose);
+  await handleFreshRestack(meta, ctx, branch);
   await finishRun(meta, ctx, "Stack Restack Complete!");
 }
 
@@ -455,19 +572,20 @@ export async function routePendingRun(
     process.exit(1);
   }
 
-  const message = `An interrupted ${state.command} was detected (stopped at ${stoppedAt(state)}). Resume it?`;
+  const detected = `An interrupted ${state.command} was detected (stopped at ${stoppedAt(state)}).`;
   if (isAutoYes()) {
-    p.log.warn(`${message} ${pc.dim("(auto-yes: resuming)")}`);
+    p.log.warn(`${detected} ${pc.dim(`(auto-yes: finishing it, then the ${command})`)}`);
     describePendingRun(state);
     return "resume";
   }
+  const message = `${detected} Finish it first?`;
 
   p.log.warn(`An interrupted ${describeRun(state)} was detected.`);
   describePendingRun(state);
   const choice = await p.select({
     message,
     options: [
-      { value: "resume", label: "Resume it", hint: "recommended" },
+      { value: "resume", label: `Finish it, then the ${command}`, hint: "recommended" },
       {
         value: "fresh",
         label: `Discard it and start a new ${command}`,
@@ -653,7 +771,7 @@ async function handleResume(
   meta: StackMetadata,
   ctx: ChainContext,
   explicitPush: Resolved | null,
-): Promise<"resumed" | "already-finished"> {
+): Promise<{ logBefore: number } | "already-finished"> {
   const state = await loadRunState();
   if (!state) {
     p.cancel(
@@ -685,7 +803,7 @@ async function handleResume(
     state.push = explicitPush.value;
   } else {
     noPush = !state.push;
-    noPushReason = "resumed a local-only run; its push decision is kept";
+    noPushReason = INHERITED_NO_PUSH;
   }
 
   if (await git.isRebaseInProgress()) {
@@ -719,6 +837,8 @@ async function handleResume(
     process.exit(1);
   }
 
+  // Entries past this point are what the resume itself did.
+  const logBefore = state.log.length;
   p.log.warn(`Resuming the interrupted ${describeRun(state)} (stopped at ${stoppedAt(state)})`);
   if (state.log.length > 0) {
     p.log.info("Done before the interruption:");
@@ -781,7 +901,7 @@ async function handleResume(
   }
 
   await processChain(meta, state.stack_name, state.chain, 0, pushOnly, ctx);
-  return "resumed";
+  return { logBefore };
 }
 
 function refuseNotInStack(branch: string): never {
@@ -1064,7 +1184,7 @@ export async function syncChain(
   meta: StackMetadata,
   stackName: string,
   ordered: string[],
-  opts: { trunkRef: string; push: Resolved; verified: Map<string, string> },
+  opts: { trunkRef: string; push: PushDecision; verified: Map<string, string> },
 ): Promise<void> {
   noPush = !opts.push.value;
   noPushReason = pushReason(opts.push);

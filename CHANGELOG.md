@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.14
+
+### 🐛 Fixes
+- **`merge --approved` no longer shrinks its range when GitHub can't be read.** A failed `gh pr view` (rate limit, network, concurrent `gh auth switch` calls colliding in the keyring) used to count as "not approved", so the collapse quietly stopped early. Reads are now retried, and one that still fails stops the merge with "Couldn't read the review state" and merges nothing. (#66, #84)
+- **`sync` stops instead of guessing when a PR's state can't be read.** An unreadable bottom PR used to pass for "not merged", so a PR that had in fact merged was restacked and its squashed commits replayed into conflicts. (#84)
+- A gh that isn't logged in fails at once with gh's own message, instead of being retried. (#84)
+
 ## 0.19.13
 
 ### ✨ Features

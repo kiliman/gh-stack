@@ -11,7 +11,8 @@ import {
   writeMetadata,
 } from "../lib/metadata.ts";
 import { isAutoYes } from "../lib/ui.ts";
-import { ConfigError, describeSource, resolveFlag } from "../lib/config.ts";
+import { describeSource, resolveFlag } from "../lib/config.ts";
+import { ConfigError } from "../lib/config-error.ts";
 import type { Stack, StackMetadata } from "../types.ts";
 import { getPrNumber, getRepoNwo, prUrlFor } from "../lib/github.ts";
 import { describeSkipped, resolveOrCreateStack, type SkippedBranch } from "../lib/chain.ts";

@@ -40,7 +40,8 @@ import {
   type BranchReview,
   type MergeAction,
 } from "../lib/advance.ts";
-import { flagSetting, parseEnvBool, type Resolved } from "../lib/config.ts";
+import { flagSetting, type Resolved } from "../lib/config.ts";
+import { parseEnvBool } from "../lib/config-error.ts";
 
 const MAX_RETRIES = 12;
 const RETRY_DELAY_MS = 5000;
@@ -292,7 +293,7 @@ gh-stack merge — Squash-merge a stack via GitHub
 USAGE
   gh-stack merge [--dry-run] [-d|--delete-branch] [--collapse]
   gh-stack merge --approved [--collapse] [--dry-run] [-d|--delete-branch]
-  gh-stack merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push]
+  gh-stack merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push] [--overwrite-remote]
 
 DEFAULT (top-down collapse)
   Squash-merges the whole stack from top to bottom via GitHub:
@@ -352,6 +353,10 @@ OPTIONS
                        the base PR (above)
       --no-push        With --base: re-root and restack locally only (also
                        GH_STACK_NO_PUSH=1); --push overrides the variable
+      --overwrite-remote
+                       With --base: rewrite branches even though origin has
+                       commits they lack, dropping those commits (see
+                       "Commits only on origin" in gh-stack restack --help)
       --dry-run        Show what would happen without doing anything
 `);
     return;

@@ -2,22 +2,28 @@
 // gh-stack — Unified stacked PR manager for squash-merge workflows
 
 // Map GH_STACK_NO_COLOR → NO_COLOR so picocolors (and other tools) respect it,
-// and turn colors off for plain mode (--plain, GH_STACK_YES=1, GH_STACK_PLAIN=1)
+// and turn colors off for plain mode (--plain, --yes, GH_STACK_YES, GH_STACK_PLAIN)
 // and --json (a machine reads the stderr logs, and error messages land inside
 // the JSON itself).
 //
 // picocolors reads NO_COLOR once, when it first loads. So this file has NO
 // static imports: those are evaluated before this body runs, and Bun evaluates
 // a CommonJS dependency like picocolors even before an earlier ESM side-effect
-// import. Everything that can pull in picocolors is imported dynamically below.
-const earlyArgs = new Set(process.argv.slice(2));
-const colorOff =
-  !!process.env.GH_STACK_NO_COLOR ||
-  earlyArgs.has("--plain") ||
-  earlyArgs.has("--json") ||
-  process.env.GH_STACK_YES === "1" ||
-  process.env.GH_STACK_PLAIN === "1";
-if (colorOff) process.env.NO_COLOR = "1";
+// import. Everything that can pull in picocolors is imported dynamically below,
+// after NO_COLOR is settled; cli.ts and config-error.ts import nothing that does.
+const { parseCliArgs } = await import("./lib/cli.ts");
+const { ConfigError } = await import("./lib/config-error.ts");
+
+const args = process.argv.slice(2);
+let parsed: ReturnType<typeof parseCliArgs>;
+try {
+  parsed = parseCliArgs(args, process.env);
+} catch (err) {
+  if (!(err instanceof ConfigError)) throw err;
+  console.error(`gh-stack: ${err.message}`);
+  process.exit(1);
+}
+if (parsed.noColor || parsed.plain || args.includes("--json")) process.env.NO_COLOR = "1";
 
 // gh-stack's own read-only git calls (status, diff) shouldn't take index.lock
 // to save a refreshed stat cache: that only contends with our own writes and
@@ -26,13 +32,11 @@ if (colorOff) process.env.NO_COLOR = "1";
 process.env.GIT_OPTIONAL_LOCKS ??= "0";
 
 const { ensureGitRepo } = await import("./lib/safety.ts");
-const { parseCliArgs } = await import("./lib/cli.ts");
+const { COMMANDS, RUNS_OUTSIDE_REPO } = await import("./lib/commands.ts");
 const { setAutoYes } = await import("./lib/ui.ts");
 const { setPlain } = await import("./lib/output.ts");
 const { version: VERSION } = await import("../package.json");
 
-const args = process.argv.slice(2);
-const parsed = parseCliArgs(args, process.env);
 const command = parsed.command;
 
 // Handle global flags
@@ -56,145 +60,26 @@ if (parsed.plain) {
   setPlain(true);
 }
 
-// Ensure we're in a git repo for all commands — except `learn`, which just
-// emits/installs the agent skill and is useful outside any repo (e.g. an agent
-// onboarding before cloning, or `learn --skill --global`), and `config`, which
-// shows the user and env layers anywhere (and the repo layer inside a repo).
-if (command !== "learn" && command !== "config") {
+const load = COMMANDS[command];
+if (!load) {
+  console.error(`Unknown command: ${command}\n`);
+  printHelp();
+  process.exit(1);
+}
+
+// Every command needs a git repo except those in RUNS_OUTSIDE_REPO, and a
+// help page, which shows anywhere.
+if (!RUNS_OUTSIDE_REPO.has(command) && !parsed.showHelp) {
   await ensureGitRepo();
 }
 
-// Route to subcommand — strip global flags from command args
-const commandArgs = parsed.commandArgs;
-
 // A config problem (malformed TOML, a non-boolean env value) is reported as
 // one clean line, whichever command hit it.
-const { ConfigError } = await import("./lib/config.ts");
 const { GitLockError, WorktreeBusyError, describeBlockedBranch, rebaseCommand } =
   await import("./lib/git.ts");
 const { PrFetchError } = await import("./lib/github.ts");
 try {
-  switch (command) {
-    case "log":
-      await (await import("./commands/log.ts")).default(commandArgs);
-      break;
-
-    case "init":
-      await (await import("./commands/init.ts")).default(commandArgs);
-      break;
-
-    case "create":
-      await (await import("./commands/create.ts")).default(commandArgs);
-      break;
-
-    case "add":
-      await (await import("./commands/add.ts")).default(commandArgs);
-      break;
-
-    case "join":
-      await (await import("./commands/join.ts")).default(commandArgs);
-      break;
-
-    case "delete":
-      await (await import("./commands/delete.ts")).default(commandArgs);
-      break;
-
-    case "untrack":
-      await (await import("./commands/untrack.ts")).default(commandArgs);
-      break;
-
-    case "split":
-      await (await import("./commands/split.ts")).default(commandArgs);
-      break;
-
-    case "rename":
-      await (await import("./commands/rename.ts")).default(commandArgs);
-      break;
-
-    case "checkout":
-    case "co":
-      await (await import("./commands/checkout.ts")).default(commandArgs);
-      break;
-
-    case "ls":
-      await (await import("./commands/list.ts")).default(commandArgs);
-      break;
-
-    case "restack":
-    case "rebase":
-      await (await import("./commands/restack.ts")).default(commandArgs);
-      break;
-
-    case "sync":
-      await (await import("./commands/sync.ts")).default(commandArgs);
-      break;
-
-    case "submit":
-      await (await import("./commands/submit.ts")).default(commandArgs);
-      break;
-
-    case "status":
-      await (await import("./commands/status.ts")).default(commandArgs);
-      break;
-
-    case "merge":
-      await (await import("./commands/merge.ts")).default(commandArgs);
-      break;
-
-    case "undo":
-      await (await import("./commands/undo.ts")).default(commandArgs);
-      break;
-
-    case "doctor":
-      await (await import("./commands/doctor.ts")).default(commandArgs);
-      break;
-
-    case "update-prs":
-      await (await import("./commands/update-prs.ts")).default(commandArgs);
-      break;
-
-    case "stacks":
-      await (await import("./commands/stacks.ts")).default(commandArgs);
-      break;
-
-    case "archive":
-      await (await import("./commands/archive.ts")).default(commandArgs);
-      break;
-
-    case "up":
-      await (await import("./commands/up.ts")).default(commandArgs);
-      break;
-
-    case "down":
-      await (await import("./commands/down.ts")).default(commandArgs);
-      break;
-
-    case "top":
-      await (await import("./commands/top.ts")).default(commandArgs);
-      break;
-
-    case "bottom":
-      await (await import("./commands/bottom.ts")).default(commandArgs);
-      break;
-
-    case "learn":
-      await (await import("./commands/learn.ts")).default(commandArgs);
-      break;
-
-    case "config":
-      await (await import("./commands/config.ts")).default(commandArgs);
-      break;
-
-    case "--help":
-    case "help":
-      printHelp();
-      break;
-
-    default:
-      console.error(`Unknown command: ${command}\n`);
-      printHelp();
-      process.exit(1);
-  }
+  await (await load()).default(parsed.commandArgs);
 } catch (err) {
   if (err instanceof GitLockError) await reportHeldLock(err);
   if (err instanceof WorktreeBusyError) await reportBusyWorktree(err);
@@ -294,7 +179,7 @@ ${bold("STACK NAVIGATION")}
   ${green("down")}           Move to parent branch (downstack)
   ${green("top")}            Jump to the tip of the stack
   ${green("bottom")}         Jump to the base of the stack
-  ${green("ls")}             List branches with numbers
+  ${green("ls")}             List branches with numbers ${dim("(alias: list)")}
   ${green("stacks")}         List all stacks (--json for tools)
 
 ${bold("STACK MANAGEMENT")}
@@ -319,15 +204,16 @@ ${bold("INFO & MAINTENANCE")}
 ${bold("GLOBAL OPTIONS")}
   --yes, -y        Skip confirmations ${dim("(for agents/CI)")}
   --plain          Plain output: no spinners, colors, or box drawing
-  --help           Show help
+  --help           Show help (gh-stack <command> --help, or help <command>)
   --version, -V    Show version
 
 ${bold("ENVIRONMENT")}
   GH_STACK_YES=1       Same as --yes (also enables --plain)
   GH_STACK_PLAIN=1     Same as --plain
-  GH_STACK_NO_COLOR    Disable colored output
+  GH_STACK_NO_COLOR=1  Disable colored output
   GH_STACK_DRAFT=1     submit creates new PRs as drafts (0 = ready)
-  GH_STACK_NO_PUSH=1   restack/sync/merge --base never push (0 = push)
+  GH_STACK_NO_PUSH=1   restack/sync/join/merge --base never push (0 = push)
+  Each takes 1/0, true/false, or yes/no; anything else is an error.
 
 ${bold("CONFIG")}
   .gh-stack.toml (repo root) and ~/.config/gh-stack/config.toml set flag

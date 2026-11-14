@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.19
+
+### 🐛 Fixes
+- **`sync` after a stopped `merge` rebases only the base.** When `merge` squashes the upper PRs into the base on GitHub and then stops because the base conflicts with main, it advises `gh-stack sync`. Sync used to restack those collapsed branches onto the base, replaying their commits onto their own squashed copies, so the same changes conflicted with themselves. Sync now recognizes them (each PR merged into its stack parent), drops them from the stack, fast-forwards the local base to origin's copy with the squash commits, re-roots any unmerged branch above them onto the base, and rebases only the base onto main. (#81, #90)
+- **The collapse check confirms a base rebased through a conflict.** Once the base was rebased onto main with a conflict next to a squash commit's lines resolved, `merge` called that PR's changes UNVERIFIED, and the only way on was `--skip-collapse-check`. The check now compares patches with context ignored (the same lines added and removed in the same files), so the rewritten squash commit still proves the PR is there. (#90)
+- After a stopped merge, the advice says sync rebases only the base. In a linked worktree, where main is checked out by another worktree, merge's final step names that worktree and the `git -C … pull --ff-only` to run, instead of "Could not sync local branches". (#90)
+- The agent skill says what to do when `merge` stops with "conflicts with main": run `gh-stack sync`, no need to pull first, and no `restack --fresh` or `--skip-collapse-check`. (#90)
+
 ## 0.19.18
 
 ### 🐛 Fixes

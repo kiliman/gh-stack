@@ -246,7 +246,7 @@ describe("sync skips commits that already reached main through another PR (#79)"
 });
 
 describe("landedCopy", () => {
-  test("a copy with too few significant added lines is never judged a copy", async () => {
+  test("needs enough lines, counts a repeated line once, and every file in one landed commit", async () => {
     const onto = await squashFeatureIntoMain();
     await createBranch(tmpDir, "lane", "main~1");
     // Two significant lines, both on main: 100%, but not enough evidence.
@@ -259,11 +259,31 @@ describe("landedCopy", () => {
     expect(MIN_ADDED_LINES).toBe(3);
     expect(await landedCopy(sha, onto, "main~1", tmpDir)).toBeNull();
 
+    // A line main has once counts once, however often the commit adds it.
+    const repeat = "  return greeting;\n";
+    const repeated = await makeCommit(
+      tmpDir,
+      "shared.txt",
+      repeat.repeat(4),
+      "lane: the same line, four times",
+    );
+    expect(await landedCopy(repeated, onto, "main~1", tmpDir)).toBeNull();
+
     // The draft copy itself qualifies, through the squash.
     await git(tmpDir, "checkout", "-q", "main~1");
     await copyDraft("copy");
     const copy = await landedCopy(await git(tmpDir, "rev-parse", "HEAD"), onto, "main~1", tmpDir);
     expect(copy?.via.sha).toBe(onto);
     expect([copy?.present, copy?.added]).toEqual([5, 6]);
+
+    // 7 of its 8 added lines are on main, but notes.txt isn't in the commit
+    // that landed the rest, so it isn't a copy of that commit.
+    await git(tmpDir, "checkout", "-q", "main~1");
+    await Bun.write(`${tmpDir}/shared.txt`, FINAL);
+    await Bun.write(`${tmpDir}/notes.txt`, "lane notes of its own\n");
+    await git(tmpDir, "add", "shared.txt", "notes.txt");
+    await git(tmpDir, "commit", "-q", "-m", "lane: final helper plus notes");
+    const plusNotes = await git(tmpDir, "rev-parse", "HEAD");
+    expect(await landedCopy(plusNotes, onto, "main~1", tmpDir)).toBeNull();
   });
 });

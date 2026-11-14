@@ -55,9 +55,10 @@ leaving its ad-hoc signature invalid. macOS 27+ kills such binaries on launch
 (`Killed: 9`, exit 137), so the build re-signs with `codesign --force --sign -`.
 Always build via `bun run build`, never the raw `bun build` command.
 
-The compiled binary can be symlinked to PATH:
+The compiled binary is symlinked onto PATH (an absolute link, so re-run this
+from the repo root after moving the checkout):
 ```bash
-ln -s ~/Projects/oss/gh-stack/dist/gh-stack /usr/local/bin/gh-stack
+ln -sf "$(pwd)/dist/gh-stack" ~/.local/bin/gh-stack
 ```
 
 ## Testing
@@ -85,7 +86,9 @@ When making changes, follow these steps:
 The pre-push hook runs lint + typecheck + tests (output suppressed on success).
 The prepublishOnly hook is a no-op since checks already ran on push.
 
-Manual fallback (only if the workflow can't publish): `npm whoami` must be
-`kiliman`, then `OTP=$(op item get npm --otp) && npm publish --otp="$OTP"`.
-The trusted publisher on npmjs.com names the workflow file, so renaming
-`publish.yml` breaks publishing until that setting is updated.
+The repo and the npm package belong to `iamclaudia-ai` (moved from `kiliman`
+on 2026-11-14). Manual fallback (only if the workflow can't publish): `npm
+whoami` must be a package owner (`npm owner ls gh-stack`), then `npm publish`
+with that account's OTP. The trusted publisher on npmjs.com names the repo
+(`iamclaudia-ai/gh-stack`) and the workflow file, so renaming `publish.yml` or
+moving the repo breaks publishing until that setting is updated.

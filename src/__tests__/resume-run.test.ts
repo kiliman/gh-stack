@@ -524,7 +524,7 @@ describe("review fixes (#49)", () => {
     // refused here and the hint said to fetch.)
     const resumed = await runCli(["restack"]);
     expect(resumed.exitCode).toBe(0);
-    expect(resumed.out).toContain("Pushing pr2");
+    expect(resumed.out).toContain("Force-push pr2?");
     for (const b of ["pr2", "pr3"]) expect(await remoteSha(b)).toBe(await sha(b));
   });
 

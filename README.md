@@ -261,6 +261,12 @@ restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--overwrite-remote]
     gh-stack explains the refusal. A tip the check above cleared is
     pushed with an explicit lease on exactly that commit instead.
 
+    A push over an origin tip that's a version of the branch this repo
+    had (its pre-rebase tip, from the reflog or a snapshot, or one the
+    check above cleared) prints one line, "Force-push <branch>? origin
+    <old> → <new>". The full prompt with a warning is kept for an origin
+    tip the repo never had, and for a branch with no copy on origin yet.
+
     (alias: rebase)
 
 restack --onto <ref>
@@ -467,6 +473,13 @@ delete [<branch>] [-k|--keep-branch] [--no-remote]
     --keep-branch leaves the git branches untouched (metadata only),
     and the branch keeps its PR number, so adding it back restores it;
     --no-remote deletes the local branch but keeps the remote.
+
+untrack [<branch>]
+    Stop tracking a branch: remove it from its stack's metadata and
+    re-parent its children, leaving the local branch, origin's copy
+    and its PR untouched (delete --keep-branch, without the
+    confirmation). The branch keeps its PR number, so
+    gh-stack add <branch> puts it back.
 ```
 
 ### Info & Maintenance

@@ -10,6 +10,7 @@ import pc from "picocolors";
 import { createHash } from "node:crypto";
 import * as git from "../lib/git.ts";
 import {
+  buildRebaseChain,
   findStackForBranch,
   getOrderedBranches,
   stackBase,
@@ -88,6 +89,19 @@ function splitStackTrunk(meta: StackMetadata, base: string): string {
     branch = stackBase(meta.stacks[owner]!);
   }
   return isTrunkName(branch) ? branch : "main";
+}
+
+/**
+ * The branches a stack shows its reviewers, in stack order: every branch with a
+ * PR, plus any PR-less branch that a PR sits on (it is that PR's base, so
+ * reviewers need to see it). A PR-less branch with no PR above it is local
+ * work: it is left out of the (N/M) count and the stack section, so a branch
+ * meant to stay local never renumbers or shows up in published PRs. (#82)
+ */
+export function publishedBranches(stack: Stack, ordered: string[]): string[] {
+  return ordered.filter((b) =>
+    buildRebaseChain(stack, b).some((d) => stack.branches[d]?.pr != null),
+  );
 }
 
 /** Build a BranchPrInfo from metadata alone (no network). */
@@ -192,9 +206,10 @@ export interface TitleResult {
 
 /**
  * Decide which PR titles need editing and to what. Pure (no network) so it's
- * unit-testable. `items` must be the whole stack in order — the index drives
- * the `(N/M)` position. The base title is an explicit `override` (from
- * `submit -t`) when given, else the cached `prTitle`; a branch with neither a
+ * unit-testable. `items` must be the stack's published branches in order
+ * (publishedBranches) — the index drives the `(N/M)` position. The base title
+ * is an explicit `override` (from `submit -t`) when given, else the cached
+ * `prTitle`; a branch with neither a
  * PR nor a known base is skipped (never guess from the branch name). An edit is
  * emitted only when the desired title differs from what's cached/on GitHub.
  */
@@ -215,12 +230,13 @@ export function planTitleEdits<
 }
 
 /**
- * Reconcile every PR title in the stack to carry its `(N/M)` stack position.
- * Backfills any missing cached titles first (so we never clobber a real GitHub
- * title with a branch-name guess), then edits only the titles that actually
- * changed — a no-op re-submit makes zero edits, while adding/reordering a
- * branch renumbers the whole stack. Run BEFORE refreshStackViz so the viz shows
- * numbered titles.
+ * Reconcile every PR title in the stack to carry its `(N/M)` stack position,
+ * counted over the published branches (a local-only branch on top doesn't
+ * count). Backfills any missing cached titles first (so we never clobber a real
+ * GitHub title with a branch-name guess), then edits only the titles that
+ * actually changed — a no-op re-submit makes zero edits, while a branch gaining
+ * a PR or a reorder renumbers the whole stack. Run BEFORE refreshStackViz so
+ * the viz shows numbered titles.
  *
  * `titleOverrides` (branch → new base title) lets `submit -t` set the current
  * branch's title; the override is renumbered like any other title and the
@@ -234,7 +250,7 @@ export async function reconcilePrTitles(
   const dirtyBackfill = await backfillTitles(stack, ordered);
   const overrides = opts.titleOverrides ?? {};
 
-  const items = ordered.map((name) => {
+  const items = publishedBranches(stack, ordered).map((name) => {
     const bm = stack.branches[name]!;
     return { name, pr: bm.pr, prTitle: bm.prTitle, override: overrides[name], bm };
   });
@@ -287,7 +303,7 @@ export async function refreshStackViz(
 
   let dirty = await backfillTitles(stack, ordered);
 
-  const branchInfos = ordered.map((b) => toBranchInfo(stack, b, nwo));
+  const branchInfos = publishedBranches(stack, ordered).map((b) => toBranchInfo(stack, b, nwo));
   const baseRef = await resolveBaseRef(meta, stack, nwo);
 
   // Render every block locally and decide what needs writing — no network yet.
@@ -320,7 +336,7 @@ export async function refreshStackViz(
 
   const toUpdate = plans.filter((plan) => plan.needsUpdate);
   const unchanged = plans.length - toUpdate.length;
-  const skippedBranches = branchInfos.filter((b) => b.prNumber == null).map((b) => b.branch);
+  const skippedBranches = ordered.filter((b) => stack.branches[b]!.pr == null);
   const skipped = skippedBranches.length;
 
   const oks = await mapLimit(toUpdate, 8, async (plan) => {

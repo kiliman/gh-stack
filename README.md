@@ -111,11 +111,27 @@ add [branch] [--parent <branch>]
     know about it, and `add` is how you track it without publishing. (When
     you do run `submit`, it auto-tracks too — `add` is the no-push path.)
 
-submit [-d|--draft|--no-draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--restack] [--json] [--dry-run]
+submit [-d|--draft|--no-draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [--body-file <f>] [--existing] [--restack] [--json] [--dry-run]
     Push all downstack branches to GitHub, create PRs for branches
     that don't have them, number each PR title with its stack position
     `(N/M)`, and update all PR descriptions with stack visualization.
     Idempotent — safe to run repeatedly.
+
+    The `(N/M)` count and the stack section cover the branches with PRs,
+    plus any branch without one that a PR sits on (it's that PR's base).
+    A branch with no PR above it is local work: it isn't counted or
+    shown, so tracking a new branch on top never renumbers the PRs.
+
+    --existing pushes only the branches that already have PRs, across the
+    whole stack wherever you stand, and opens no new PR. It still
+    retargets bases and refreshes titles and stack sections. A branch
+    with no PR on top is left alone (not pushed). This is the way to
+    publish after `sync --no-push` or `restack --no-push`, instead of
+    pushing branches by name with `git push --force-with-lease`. If a
+    branch without a PR sits under one that has a PR, --existing stops
+    before pushing anything: give that branch a PR with `submit` first.
+    -t/-b need the current branch to have a PR; not combinable with
+    --restack.
 
     --draft creates new PRs as drafts; --no-draft creates them ready for
     review. Draft is create-time only: submit never changes the draft
@@ -152,9 +168,11 @@ submit [-d|--draft|--no-draft] [-n|--no-edit] [-t|--title <t>] [-b|--body <b>] [
         branches: [{ branch, parent, pr, url, title, action, pushed,
                      draft, error? }],
         error: null | { message, hint?, log? } }
-    branches is the submit scope (trunk → current) in stack order. action
-    is created (new PR), updated (pushed, or base/title/description
-    edited), unchanged, or failed (see the entry's error). draft is
+    branches is the submit scope (trunk → current; the whole stack with
+    --existing) in stack order. action is created (new PR), updated
+    (pushed, or base/title/description edited), unchanged, skipped
+    (--existing: no PR, so left local), or failed (see the entry's
+    error). draft is
     true/false for PRs created this run, null otherwise. The top-level
     error is set when the run stopped early (bad flags, nothing to
     submit, a push failure): branches then lists what happened before
@@ -899,6 +917,7 @@ gh-stack restack
 
 # Rebase without publishing (e.g. before a human approves the push)
 GH_STACK_NO_PUSH=1 gh-stack restack
+gh-stack submit --existing       # ...then push the branches that have PRs, open none
 
 # Check which defaults apply here (.gh-stack.toml, user config, env)
 gh-stack config

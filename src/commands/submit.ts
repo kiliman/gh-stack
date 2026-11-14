@@ -15,7 +15,12 @@ import { ConfigError, describeSource, resolveFlag } from "../lib/config.ts";
 import type { Stack, StackMetadata } from "../types.ts";
 import { getPrNumber, getRepoNwo, prUrlFor } from "../lib/github.ts";
 import { describeSkipped, resolveOrCreateStack, type SkippedBranch } from "../lib/chain.ts";
-import { reconcilePrTitles, refreshStackViz, branchToTitle } from "./update-prs.ts";
+import {
+  branchToTitle,
+  publishedBranches,
+  reconcilePrTitles,
+  refreshStackViz,
+} from "./update-prs.ts";
 
 const HELP = `
 gh-stack submit — Push branches and create/update PRs
@@ -40,13 +45,27 @@ OPTIONS
   -t, --title <title>  Set the PR title (current branch) — creates or updates
   -b, --body <body>    Set the PR body (current branch) — creates or updates
       --body-file <f>  Read PR body from a file
+      --existing       Push only the branches that already have PRs, across the
+                       whole stack, and create none. A branch with no PR on top
+                       stays local. Use this to push after \`sync --no-push\` or
+                       \`restack --no-push\`, instead of a raw \`git push\`
       --restack        After submitting, restack the branches above the current
                        one onto it (propagate a downstack fix up to children)
       --json           Print the result as JSON on stdout: each branch's PR
-                       number, URL, and action (created/updated/unchanged/failed).
-                       Logs go to stderr, uncolored. Implies --no-edit.
+                       number, URL, and action (created/updated/unchanged/
+                       skipped/failed). Logs go to stderr, uncolored. Implies
+                       --no-edit.
                        Not combinable with --restack or --dry-run
       --dry-run        Show what would happen without doing anything
+
+Pushing existing PRs only (--existing): pushes every branch in the stack that
+has a PR, wherever you stand, retargets their bases and refreshes their titles
+and stack sections, and opens no new PR. A branch with no PR and no PR above it
+is left alone: not pushed, not counted in the (N/M) titles, not shown in the
+stack section. A branch with no PR that another PR sits on is that PR's base,
+so --existing stops before pushing anything and asks you to give it a PR
+first. -t / -b need the current branch to have a PR. Not combinable with
+--restack (run \`gh-stack restack --no-push\` first, then \`submit --existing\`).
 
 Updating an existing PR: -t / -b also update the PR for the branch you're on
 if it already exists — the title keeps its (N/M) stack position, and the body
@@ -60,9 +79,10 @@ follow-up \`gh pr view\`:
     "branches": [{ "branch", "parent", "pr", "url", "title",
                    "action", "pushed", "draft", "error"? }],
     "error": null | { "message": "...", "hint"?: [...], "log"?: "..." } }
-"branches" is the submit scope (trunk → current), in stack order. "action" is
-created (new PR), updated (pushed, or base/title/description edited),
-unchanged, or failed (PR creation or push failed; see the entry's "error").
+"branches" is the submit scope (trunk → current; the whole stack with
+--existing), in stack order. "action" is created (new PR), updated (pushed, or
+base/title/description edited), unchanged, skipped (--existing: no PR, so left
+local), or failed (PR creation or push failed; see the entry's "error").
 "draft" is true/false for PRs created this run and null otherwise. The
 top-level "error" is set when the run stopped early (bad flags, nothing to
 submit, a push failure); "branches" then holds what happened before it, and
@@ -84,6 +104,7 @@ EXAMPLES
   gh-stack submit -n                           # Push + create PRs with auto-titles
   gh-stack submit -t "My PR" -b "Description"  # Explicit title and body
   gh-stack submit --restack                    # Submit, then restack children onto it
+  gh-stack submit --existing                   # Push branches that have PRs, open none
   gh-stack submit --draft                      # Create new PRs as drafts
   gh-stack submit --no-draft                   # Ready for review despite a draft default
   gh-stack submit --json -t "My PR" | jq '.branches[-1].url'   # URL of the PR
@@ -92,7 +113,7 @@ EXAMPLES
 
 // ── --json result ──
 
-export type SubmitAction = "created" | "updated" | "unchanged" | "failed";
+export type SubmitAction = "created" | "updated" | "unchanged" | "skipped" | "failed";
 
 /** What the push/create phase did to one branch in scope. */
 export interface BranchOutcome {
@@ -107,6 +128,8 @@ export interface BranchOutcome {
   /** Whether a PR created this run was opened as a draft (null: not created). */
   draft: boolean | null;
   error: string | null;
+  /** --existing left this branch alone: it has no PR. */
+  skipped?: boolean;
 }
 
 export interface SubmitBranchJson {
@@ -147,6 +170,7 @@ export interface SubmitJson {
  */
 export function submitAction(outcome: BranchOutcome, edited: ReadonlySet<string>): SubmitAction {
   if (outcome.error) return "failed";
+  if (outcome.skipped) return "skipped";
   if (outcome.created) return "created";
   if (outcome.pushed || outcome.baseChanged || edited.has(outcome.branch)) return "updated";
   return "unchanged";
@@ -273,6 +297,7 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
   let draftNoted = false;
   const dryRun = args.includes("--dry-run");
   const restackFlag = args.includes("--restack");
+  const existingOnly = args.includes("--existing");
 
   if (jsonMode && dryRun) {
     throw new SubmitAbort(
@@ -284,6 +309,14 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
   if (jsonMode && restackFlag) {
     throw new SubmitAbort(
       "--json can't be combined with --restack. Run `gh-stack restack` separately after submit.",
+    );
+  }
+
+  // --existing pushes the whole stack, while --restack rebases what sits above
+  // the current branch and pushes it too: run them one after the other.
+  if (existingOnly && restackFlag) {
+    throw new SubmitAbort(
+      "--existing can't be combined with --restack. Run `gh-stack restack --no-push` first, then `gh-stack submit --existing`.",
     );
   }
 
@@ -337,6 +370,13 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
     added: string[];
     skipped: SkippedBranch[];
   } | null = null;
+  // --existing only pushes what's already published, so there's nothing for it
+  // to set up: a branch outside any stack has no tracked PRs to push.
+  if (!stackName && existingOnly) {
+    throw new SubmitAbort(
+      `${pc.blue(branch)} isn't in a stack, so --existing has no tracked PRs to push. Check out a stack branch, or run \`gh-stack submit\` without --existing to set the stack up.`,
+    );
+  }
   if (!stackName) {
     const trunk = await git.trunkBranch();
 
@@ -371,9 +411,11 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
   run.stackName = stackName;
   run.stack = stack;
 
-  // Determine downstack scope: branches from trunk up to and including current
+  // Determine downstack scope: branches from trunk up to and including current.
+  // --existing covers the whole stack: after a sync or restack, every PR's
+  // branch was rewritten, wherever you stand.
   const currentIndex = ordered.indexOf(branch);
-  const scope = currentIndex >= 0 ? ordered.slice(0, currentIndex + 1) : ordered;
+  const scope = currentIndex >= 0 && !existingOnly ? ordered.slice(0, currentIndex + 1) : ordered;
 
   p.intro(pc.cyan("Submit Stack"));
 
@@ -409,7 +451,9 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
 
   p.log.info(`Stack: ${pc.yellow(stackName)}`);
   p.log.info(
-    `Scope: ${scope.length} of ${ordered.length} branch(es) (downstack from ${pc.blue(branch)})`,
+    existingOnly
+      ? `Scope: all ${ordered.length} branch(es) of the stack (--existing: only those with PRs are pushed)`
+      : `Scope: ${scope.length} of ${ordered.length} branch(es) (downstack from ${pc.blue(branch)})`,
   );
   p.print();
 
@@ -422,22 +466,45 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
   let pushed = 0;
   let created = 0;
   let existing = 0;
+  let skipped = 0;
   let metadataChanged = false;
   const outcomes = run.outcomes;
 
   // The branch's PR: recorded in metadata, else looked up on GitHub. A PR
   // found that way (opened outside gh-stack) is recorded for next time, except
-  // in a dry run, which still looks so its plan doesn't offer to create it.
+  // in a dry run, which still looks so its plan doesn't offer to create it. (A
+  // dry run keeps it in memory only: it never writes metadata.)
   const findPr = async (name: string): Promise<number | null> => {
     const bm = stack.branches[name]!;
     if (bm.pr) return bm.pr;
     const found = await getPrNumber(name);
-    if (found && !dryRun) {
+    if (found) {
       bm.pr = found;
-      metadataChanged = true;
+      if (!dryRun) metadataChanged = true;
     }
     return found;
   };
+
+  // ── --existing: know every branch's PR before pushing anything ──
+  if (existingOnly) {
+    for (const b of scope) await findPr(b);
+    // A PR-less branch that a PR sits on is that PR's base: pushing the PR
+    // without it would leave the PR on a base GitHub doesn't have (or show its
+    // commits in the PR above). Stop before any push, keeping found PRs.
+    const gap = publishedBranches(stack, ordered).find((b) => stack.branches[b]!.pr == null);
+    if (gap) {
+      if (metadataChanged) await writeMetadata(meta);
+      const above = buildRebaseChain(stack, gap).find((d) => stack.branches[d]?.pr != null)!;
+      throw new SubmitAbort(
+        `${pc.blue(gap)} has no PR, but ${pc.blue(above)}'s PR #${stack.branches[above]!.pr} sits on it, so --existing can't push the stack without it. Run \`gh-stack submit\` from ${pc.blue(gap)} to give it a PR, then \`gh-stack submit --existing\`.`,
+      );
+    }
+    if ((titleFlag || bodyFlag) && stack.branches[branch]!.pr == null) {
+      throw new SubmitAbort(
+        `${pc.blue(branch)} has no PR, and --existing creates none, so -t/-b have nothing to update. Run \`gh-stack submit\` without --existing to open it.`,
+      );
+    }
+  }
 
   for (const branchName of scope) {
     const branchMeta = stack.branches[branchName]!;
@@ -454,6 +521,15 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
       error: null,
     };
     outcomes.push(outcome);
+
+    // ── --existing: a branch with no PR stays local (the gap check above
+    // made sure no PR sits on it) ──
+    if (existingOnly && branchMeta.pr == null) {
+      outcome.skipped = true;
+      skipped++;
+      p.log.info(pc.dim(`– ${branchName} has no PR, left local (--existing)`));
+      continue;
+    }
 
     // ── Push (skip if already up-to-date) ──
     if (dryRun) {
@@ -610,7 +686,8 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
   if (dryRun) {
     p.outro(
       pc.dim(
-        `Dry run complete: would push ${scope.length}, create ${created}, update ${existing} PR(s)`,
+        `Dry run complete: would push ${scope.length - skipped}, create ${created}, update ${existing} PR(s)` +
+          (skipped > 0 ? `, leave ${skipped} without a PR local` : ""),
       ),
     );
     if (restackFlag) await maybeRestack(stack, branch, true);
@@ -646,7 +723,8 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
   p.outro(
     pc.green(
       `Done! Pushed ${pushed} branch(es), created ${created} PR(s), updated ${viz.updated} description(s), ${titles.updated} title(s)` +
-        (viz.unchanged > 0 ? `, ${viz.unchanged} unchanged` : ""),
+        (viz.unchanged > 0 ? `, ${viz.unchanged} unchanged` : "") +
+        (skipped > 0 ? `, left ${skipped} without a PR local` : ""),
     ),
   );
 

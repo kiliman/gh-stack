@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.23
+
+### 🐛 Fixes
+- **Restack after a plain-git rebase replays only the child's own commits.** When a parent branch was rebased or amended with plain git (a `git rebase origin/main` on the bottom branch, say), gh-stack had no snapshot of its old tip, so restack rebased the child from the old merge-base and replayed the parent's old commits onto their rebased copies, usually as add/add conflicts. A snapshot taken before later plain commits on the parent replayed those commits the same way. Restack now finds the parent's old tip in its reflog and uses it whenever it sits above what the snapshots or merge-base found. A tip the parent was moved back from is never used (that's the "committed on the wrong branch, moved the parent back" fix, where the old tip is the child's own work), and with no other boundary restack still refuses rather than guess. The rebase line says `from <parent>'s reflog`. (#83, #94)
+- The agent skill says a branch rebased or amended with plain git needs no `git rebase --onto` by hand; restack handles it. (#94)
+
 ## 0.19.22
 
 ### ✨ Features

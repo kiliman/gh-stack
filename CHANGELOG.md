@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.20
+
+### ✨ Features
+- **`gh-stack untrack <branch>`** takes a branch out of its stack and leaves everything else alone: the local branch, origin's copy and its PR stay, and `gh-stack add <branch>` puts it back with its PR. It's `delete --keep-branch` under a name that says what it does, without the confirmation. `delete --help` points to it. (#82, #91)
+
+### 🐛 Fixes
+- **Restack pushes stop printing a warning box every time.** A push over origin's pre-rebase copy of a branch (a version this repo had, or one the remote check cleared) is one line now: `Force-push <branch>? origin <old> → <new>`, then `Pushed <branch>`. The full prompt and its warning are kept for an origin tip the repo never had. (#82, #91)
+
 ## 0.19.19
 
 ### 🐛 Fixes

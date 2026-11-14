@@ -741,6 +741,13 @@ OPTIONS
       console.log(
         `    ${pc.green("gh-stack sync")}     ${pc.dim("# rebase the base onto main & resolve conflicts")}`,
       );
+      if (rangeOrdered.length > 1) {
+        // The collapsed branches are still in the stack; sync drops them
+        // rather than restacking them onto their own squash commits (#81).
+        console.log(
+          `                      ${pc.dim(`# (only ${baseBranch}: the PRs squashed into it are dropped from the stack)`)}`,
+        );
+      }
       console.log(
         `    ${pc.green("gh-stack merge")}    ${pc.dim("# finishes base PR → main + archives")}`,
       );
@@ -796,11 +803,20 @@ OPTIONS
   console.log();
   const pullSpinner = p.spinner();
   pullSpinner.start("Syncing local branches...");
+  // In a linked worktree, main is usually checked out by the main one, and
+  // git won't check it out twice: say where it is instead of failing (#81).
+  const mainHolder = await git.worktreeHolding("main").catch(() => null);
   try {
     await $`git fetch origin`.quiet();
-    await git.checkout("main");
-    await $`git pull origin main`.quiet();
-    pullSpinner.stop("Local branches synced");
+    if (mainHolder) {
+      pullSpinner.stop(
+        `Fetched origin. main is checked out in the worktree at ${mainHolder.path}; update it there: ${pc.dim(`git -C ${git.shellQuote(mainHolder.path)} pull --ff-only`)}`,
+      );
+    } else {
+      await git.checkout("main");
+      await $`git pull origin main`.quiet();
+      pullSpinner.stop("Local branches synced");
+    }
   } catch {
     pullSpinner.stop(pc.dim("Could not sync local branches — run git pull manually"));
   }

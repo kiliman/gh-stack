@@ -359,6 +359,14 @@ merged branch with several children (the dependency sweep's batch PR with one
 breaking PR per upgrade) leaves one stack per child, and sync syncs each. It rebases
 onto `origin/main` (fetched itself), so a stale local `main` doesn't matter.
 
+**`merge` stopped with "conflicts with main" after collapsing:** run
+`gh-stack sync`, as it says. Sync drops the branches already squashed into the
+base, catches the local base up to origin's copy (no need to pull it first),
+and rebases only the base onto main. Resolve that conflict,
+`git rebase --continue`, `gh-stack restack --resume`, then re-run
+`gh-stack merge`. Don't `restack --fresh` or pass `--skip-collapse-check` to get
+past it.
+
 ### 5. Status
 
 ```bash

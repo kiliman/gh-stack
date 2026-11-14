@@ -998,6 +998,23 @@ export async function resetBranch(branch: string, ref: string): Promise<RewriteR
 }
 
 /**
+ * Fast-forward `branch` to `ref`: in the worktree that has it checked out
+ * (this one or another), otherwise by moving the ref, guarded on its current
+ * tip. Fails rather than merging when it isn't a fast-forward.
+ */
+export async function fastForwardBranch(branch: string, ref: string): Promise<RewriteResult> {
+  const wt = await readyWorktreeFor(branch);
+  if (wt || (await currentBranch()) === branch) {
+    const { exitCode } = await runGit(["merge", "--ff-only", "-q", ref], { cwd: wt ?? undefined });
+    return { ok: exitCode === 0, worktree: wt };
+  }
+  const tip = await revParse(branch);
+  if (!(await isAncestor(tip, ref))) return { ok: false, worktree: null };
+  const { exitCode } = await runGit(["update-ref", `refs/heads/${branch}`, ref, tip]);
+  return { ok: exitCode === 0, worktree: null };
+}
+
+/**
  * The path of the other worktree that has `branch` checked out, once it's
  * confirmed ready for the rewrite; null when no other worktree has it.
  */

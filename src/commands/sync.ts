@@ -29,7 +29,7 @@ import {
   type MergedRunEntry,
   type StrandedMerge,
 } from "../lib/advance.ts";
-import type { StackMetadata } from "../types.ts";
+import type { Stack, StackMetadata } from "../types.ts";
 import restack, {
   notePendingRun,
   refuseRebaseInProgress,
@@ -67,6 +67,11 @@ OPTIONS
 
 If an interrupted restack or sync is pending, sync asks whether to resume it
 (with --yes it resumes) rather than starting over on top of it.
+
+Bottom PRs that already merged are dropped, and the branches on them re-rooted
+onto main. So are branches \`merge\` already squashed into the base (their PRs
+merged into their stack parents) when it stopped on a conflict with main: sync
+catches the base up to origin's copy and rebases only the base.
 
 Before rewriting anything, sync stops if a branch's copy on origin has
 commits the local branch never had (e.g. the squash commit \`merge --collapse\`
@@ -125,24 +130,42 @@ adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`
   // `--onto`) before the normal sync runs. (#20)
   const merged = await findMergedBottoms(meta, stackName);
 
+  // `merge` squashes the upper PRs into the base on GitHub before it hands
+  // the base to main, and stops there if the base conflicts with main. The
+  // branches it collapsed are done: their changes are on origin's base as
+  // squash commits. Drop them instead of restacking their own commits onto
+  // that base, where they'd conflict with their squashed copies (#81). Only
+  // when no bottom PR merged: a run that advances past merged bottoms doesn't
+  // also look for a collapse above them.
+  const collapsed = merged.plan.steps.length === 0 ? await findCollapsed(stack, ordered) : [];
+
   // Nothing is rewritten yet: stop here if origin holds commits the local
   // branches lack, e.g. a collapse's squash commit on the base branch (#28).
   // Bottoms whose PRs already merged are skipped: the advance drops them
   // rather than rewriting them, and after `merge --approved` they're exactly
-  // where the collapse's squash commits live.
-  const mergedBranches = new Set(merged.plan.steps.map((step) => step.branch));
+  // where the collapse's squash commits live. Collapsed branches are dropped
+  // the same way.
+  const dropped = new Set([...merged.plan.steps.map((step) => step.branch), ...collapsed]);
   // Everything else gets rebased, possibly in other worktrees (#78).
   if (!dryRun) {
     await ensureWorktreesReady(
-      ordered.filter((b) => !mergedBranches.has(b)),
+      ordered.filter((b) => !dropped.has(b)),
       "gh-stack sync",
     );
   }
-  const verified = await guardRemoteContent(
-    meta,
-    ordered.filter((b) => !mergedBranches.has(b)),
-    { command: "sync", overwrite: args.includes("--overwrite-remote"), dryRun },
-  );
+  const toGuard = ordered.filter((b) => !dropped.has(b));
+  if (collapsed.length > 0) {
+    reportCollapsed(stack, ordered[0]!, collapsed);
+    // The base on origin has the squash commits; catch the local one up, so
+    // it's what gets rebased onto main. A dry run leaves it out of the guard
+    // rather than report what a real run fixes.
+    if (await catchUpWithOrigin(ordered[0]!, dryRun)) toGuard.shift();
+  }
+  const verified = await guardRemoteContent(meta, toGuard, {
+    command: "sync",
+    overwrite: args.includes("--overwrite-remote"),
+    dryRun,
+  });
 
   const advance = await advanceMergedBottoms(
     meta,
@@ -163,7 +186,14 @@ adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`
     p.outro(pc.green("Sync dry run complete"));
     return;
   }
-  if (advance.advanced) {
+  if (collapsed.length > 0) {
+    if (dryRun) {
+      p.outro(pc.green("Sync dry run complete"));
+      return;
+    }
+    await dropCollapsed(meta, stackName, ordered[0]!, collapsed, noPush, verified);
+  }
+  if (advance.advanced || collapsed.length > 0) {
     // Topology changed — re-derive the root from the freshly-updated metadata.
     stack = meta.stacks[stackName]!;
     ordered = getOrderedBranches(stack);
@@ -325,6 +355,142 @@ async function findMergedBottoms(meta: StackMetadata, stackName: string): Promis
     });
   }
   return { plan: planMerges(reviews, { approveAndMerge: false }), run };
+}
+
+/**
+ * The branches `merge` collapsed into the root: walking up from it, each one
+ * whose PR merged into its stack parent, itself the root or collapsed. Strict:
+ * a PR that can't be read stops the sync (PrFetchError), since passing it as
+ * unmerged would restack a collapsed branch into conflicts.
+ */
+async function findCollapsed(stack: Stack, ordered: string[]): Promise<string[]> {
+  const collapsed: string[] = [];
+  const into = new Set([ordered[0]!]);
+  for (const branch of ordered.slice(1)) {
+    const entry = stack.branches[branch]!;
+    if (entry.pr == null || !into.has(entry.parent)) continue;
+    const state = await fetchPrMergeState(entry.pr);
+    if (state?.state === "MERGED" && state.baseRefName === entry.parent) {
+      collapsed.push(branch);
+      into.add(branch);
+    }
+  }
+  return collapsed;
+}
+
+/** "PR #2", "PR #2 and PR #3", "PR #2, PR #3 and PR #4". */
+function listPrs(prs: string[]): string {
+  return prs.length < 2 ? prs.join("") : `${prs.slice(0, -1).join(", ")} and ${prs.at(-1)}`;
+}
+
+function reportCollapsed(stack: Stack, root: string, collapsed: string[]): void {
+  const prs = collapsed.map((b) => `PR #${stack.branches[b]!.pr}`);
+  const survivors = survivorsOf(stack, collapsed);
+  p.log.warn(
+    `${listPrs(prs)} ${prs.length === 1 ? "is" : "are"} already squashed into ${pc.yellow(root)} (gh-stack merge collapsed ${prs.length === 1 ? "it" : "them"}).`,
+  );
+  console.log(
+    `  ${pc.dim(
+      `Dropping ${collapsed.join(", ")} from the stack${
+        survivors.length > 0 ? ` and re-rooting ${survivors.join(", ")} onto ${root}` : ""
+      }: restacking ${collapsed.length === 1 ? "it" : "them"} would replay ${
+        collapsed.length === 1 ? "its" : "their"
+      } commits onto their own squashed copies.`,
+    )}`,
+  );
+  console.log();
+}
+
+/**
+ * Fast-forward `branch` to its copy on origin when it's strictly behind:
+ * after a collapse, origin's base has the squash commits `merge` made on
+ * GitHub, and the local one never saw them. In a dry run it only says so, and
+ * returns true.
+ */
+async function catchUpWithOrigin(branch: string, dryRun: boolean): Promise<boolean> {
+  await git.runGit(["fetch", "-q", "origin", branch]);
+  const remote = `origin/${branch}`;
+  if (!(await git.refExists(remote))) return false;
+  const local = await git.revParse(branch);
+  const tip = await git.revParse(remote);
+  if (local === tip || !(await git.isAncestor(local, tip))) return false;
+  if (dryRun) {
+    p.log.info(`[DRY RUN] Would fast-forward ${pc.yellow(branch)} to ${remote} first`);
+    return true;
+  }
+  const res = await git.fastForwardBranch(branch, remote);
+  if (!res.ok) {
+    p.cancel(
+      `Could not fast-forward ${branch} to ${remote}${res.worktree ? ` in the worktree at ${res.worktree}` : ""}.\n\n` +
+        `  Bring it up to date, then re-run gh-stack sync:\n    ${pc.green(`git${res.worktree ? ` -C ${git.shellQuote(res.worktree)}` : ""} pull --ff-only origin ${branch}`)}`,
+    );
+    process.exit(1);
+  }
+  p.log.info(`Fast-forwarded ${pc.yellow(branch)} to ${remote}, which has the squash commits`);
+  return false;
+}
+
+/**
+ * Drop the collapsed branches, re-rooting any unmerged branch above them onto
+ * the root from the collapsed branch's tip (advancePastMerged, with the root
+ * as the target). The usual sync then rebases the root onto main and restacks
+ * what's left above it.
+ */
+async function dropCollapsed(
+  meta: StackMetadata,
+  stackName: string,
+  root: string,
+  collapsed: string[],
+  noPush: boolean,
+  verified: Map<string, string>,
+): Promise<void> {
+  const stack = meta.stacks[stackName]!;
+  const survivors = survivorsOf(stack, collapsed);
+  await takeSnapshot(meta, stackName, "sync-collapsed");
+  // Don't leave the checkout on a branch that's leaving the stack.
+  if (collapsed.includes(await git.currentBranch()) && !(await git.worktreeHolding(root))) {
+    await git.checkout(root);
+  }
+  const res = await advancePastMerged({
+    meta,
+    stackName,
+    merged: collapsed,
+    survivors: survivors.map((branch) => ({
+      branch,
+      pr: stack.branches[branch]?.pr ?? null,
+      expect: verified.get(branch),
+    })),
+    targetRef: root,
+    recordedBase: root,
+    push: !noPush,
+  });
+  if (!res.ok) {
+    console.log();
+    if (res.reason === "conflict") {
+      p.log.error(`Rebase conflict re-rooting ${pc.yellow(res.child)} onto ${root}.`);
+      if (res.worktree) {
+        console.log(
+          `  It stopped in the worktree at ${res.worktree}, which has ${res.child} checked out.`,
+        );
+      }
+      console.log(`  Resolve it, then finish the sync:`);
+      console.log(`    ${pc.green(`${git.rebaseCommand(res.worktree ?? null)} --continue`)}`);
+      console.log(
+        `    ${pc.green("gh-stack sync")}   ${pc.dim(`(picks up the re-rooted ${res.child}; not restack, which would put it back on ${res.mergedBranch})`)}`,
+      );
+    } else {
+      p.log.error(
+        `Could not determine a safe rebase base for ${pc.yellow(res.child)} (${res.reason}).`,
+      );
+      console.log(
+        `  Re-root manually:\n    ${pc.green(`git rebase --onto ${root} <${res.mergedBranch}'s tip> ${res.child}`)}`,
+      );
+    }
+    process.exit(2);
+  }
+  // A survivor just pushed has a new tip on origin: its next push (after the
+  // root moves onto main) leases on what it pushed, not what the guard saw.
+  if (!noPush) for (const s of survivors) verified.delete(s);
 }
 
 /**

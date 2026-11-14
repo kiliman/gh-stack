@@ -19,6 +19,8 @@ import log from "../commands/log.ts";
 import list from "../commands/list.ts";
 import {
   buildStackViz,
+  mergeViz,
+  resolveBaseRef,
   numberedTitle,
   stripSeqSuffix,
   planTitleEdits,
@@ -347,6 +349,83 @@ describe("buildStackViz", () => {
     });
     expect(viz).toContain("#11 pr11");
     expect(viz).not.toContain("**main**");
+  });
+
+  // #76: GitHub's merge button on an upper PR squashes it into the branch
+  // below and closes it for good. Its block says so; the bottom PR's doesn't.
+  describe("upper-PR merge warning", () => {
+    const three = [
+      { branch: "pr1", prNumber: 1, prTitle: "One", prUrl: null },
+      { branch: "pr2", prNumber: 2, prTitle: "Two", prUrl: null },
+      { branch: "pr3", prNumber: 3, prTitle: "Three", prUrl: null },
+    ];
+
+    test("the bottom PR of a stack on trunk gets no warning", () => {
+      const viz = buildStackViz(three, 0);
+      expect(viz).not.toContain("[!WARNING]");
+      expect(viz).not.toContain("Don't merge");
+    });
+
+    test("each upper PR names the PR directly below it, right under the heading", () => {
+      const viz = buildStackViz(three, 2, { label: "master" });
+      expect(
+        viz.startsWith("### 📚 Stacked on\n\n> [!WARNING]\n> **Don't merge this PR on GitHub.**"),
+      ).toBe(true);
+      expect(viz).toContain(
+        "Its base is #2's branch, not `master`: merging it here squashes it into that branch and closes it for good, with nothing reaching `master`. Merge #2 first, or land the stack with `gh-stack merge`.",
+      );
+      expect(buildStackViz(three, 1)).toContain("Its base is #1's branch, not `main`");
+    });
+
+    test("a PR whose branch below has no PR yet names that branch", () => {
+      const viz = buildStackViz([{ ...three[0]!, prNumber: null }, three[1]!], 1);
+      expect(viz).toContain("Its base is `pr1`, not `main`");
+      expect(viz).toContain("Merge `pr1` first");
+    });
+
+    test("the bottom of a split stack warns about its base PR in the other stack", () => {
+      const base = { label: "pr11", prNumber: 11, prUrl: null, trunk: "main" };
+      const multi = buildStackViz(three.slice(0, 2), 0, base);
+      expect(multi).toContain("Its base is #11's branch, not `main`");
+      const solo = buildStackViz([three[0]!], 0, base);
+      expect(solo).toContain("> [!WARNING]");
+      expect(solo).toContain("Merge #11 first");
+    });
+
+    test("the warning stays inside the managed block, so a refresh replaces it", () => {
+      const body = mergeViz("Describes PR 2.", buildStackViz(three, 1));
+      expect(body).toContain("Don't merge");
+      // Once PR 1 lands, PR 2 is the bottom: its refreshed block has no warning.
+      const landed = buildStackViz(three.slice(1), 0);
+      expect(mergeViz(body, landed)).toBe(`Describes PR 2.\n\n${landed}`);
+    });
+
+    test("resolveBaseRef follows split stacks down to the trunk", async () => {
+      const stack = (base: string, branches: Record<string, { parent: string; pr?: number }>) => ({
+        description: "",
+        last_branch: null,
+        base,
+        branches,
+      });
+      const meta = {
+        version: 3 as const,
+        current_stack: null,
+        stacks: {
+          bottom: stack("master", { a: { parent: "master", pr: 7 } }),
+          middle: stack("a", { b: { parent: "a", pr: 8 } }),
+          top: stack("b", { c: { parent: "b" } }),
+          orphan: stack("gone", { d: { parent: "gone" } }),
+        },
+      };
+      expect(await resolveBaseRef(meta, meta.stacks.bottom, null)).toEqual({ label: "master" });
+      expect(await resolveBaseRef(meta, meta.stacks.top, null)).toMatchObject({
+        label: "b",
+        prNumber: 8,
+        trunk: "master",
+      });
+      // A base branch no stack tracks: assume main rather than name the branch.
+      expect((await resolveBaseRef(meta, meta.stacks.orphan, null)).trunk).toBe("main");
+    });
   });
 
   // The submit fast-path (#16) skips a PR's PATCH when the rendered block is

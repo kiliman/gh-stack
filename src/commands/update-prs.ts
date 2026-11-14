@@ -32,6 +32,8 @@ export interface BaseRef {
   label: string; // "main" or a branch name (for split stacks)
   prNumber?: number | null;
   prUrl?: string | null;
+  /** The trunk a split stack lands on. Absent: `label` is the trunk itself. */
+  trunk?: string;
 }
 
 export interface BranchPrInfo {
@@ -59,11 +61,33 @@ export async function resolveBaseRef(
   nwo: string | null,
 ): Promise<BaseRef> {
   const base = stackBase(stack);
-  if (base === "main" || base === "master") return { label: base };
+  if (isTrunkName(base)) return { label: base };
 
   const ownerName = findStackForBranch(meta, base);
   const prNumber = ownerName ? (meta.stacks[ownerName]?.branches[base]?.pr ?? null) : null;
-  return { label: base, prNumber, prUrl: prNumber ? prUrlFor(nwo, prNumber) : null };
+  return {
+    label: base,
+    prNumber,
+    prUrl: prNumber ? prUrlFor(nwo, prNumber) : null,
+    trunk: splitStackTrunk(meta, base),
+  };
+}
+
+function isTrunkName(branch: string): boolean {
+  return branch === "main" || branch === "master";
+}
+
+/** Follow stack bases down from a split stack's base branch to the trunk. */
+function splitStackTrunk(meta: StackMetadata, base: string): string {
+  let branch = base;
+  const seen = new Set<string>();
+  while (!isTrunkName(branch) && !seen.has(branch)) {
+    seen.add(branch);
+    const owner = findStackForBranch(meta, branch);
+    if (!owner) break;
+    branch = stackBase(meta.stacks[owner]!);
+  }
+  return isTrunkName(branch) ? branch : "main";
 }
 
 /** Build a BranchPrInfo from metadata alone (no network). */
@@ -130,7 +154,7 @@ export async function discoverMissingPrs(stack: Stack, ordered: string[]): Promi
 }
 
 /** Splice the rendered viz block into a PR body, replacing any existing one. */
-function mergeViz(body: string, viz: string): string {
+export function mergeViz(body: string, viz: string): string {
   let base = body;
   const idx = base.indexOf("### 📚 Stacked on");
   if (idx !== -1) base = base.slice(0, idx).trimEnd();
@@ -432,12 +456,42 @@ async function resolveTargetStack(
   return stackName;
 }
 
+/**
+ * The warning an upper PR's stack block opens with (#76). Its base on GitHub is
+ * another PR's branch, so GitHub's merge button would squash it into that
+ * branch and close it for good, with nothing reaching trunk. A PR based on
+ * trunk (the bottom of an ordinary stack) gets null: it merges normally.
+ */
+export function upperPrWarning(
+  branches: BranchPrInfo[],
+  targetIndex: number,
+  base: BaseRef,
+): string | null {
+  let below: { prNumber: number | null; branch: string };
+  if (targetIndex > 0) below = branches[targetIndex - 1]!;
+  else if (base.trunk != null) below = { prNumber: base.prNumber ?? null, branch: base.label };
+  else return null;
+
+  const trunk = `\`${base.trunk ?? base.label}\``;
+  const pr = below.prNumber != null ? `#${below.prNumber}` : null;
+  const baseName = pr ? `${pr}'s branch` : `\`${below.branch}\``;
+  return [
+    "> [!WARNING]",
+    `> **Don't merge this PR on GitHub.** Its base is ${baseName}, not ${trunk}: merging it here squashes it into that branch and closes it for good, with nothing reaching ${trunk}. Merge ${pr ?? baseName} first, or land the stack with \`gh-stack merge\`.`,
+  ].join("\n");
+}
+
 export function buildStackViz(
   branches: BranchPrInfo[],
   targetIndex: number,
   base: BaseRef = { label: "main" },
 ): string {
   const lines: string[] = ["### 📚 Stacked on", ""];
+
+  // The warning sits under the heading, inside the managed block, so mergeViz
+  // replaces it on every refresh and it drops off once the PR below lands.
+  const warning = upperPrWarning(branches, targetIndex, base);
+  if (warning) lines.push(warning, "");
 
   // Base node: link to the base PR if there is one (split stacks), else the
   // plain ref name. `**bold**` renders in markdown but not inside <pre>.

@@ -662,6 +662,17 @@ are preserved. Single-PR stacks get no suffix.
 ┗━ #124 feat: frontend UI (2/2) 👈
 ```
 
+Every PR above the bottom one opens its block with a warning, since its base on
+GitHub is the branch below it, not `main`, and the merge button would squash it
+into that branch and close it for good:
+
+> [!WARNING]
+> **Don't merge this PR on GitHub.** Its base is #123's branch, not `main`: merging it here squashes it into that branch and closes it for good, with nothing reaching `main`. Merge #123 first, or land the stack with `gh-stack merge`.
+
+The bottom PR's block has no warning. Once the bottom PR lands and `sync` (or
+`merge`) re-roots the stack, the new bottom PR's warning goes away. The bottom
+of a split stack keeps one, naming the PR in the other stack it is based on.
+
 The block is rendered entirely from local metadata plus one repo-identity
 lookup for links — no per-PR API call — and `submit` only rewrites a PR
 description whose block actually changed (membership/order/title), so a

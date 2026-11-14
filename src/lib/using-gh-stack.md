@@ -430,6 +430,12 @@ just goes stale and contradicts the auto footer. Describe _this_ PR in its body;
 let `submit` describe the stack. Link a specific sibling inline in prose if
 needed.
 
+Every PR above the bottom one opens that footer with a **"Don't merge this PR on
+GitHub"** warning naming the PR below it. Its base on GitHub is that PR's branch,
+not trunk, so merging it squashes it into that branch and closes it for good
+(a merged PR can't be reopened), and nothing reaches trunk. If you read that
+warning in a PR body, don't merge the PR: land the stack with `gh-stack merge`.
+
 ## Safety model
 
 - **Snapshots** before every destructive op (restack/sync/merge/remove); roll
@@ -448,3 +454,7 @@ needed.
 - **Don't restack from the top** of the stack — restack flows upward.
 - **Don't edit multiple branches then restack once** — finish each branch first.
 - **Don't hand-write a stack section** in PR bodies — `submit` owns it.
+- **Don't `gh pr merge` a stack PR whose base isn't trunk.** Check first
+  (`gh pr view <N> --json baseRefName`); only the bottom PR's base is trunk.
+  Merging an upper PR squashes it into the PR below and closes it for good. Use
+  `gh-stack merge` (whole stack, or `--approved` / `--base`).

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.24
+
+### 🏠 Housekeeping
+- **gh-stack has a new home: [iamclaudia-ai/gh-stack](https://github.com/iamclaudia-ai/gh-stack).** The repository and the npm package moved from `kiliman` to `iamclaudia-ai`, who maintains it. Old GitHub links redirect, and `npm install gh-stack` is unchanged. This is the first release published from the new repository. (#95)
+
 ## 0.19.23
 
 ### 🐛 Fixes

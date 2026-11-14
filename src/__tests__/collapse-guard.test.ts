@@ -22,7 +22,7 @@ import {
   pushAllBranches,
   setupRemote,
 } from "./helpers.ts";
-import { verifyCollapse, type CommitFile } from "../lib/collapse-guard.ts";
+import { verifyCollapse, zeroContext, type CommitFile } from "../lib/collapse-guard.ts";
 import type { PrMergeResult } from "../lib/github.ts";
 import * as gitLib from "../lib/git.ts";
 
@@ -636,6 +636,49 @@ describe("primary guard: verifyCollapse", () => {
     expect(verdicts.map((v) => `${v.child.pr}:${v.status}`)).toEqual(["3:covered", "2:covered"]);
   });
 
+  /**
+   * #81: PR #2 and main each add a line right after README's first, so the
+   * base (holding PR #2's squash) conflicts with main. It's rebased onto main
+   * with both lines kept: the squash commit is rewritten, its README differs
+   * from both versions the commit knew, and its full patch has new context.
+   */
+  async function collapseThenRebaseThroughConflict(beforeRewrite = async () => {}) {
+    await git(otherDir, "checkout", "-q", "pr2");
+    await Bun.write(`${otherDir}/README.md`, "# Test Repo\npr2 line\n");
+    await git(otherDir, "commit", "-q", "-am", "pr2: README line");
+    await git(otherDir, "push", "-q", "origin", "pr2");
+    const collapsed = await collapse();
+    await beforeRewrite();
+    await git(otherDir, "checkout", "-q", "main");
+    await Bun.write(`${otherDir}/README.md`, "# Test Repo\nmain line\n");
+    await git(otherDir, "commit", "-q", "-am", "main: README line");
+    await git(otherDir, "push", "-q", "origin", "main");
+    await git(otherDir, "checkout", "-q", "pr1");
+    await $`git -C ${otherDir} rebase -q main`.nothrow().quiet();
+    await Bun.write(`${otherDir}/README.md`, "# Test Repo\nmain line\npr2 line\n");
+    await git(otherDir, "add", "README.md");
+    await git(otherDir, "-c", "core.editor=true", "rebase", "--continue");
+    await forcePushOrphaning("pr1");
+    await git(tmpDir, "fetch", "-q", "origin", "main");
+    return collapsed;
+  }
+
+  test("#81: a squash commit rebased through a conflict beside its lines still counts", async () => {
+    const { results, s2 } = await collapseThenRebaseThroughConflict(async () => {
+      await git(tmpDir, "fetch", "-q", "origin"); // the squash commit is now local
+    });
+    expect(await git(tmpDir, "cat-file", "-t", s2)).toBe("commit");
+    const verdicts = await verify(results);
+    expect(verdicts.map((v) => `${v.child.pr}:${v.status}`)).toEqual(["3:covered", "2:covered"]);
+  });
+
+  test("#81: the same, from GitHub's patch when the squash commit can't be fetched", async () => {
+    const { results, s2 } = await collapseThenRebaseThroughConflict();
+    const patch = await git(otherDir, "format-patch", "-1", "--stdout", s2);
+    const verdicts = await verify(results, new Map([[s2, `${patch}\n`]]));
+    expect(verdicts.map((v) => `${v.child.pr}:${v.status}`)).toEqual(["3:covered", "2:covered"]);
+  });
+
   test("an intermediate branch merged without its child's squash → that child is missing", async () => {
     const { results } = await collapse();
     // PR #2 merged a head from before PR #3 was squashed into it.
@@ -778,5 +821,82 @@ describe("primary guard: merge", () => {
     expect(res.out).toContain("PR #1 holds every collapsed PR's changes");
     const calls = await Bun.file(`${binDir}/gh.log`).text();
     expect(calls).toContain("pr merge 1 --squash --auto");
+  });
+
+  test("#81: when the base conflicts with main, the advice says sync rebases only the base", async () => {
+    await stackCollapsed();
+    await writePr(1, {
+      state: "OPEN",
+      mergeable: "CONFLICTING",
+      mergeStateStatus: "DIRTY",
+      headRefName: "pr1",
+      headRefOid: await remoteSha("pr1"),
+      baseRefName: "main",
+      mergeCommit: null,
+    });
+
+    const res = await runCli(["merge"]);
+
+    expect(res.exitCode).toBe(2);
+    expect(res.out).toContain("pr1 conflicts with main");
+    expect(res.out).toContain("gh-stack sync");
+    expect(res.out).toContain("(only pr1: the PRs squashed into it are dropped from the stack)");
+  });
+
+  test("#81: with main checked out in another worktree, merge says where rather than failing to sync", async () => {
+    await stackCollapsed();
+    const mainWorktree = path.join(binDir, "main-wt");
+    await $`git -C ${tmpDir} worktree add -q ${mainWorktree} main`.quiet();
+
+    const res = await runCli(["merge"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(res.out).toContain(`main is checked out in the worktree at ${mainWorktree}`);
+    expect(res.out).toContain(`git -C ${mainWorktree} pull --ff-only`);
+    expect(res.out).not.toContain("Could not sync local branches");
+  });
+});
+
+describe("zeroContext: GitHub's patch text, patch-id'd as git diff -U0 would be (#81)", () => {
+  async function patchId(text: string): Promise<string> {
+    const out = await $`git patch-id --stable < ${new Response(text)}`.cwd(tmpDir).text();
+    return out.trim().split(" ")[0]!;
+  }
+
+  /** Commit `after` over `before` in a.txt: the -U0 id, and the id of zeroContext(format-patch). */
+  async function ids(before: string, after: string): Promise<[string, string]> {
+    await Bun.write(`${tmpDir}/a.txt`, before);
+    await git(tmpDir, "add", "a.txt");
+    await git(tmpDir, "commit", "-q", "-m", "before");
+    await Bun.write(`${tmpDir}/a.txt`, after);
+    await git(tmpDir, "commit", "-q", "-am", "after");
+    const u0 = await $`git -C ${tmpDir} show -U0 HEAD`.text();
+    const patch = await $`git -C ${tmpDir} format-patch -1 --stdout HEAD`.text();
+    expect(patch).toContain("\n-- \n"); // the signature a removed-line reader would trip on
+    return [await patchId(u0), await patchId(zeroContext(patch))];
+  }
+
+  const ten = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`);
+
+  test("two changes inside one context hunk, and no newline at the end after a change", async () => {
+    const after = [...ten];
+    after[2] = "line 3 changed";
+    after[5] = "line 6 changed";
+    after[9] = "line 10 changed";
+    const [u0, zero] = await ids(`${ten.join("\n")}\n`, after.join("\n"));
+    expect(zero).toBe(u0);
+  });
+
+  test("no newline at the end after a context line", async () => {
+    const after = [...ten];
+    after.splice(8, 0, "inserted");
+    const [u0, zero] = await ids(ten.join("\n"), after.join("\n"));
+    expect(zero).toBe(u0);
+  });
+
+  test("context really is ignored: the same change between other lines matches", async () => {
+    const [, a] = await ids("one\ntwo\n", "one\nadded\ntwo\n");
+    const [, b] = await ids("uno\ndos\n", "uno\nadded\ndos\n");
+    expect(b).toBe(a);
   });
 });

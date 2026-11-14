@@ -11,7 +11,7 @@
 //     (what was squashed into *its* parent).
 //
 // Fail closed. "covered" needs proof: the commit is an ancestor, a commit
-// there has its patch-id, or the tree holds every file it wrote at the blob it
+// there has its patch-id (context ignored), or the tree holds every file it wrote at the blob it
 // wrote. "missing" needs proof too: the tree holds every file it touched
 // exactly as it was *before* the commit. Anything in between is "unconfirmed",
 // and a lookup that fails is "unverified". The caller must not merge on either
@@ -221,14 +221,79 @@ async function hasCommit(sha: string): Promise<boolean> {
   return git.refExists(`${sha}^{commit}`);
 }
 
+// Patch-ids here ignore context (-U0): the same lines added and removed in
+// the same files. A base rebased onto a main that changed lines next to a
+// squash commit's changes (a conflict resolved by keeping both) rewrites that
+// commit with new context, and a full patch-id no longer matches it (#81).
+
 async function patchIdOf(sha: string): Promise<string | null> {
-  const { stdout } = await $`git show ${sha} | git patch-id --stable`.nothrow().quiet();
+  const { stdout } = await $`git show -U0 ${sha} | git patch-id --stable`.nothrow().quiet();
   return stdout.toString().trim().split(" ")[0] || null;
 }
 
 async function patchIdFromText(patch: string): Promise<string | null> {
-  const { stdout } = await $`git patch-id --stable < ${new Response(patch)}`.nothrow().quiet();
+  const { stdout } = await $`git patch-id --stable < ${new Response(zeroContext(patch))}`
+    .nothrow()
+    .quiet();
   return stdout.toString().trim().split(" ")[0] || null;
+}
+
+const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
+
+/**
+ * A patch with context (GitHub serves 3 lines) as `git diff -U0` would print
+ * it, for patch-id: each run of changed lines becomes its own hunk and context
+ * is dropped. patch-id reads a hunk by its header's line counts, so the counts
+ * must be right, but it hashes neither the line numbers nor the headers. Hunks
+ * are read the same way, by count, so a format-patch signature ("-- ") after
+ * the last one isn't taken for a removed line.
+ */
+export function zeroContext(patch: string): string {
+  const lines = patch.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const header = HUNK_HEADER.exec(lines[i]!);
+    if (!header) {
+      out.push(lines[i++]!);
+      continue;
+    }
+    i++;
+    let oldLeft = header[1] === undefined ? 1 : Number(header[1]);
+    let newLeft = header[2] === undefined ? 1 : Number(header[2]);
+    let run: string[] = [];
+    const flush = () => {
+      if (run.length === 0) return;
+      const removed = run.filter((l) => l.startsWith("-")).length;
+      const added = run.filter((l) => l.startsWith("+")).length;
+      out.push(`@@ -1,${removed} +1,${added} @@`, ...run);
+      run = [];
+    };
+    // "\ No newline at end of file" belongs to the line before it: kept after
+    // a changed line, dropped (with the line) after context.
+    const marker = (line: string) => {
+      if (run.length > 0) run.push(line);
+    };
+    while ((oldLeft > 0 || newLeft > 0) && i < lines.length) {
+      const line = lines[i++]!;
+      if (line.startsWith("\\")) {
+        marker(line);
+      } else if (line.startsWith("-")) {
+        oldLeft--;
+        run.push(line);
+      } else if (line.startsWith("+")) {
+        newLeft--;
+        run.push(line);
+      } else {
+        oldLeft--;
+        newLeft--;
+        flush();
+      }
+    }
+    while (i < lines.length && lines[i]!.startsWith("\\")) marker(lines[i++]!);
+    flush();
+  }
+  return out.join("\n");
 }
 
 /** Whether a commit with this patch-id is among `container`'s own commits (above the trunk). */
@@ -236,7 +301,7 @@ async function patchIdIn(id: string | null, container: string, trunkRef: string)
   if (!id) return false;
   const exclude = (await git.refExists(trunkRef)) ? [`^${trunkRef}`] : [];
   const { stdout } =
-    await $`git log -p --no-merges --max-count=2000 ${container} ${exclude} | git patch-id --stable`
+    await $`git log -p -U0 --no-merges --max-count=2000 ${container} ${exclude} | git patch-id --stable`
       .nothrow()
       .quiet();
   return stdout

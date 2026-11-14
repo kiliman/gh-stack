@@ -153,6 +153,16 @@ describe("submit --existing", () => {
     expect(calls).not.toContain("/3)");
   }, 60_000);
 
+  test("update-prs leaves the local top out of the PRs but still names it", async () => {
+    await stackWithLocalTop();
+
+    const { out, exitCode } = await run("update-prs", []);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Skipped 1 branch(es) with no open PR: c");
+    expect(await ghCalls()).not.toContain("/3)");
+  }, 60_000);
+
   test("stops before any push when a PR sits on a branch with no PR", async () => {
     // main → a (#101) → b (no PR) → c (#77, opened outside gh-stack).
     await createBranch(tmpDir, "a", "main");

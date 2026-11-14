@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.13
+
+### ✨ Features
+- **`gh-stack archive <name>...` archives stacks by hand**, the counterpart of `--restore`. Use it for a stack that landed without `gh-stack merge` (PRs merged on GitHub, or a sweep landed from another worktree). Metadata only and reversible. A name the archive already has gets a `-2` suffix instead of overwriting it. (#68, #75)
+- **`update-prs [<branch>] [--stack <name>]`** updates and adopts PRs for a named stack, so nothing has to be checked out. It works from a checkout holding other work, or on a detached HEAD. (#67, #77)
+
+### 🐛 Fixes
+- **Empty stacks no longer pile up.** `delete` archives a stack when it removes the last branch, and `doctor` archives any empty stacks it finds. (#68, #75)
+- **`archive --restore` no longer overwrites an active stack** with the same name, or tracks a branch in two stacks. It refuses and says why. (#75)
+- **PR numbers survive moving a stack between worktrees.** A branch that leaves its stack (`delete --keep-branch`, or a removed worktree's branches cleared by another worktree's write) keeps `ghstack-pr` in git config. Any command that starts tracking it again (`add`, `add --parent`, `init`) picks the number back up. (#67, #77)
+- **`submit` records each PR as soon as it creates it.** It used to record them only in its last write, so a failure or a killed process after `gh pr create` left the PR unrecorded. (#67, #77)
+
 ## 0.19.12
 
 ### 🐛 Fixes

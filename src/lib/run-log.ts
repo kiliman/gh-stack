@@ -83,7 +83,7 @@ export function formatLogEntry(e: RunLogEntry): string {
   const b = pc.yellow(e.branch);
   switch (e.action) {
     case "rebased":
-      return `${pc.green("✓")} rebased ${b} onto ${e.onto ?? "its parent"}`;
+      return `${pc.green("✓")} rebased ${b} onto ${e.onto ?? "its parent"}${e.detail ? ` (${e.detail})` : ""}`;
     case "up-to-date":
       return `${pc.dim("·")} ${b} already on ${e.onto ?? "its parent"}`;
     case "rebase-declined":

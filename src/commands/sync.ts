@@ -68,6 +68,11 @@ OPTIONS
 If an interrupted restack or sync is pending, sync asks whether to resume it
 (with --yes it resumes) rather than starting over on top of it.
 
+Bottom PRs that already merged are dropped, and the branches on them re-rooted
+onto main. So are branches \`merge\` already squashed into the base (their PRs
+merged into their stack parents) when it stopped on a conflict with main: sync
+catches the base up to origin's copy and rebases only the base.
+
 Before rewriting anything, sync stops if a branch's copy on origin has
 commits the local branch never had (e.g. the squash commit \`merge --collapse\`
 adds on GitHub). Pull or cherry-pick them first; see \`gh-stack restack --help\`.

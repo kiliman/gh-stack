@@ -283,6 +283,14 @@ sync [--dry-run] [--no-push|--push] [--resume | --fresh] [--overwrite-remote]
     branches above it) becomes its own stack and is synced in turn. It
     warns about a merged PR whose changes never reached main (merged
     into a branch after that branch's own PR had landed).
+    When `merge` collapsed the upper PRs into the base and then stopped
+    because the base conflicts with main, those branches are done: their
+    PRs merged into their stack parents, and their changes are squash
+    commits on origin's base. sync drops them from the stack, fast-
+    forwards the local base to origin's copy if it's behind, re-roots
+    any unmerged branch above them onto the base, and rebases only the
+    base onto main. Restacking them would replay their commits onto
+    their own squashed copies and conflict.
 
     --no-push / --push (and their defaults): as for restack. Also skips
     retargeting a PR's base after advancing past a merged bottom;
@@ -305,15 +313,20 @@ merge --base [--dry-run] [-d|--delete-branch] [--no-push|--push]
     head pointer after a child squash) by re-syncing and retrying. Before
     handing the base PR to auto-merge it confirms the PR is mergeable: a
     real conflict with main stops the merge (the stack is left intact —
-    resolve with `gh-stack sync`, then re-run), while merely waiting on
-    pending checks is fine (auto-merge gates on them).
+    resolve with `gh-stack sync`, which rebases only the base and drops
+    the branches already squashed into it, then re-run), while merely
+    waiting on pending checks is fine (auto-merge gates on them). In a
+    linked worktree, where main is checked out elsewhere, the final
+    local sync says which worktree to pull instead of switching to main.
 
     Collapse check: before the base PR goes to main (and at the end of
     --collapse), merge checks that each collapsed child's squash commit
     is still in what it was squashed into: the base branch on origin,
-    or the parent PR's head when it merged. A rebased copy (same
-    patch-id) counts, and so does a base tree holding every file the
-    squash commit wrote. It fails closed:
+    or the parent PR's head when it merged. A rebased copy counts (same
+    patch-id, context ignored, so a base rebased onto main through a
+    conflict next to the squash commit's lines still proves it), and so
+    does a base tree holding every file the squash commit wrote. It
+    fails closed:
       - proven missing (the base has every file the squash commit
         touched exactly as before it): merge stops (exit 2), names the
         PR, and prints how to put the commit back (via its patch from

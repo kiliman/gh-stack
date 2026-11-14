@@ -13,7 +13,7 @@ import { ensureMetadata, ensureCleanWorkingTree, ensureValidStack } from "../lib
 import { resolveFlag } from "../lib/config.ts";
 import { takeSnapshot } from "../lib/snapshot.ts";
 import { guardRemoteContent } from "../lib/remote-guard.ts";
-import { getPrMergeState } from "../lib/github.ts";
+import { fetchPrMergeState } from "../lib/github.ts";
 import {
   planMerges,
   advancePastMerged,
@@ -298,7 +298,9 @@ async function findMergedBottoms(meta: StackMetadata, stackName: string): Promis
   const run: MergedRunEntry[] = [];
   for (const branch of getOrderedBranches(stack)) {
     const pr = stack.branches[branch]?.pr ?? null;
-    const state = pr != null ? await getPrMergeState(pr) : null;
+    // Strict: a failed read must not pass for "not merged", or sync would
+    // restack a merged branch and replay its squashed commits.
+    const state = pr != null ? await fetchPrMergeState(pr) : null;
     const prState = state?.state ?? null;
     reviews.push({ branch, pr, prState, reviewDecision: null });
     if (prState !== "MERGED") break;

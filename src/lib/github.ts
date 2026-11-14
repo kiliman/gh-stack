@@ -60,24 +60,100 @@ export async function findOpenPrForBranch(branch: string): Promise<number | null
   }
 }
 
+/** `gh pr view` failed even after retries; the message is gh's last stderr line. */
+export class PrFetchError extends Error {
+  constructor(
+    readonly pr: number,
+    readonly detail: string,
+  ) {
+    super(`couldn't read PR #${pr} from GitHub: ${detail}`);
+    this.name = "PrFetchError";
+  }
+}
+
+/** Waits before the 2nd and 3rd `gh pr view` attempts. */
+const PR_VIEW_RETRY_DELAYS_MS = [400, 1200];
+
 /**
- * Get PR info for a specific PR number.
+ * gh's answers that mean "there is no such PR here": the PR doesn't exist, or
+ * the repo has no GitHub remote. Retrying won't change them.
+ */
+const NO_SUCH_PR = [
+  /could not resolve to a pullrequest/i,
+  /no pull requests found/i,
+  /no git remotes found/i,
+  /none of the git remotes configured for this repository/i,
+  /not a git repository/i,
+];
+
+/**
+ * `gh pr view <n> --json <fields>`, parsed. Null when GitHub answers that
+ * there's no such PR (see NO_SUCH_PR).
+ *
+ * Any other failure is retried, then thrown as PrFetchError. gh fails
+ * transiently more often than one would think: rate limits, network blips,
+ * and concurrent calls through a `gh auth switch` wrapper colliding in the
+ * keyring (#66). A caller that read such a failure as an answer ("not
+ * approved", "not merged") would make a wrong decision silently.
+ */
+export async function ghPrViewJson(prNumber: number, fields: string): Promise<any | null> {
+  const delays = PR_VIEW_RETRY_DELAYS_MS;
+  let detail = "";
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    if (attempt > 0) {
+      // Jitter, so concurrent callers that collided don't collide again.
+      await Bun.sleep(delays[attempt - 1]! + Math.floor(Math.random() * 200));
+    }
+    const { exitCode, stdout, stderr } = await $`gh pr view ${prNumber} --json ${fields}`
+      .quiet()
+      .nothrow();
+    if (exitCode === 0) {
+      try {
+        return JSON.parse(stdout.toString().trim());
+      } catch {
+        // A successful call with unparseable output won't improve on retry.
+        throw new PrFetchError(prNumber, "gh returned output that isn't JSON");
+      }
+    }
+    const err = stderr.toString();
+    if (NO_SUCH_PR.some((re) => re.test(err))) return null;
+    const lines = err.trim().split("\n").filter(Boolean);
+    detail = lines.at(-1) ?? `gh exited with status ${exitCode}`;
+  }
+  throw new PrFetchError(prNumber, detail);
+}
+
+/**
+ * Get PR info for a specific PR number; null when there's no such PR. Throws
+ * PrFetchError when GitHub can't be read, so callers can't mistake a failed
+ * fetch for a PR's state.
+ */
+export async function fetchPrInfo(prNumber: number): Promise<PrInfo | null> {
+  const data = await ghPrViewJson(
+    prNumber,
+    "number,title,state,reviewDecision,isDraft,url,updatedAt,statusCheckRollup",
+  );
+  if (data == null) return null;
+  return {
+    number: data.number,
+    title: data.title,
+    state: data.state,
+    reviewDecision: data.reviewDecision || null,
+    isDraft: data.isDraft || false,
+    url: data.url,
+    updatedAt: data.updatedAt,
+    statusCheckRollup: data.statusCheckRollup || [],
+  };
+}
+
+/**
+ * Get PR info for a specific PR number, or null when it can't be read. Only
+ * for callers where a missing answer is harmless (a title for a message);
+ * decisions go through fetchPrInfo.
  */
 export async function getPrInfo(prNumber: number): Promise<PrInfo | null> {
   try {
-    const result =
-      await $`gh pr view ${prNumber} --json number,title,state,reviewDecision,isDraft,url,updatedAt,statusCheckRollup`.text();
-    const data = JSON.parse(result.trim());
-    return {
-      number: data.number,
-      title: data.title,
-      state: data.state,
-      reviewDecision: data.reviewDecision || null,
-      isDraft: data.isDraft || false,
-      url: data.url,
-      updatedAt: data.updatedAt,
-      statusCheckRollup: data.statusCheckRollup || [],
-    };
+    return await fetchPrInfo(prNumber);
   } catch {
     return null;
   }
@@ -219,14 +295,23 @@ export interface PrMergeResult {
   mergedAt: string | null;
 }
 
+/**
+ * A PR's merge state; null when there's no such PR. Throws PrFetchError when
+ * GitHub can't be read (see ghPrViewJson).
+ */
+export async function fetchPrMergeState(prNumber: number): Promise<PrMergeResult | null> {
+  const data = await ghPrViewJson(
+    prNumber,
+    "state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,mergeCommit,mergedAt",
+  );
+  if (data == null) return null;
+  return { ...data, mergeCommit: data.mergeCommit?.oid ?? null, mergedAt: data.mergedAt || null };
+}
+
+/** A PR's merge state, or null when it can't be read (after retries). */
 export async function getPrMergeState(prNumber: number): Promise<PrMergeResult | null> {
   try {
-    const data = JSON.parse(
-      (
-        await $`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,mergeCommit,mergedAt`.text()
-      ).trim(),
-    );
-    return { ...data, mergeCommit: data.mergeCommit?.oid ?? null, mergedAt: data.mergedAt || null };
+    return await fetchPrMergeState(prNumber);
   } catch {
     return null;
   }

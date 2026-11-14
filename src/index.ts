@@ -71,6 +71,7 @@ const commandArgs = parsed.commandArgs;
 // one clean line, whichever command hit it.
 const { ConfigError } = await import("./lib/config.ts");
 const { GitLockError } = await import("./lib/git.ts");
+const { PrFetchError } = await import("./lib/github.ts");
 try {
   switch (command) {
     case "log":
@@ -191,6 +192,12 @@ try {
   }
 } catch (err) {
   if (err instanceof GitLockError) await reportHeldLock(err);
+  if (err instanceof PrFetchError) {
+    console.error(
+      `gh-stack: ${err.message}\n  It stopped there rather than guess the PR's state. This is usually transient; run the command again.`,
+    );
+    process.exit(1);
+  }
   if (!(err instanceof ConfigError)) throw err;
   console.error(`gh-stack: ${err.message}`);
   process.exit(1);

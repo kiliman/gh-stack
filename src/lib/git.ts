@@ -508,12 +508,13 @@ export async function forcePushWithLease(
 /**
  * Save a failed push's full output to `.git/.gh-stack/push-failure.log`. A
  * failing pre-push hook (a test suite, say) can print a thousand lines, so
- * `pushFailureHint` shows only the end and points here for the rest. Best
- * effort: a failed write returns undefined.
+ * `pushFailureHint` shows only part of it and points here for the rest. The
+ * path is absolute, so it works from any directory (an agent's shell may sit
+ * in a subfolder). Best effort: a failed write returns undefined.
  */
 async function savePushFailure(text: string): Promise<string | undefined> {
   try {
-    const dir = `${await gitDir()}/.gh-stack`;
+    const dir = `${await absoluteGitDir()}/.gh-stack`;
     await mkdir(dir, { recursive: true });
     const file = `${dir}/push-failure.log`;
     await Bun.write(file, text);
@@ -542,17 +543,124 @@ export function pushFailureHint(branch: string, result: PushResult): string[] {
     default: {
       // Show the end of git's output, not just its "failed to push" line: a
       // local pre-push hook prints its reason above that line, and a remote
-      // rejection names the rule that refused the push.
-      const lines = result.output.split("\n").filter((l) => l.trim() !== "");
-      const tail = lines.slice(-PUSH_OUTPUT_TAIL);
-      const hint = ["git push failed. The end of its output (a pre-push hook prints here too):"];
-      hint.push(...tail.map((l) => `  ${l.trimEnd()}`));
-      if (result.logFile && lines.length > tail.length) {
-        hint.push(`Full output (${lines.length} lines): ${result.logFile}`);
+      // rejection names the rule that refused the push. A hook that runs
+      // several checks can fail early and then print pages of warnings, so the
+      // lines that look like the failure come first when the end misses them.
+      const lines = pushOutputLines(result.output);
+      const tailStart = Math.max(0, lines.length - PUSH_OUTPUT_TAIL);
+      const hint: string[] = [];
+      const earlier = failureExcerpt(lines, tailStart);
+      if (earlier.length > 0) {
+        hint.push("git push failed. These lines above the end look like the failure:");
+        hint.push(...earlier.map((l) => `  ${l}`));
+        hint.push("The end of its output:");
+      } else {
+        hint.push("git push failed. The end of its output (a pre-push hook prints here too):");
       }
+      hint.push(...lines.slice(tailStart).map((l) => `  ${l}`));
+      if (result.logFile) hint.push(`Full output (${lines.length} lines): ${result.logFile}`);
       return hint;
     }
   }
+}
+
+/**
+ * The one line that best says why a push was refused, for a one-line error
+ * (`submit --json`'s message): the first line that looks like a failure, else
+ * a runner's "script failed" line, else git's last line. Trimmed, with no
+ * closing period, so it reads inside a sentence. Undefined for a lease
+ * refusal, which pushFailureHint explains instead.
+ */
+export function pushFailureLine(result: PushResult): string | undefined {
+  if (result.ok || result.reason !== "rejected") return undefined;
+  const lines = pushOutputLines(result.output);
+  const first = lines.find((l) => looksLikeFailure(l) && !isPushTrailer(l));
+  const line = first ?? lines.find((l) => looksLikeFailure(l)) ?? lines.at(-1);
+  return line?.trim().replace(/\.+$/, "") || undefined;
+}
+
+/** A failed push's output as display lines: no blank lines, no trailing space. */
+function pushOutputLines(output: string): string[] {
+  return output
+    .split("\n")
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim() !== "");
+}
+
+/** Most lines of the "look like the failure" excerpt shown above the tail. */
+const FAILURE_EXCERPT_MAX = 24;
+/** Lines of context kept around each failure line in that excerpt. */
+const FAILURE_CONTEXT_BEFORE = 2;
+const FAILURE_CONTEXT_AFTER = 2;
+
+/**
+ * Lines that mark a failed check in common hook output: a failure symbol at
+ * the start (❌ in swarm's hook, × for a Biome error, ✖/✗/✘ elsewhere),
+ * bun's `(fail)`, jest's `FAIL`, an error count or `error` word (tsc's
+ * `error TS2322`), or a runner's failed/non-zero exit. A count of zero
+ * ("0 errors", "0 fail") is a pass.
+ */
+const FAILURE_PATTERNS: RegExp[] = [
+  /^\s*(❌|×|✖|✗|✘|💥)/u,
+  /\(fail\)/,
+  /^\s*FAIL\b/,
+  /^\s*[1-9]\d* (fail|failed|failures?|errors?)\b/i,
+  /\berror\b/i,
+  /\b[1-9]\d* errors?\b/i,
+  /\bfailed\b/i,
+  /\bexit(ed)? (with )?(code|status) [1-9]/i,
+  /\[remote rejected\]/,
+];
+const PASS_PATTERNS: RegExp[] = [/\b(0|no) (errors?|fail(ed|ures?)?)\b/i];
+
+function looksLikeFailure(line: string): boolean {
+  return FAILURE_PATTERNS.some((re) => re.test(line)) && !PASS_PATTERNS.some((re) => re.test(line));
+}
+
+/**
+ * The generic lines every refused push ends with: git's "failed to push some
+ * refs", and a hook runner's "script failed" (husky, pnpm's ELIFECYCLE, bun
+ * run). They say *that* the hook failed, never which check, so they don't
+ * count as the failure when a more specific line exists.
+ */
+function isPushTrailer(line: string): boolean {
+  return (
+    line.startsWith("error: failed to push some refs") ||
+    /^husky - .*failed/.test(line) ||
+    /ELIFECYCLE/.test(line) ||
+    /^error: script ".*" exited with code/.test(line)
+  );
+}
+
+/**
+ * The failure lines in `lines[0, end)` (the part the tail doesn't show), each
+ * with a little context, overlapping windows merged and gaps marked with "…".
+ * Capped at FAILURE_EXCERPT_MAX lines, earliest first: the first failure is
+ * usually the cause, and the log has the rest.
+ */
+function failureExcerpt(lines: string[], end: number): string[] {
+  const above = lines.slice(0, end);
+  const keep = above.map(() => false);
+  let kept = 0;
+  for (const [i, line] of above.entries()) {
+    if (kept >= FAILURE_EXCERPT_MAX) break;
+    if (!looksLikeFailure(line) || isPushTrailer(line)) continue;
+    const from = Math.max(0, i - FAILURE_CONTEXT_BEFORE);
+    const to = Math.min(end - 1, i + FAILURE_CONTEXT_AFTER);
+    for (let j = from; j <= to && kept < FAILURE_EXCERPT_MAX; j++) {
+      if (!keep[j]) kept++;
+      keep[j] = true;
+    }
+  }
+  const out: string[] = [];
+  let prev = -1;
+  for (const [i, line] of above.entries()) {
+    if (!keep[i]) continue;
+    if (prev >= 0 && i > prev + 1) out.push("…");
+    out.push(line);
+    prev = i;
+  }
+  return out;
 }
 
 /**

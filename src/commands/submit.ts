@@ -59,14 +59,17 @@ follow-up \`gh pr view\`:
   { "stack": "...", "current_branch": "...",
     "branches": [{ "branch", "parent", "pr", "url", "title",
                    "action", "pushed", "draft", "error"? }],
-    "error": null | { "message": "..." } }
+    "error": null | { "message": "...", "hint"?: [...], "log"?: "..." } }
 "branches" is the submit scope (trunk → current), in stack order. "action" is
 created (new PR), updated (pushed, or base/title/description edited),
 unchanged, or failed (PR creation or push failed; see the entry's "error").
 "draft" is true/false for PRs created this run and null otherwise. The
 top-level "error" is set when the run stopped early (bad flags, nothing to
 submit, a push failure); "branches" then holds what happened before it, and
-"stack"/"current_branch" may be null. Exits 1 if "error" is set or any branch
+"stack"/"current_branch" may be null. For a refused push, "message" and the
+branch's "error" name the line that looks like the failure (a pre-push hook's
+failing check), "hint" holds the lines printed to stderr, and "log" is the
+absolute path of git's full output. Exits 1 if "error" is set or any branch
 failed. Not available with --dry-run or --restack (run \`gh-stack restack\`
 separately).
 
@@ -118,12 +121,23 @@ export interface SubmitBranchJson {
   error?: string;
 }
 
+/**
+ * Why a run stopped early. A refused push adds the lines a human would see
+ * (`hint`: the failing check's lines, then the end of git's output) and the
+ * path of the full output (`log`), so an agent needn't parse stderr.
+ */
+export interface SubmitError {
+  message: string;
+  hint?: string[];
+  log?: string;
+}
+
 export interface SubmitJson {
   stack: string | null;
   current_branch: string | null;
   branches: SubmitBranchJson[];
   /** Set when the run stopped early: bad flags, nothing to submit, a push failure. */
-  error: { message: string } | null;
+  error: SubmitError | null;
 }
 
 /**
@@ -153,7 +167,7 @@ export interface RunState {
 
 /** Build the `submit --json` document. Pure, so the shape is unit-testable. */
 export function buildSubmitJson(
-  run: RunState & { error: string | null; nwo: string | null },
+  run: RunState & { error: SubmitError | null; nwo: string | null },
 ): SubmitJson {
   return {
     stack: run.stackName,
@@ -172,12 +186,12 @@ export function buildSubmitJson(
       if (o.error) entry.error = o.error;
       return entry;
     }),
-    error: run.error ? { message: run.error } : null,
+    error: run.error,
   };
 }
 
 /** Write the --json document to stdout, awaited so it's flushed before any exit. */
-async function emitJson(run: RunState, error: string | null): Promise<SubmitJson> {
+async function emitJson(run: RunState, error: SubmitError | null): Promise<SubmitJson> {
   // Only an existing PR (no URL from `gh pr create`) needs the repo's nwo, so
   // an early refusal makes no gh call at all.
   const needsNwo = run.outcomes.some((o) => o.pr != null && !o.url);
@@ -187,7 +201,14 @@ async function emitJson(run: RunState, error: string | null): Promise<SubmitJson
 }
 
 /** Stops a run with a message for the user. In --json mode it becomes `error`. */
-class SubmitAbort extends Error {}
+class SubmitAbort extends Error {
+  constructor(
+    message: string,
+    readonly extra: Omit<SubmitError, "message"> = {},
+  ) {
+    super(message);
+  }
+}
 
 /**
  * Check if a local branch is up-to-date with its remote counterpart.
@@ -221,7 +242,7 @@ export default async function submit(args: string[]): Promise<void> {
     outcomes: [],
     edited: new Set(),
   };
-  let error: string | null = null;
+  let error: SubmitError | null = null;
   try {
     await runSubmit(args, run, jsonMode);
   } catch (err) {
@@ -233,8 +254,9 @@ export default async function submit(args: string[]): Promise<void> {
       err instanceof SubmitAbort || err instanceof ConfigError || err instanceof git.GitLockError;
     if (!jsonMode && !expected) throw err;
     if (!expected) console.error(err);
-    error = (err as Error).message;
-    p.cancel(error);
+    error = { message: (err as Error).message };
+    if (err instanceof SubmitAbort) Object.assign(error, err.extra);
+    p.cancel(error.message);
     if (!jsonMode) process.exit(1);
   }
 
@@ -448,13 +470,21 @@ async function runSubmit(args: string[], run: RunState, jsonMode: boolean): Prom
         outcome.pushed = true;
       } else {
         s.stop(pc.red(`Failed to push ${branchName}`));
-        for (const line of git.pushFailureHint(branchName, result)) p.log.warn(line);
-        outcome.error = `push to origin/${branchName} failed`;
+        const hint = git.pushFailureHint(branchName, result);
+        for (const line of hint) p.log.warn(line);
+        // Name the failing line in the one-line errors too: an agent reading
+        // only `--json` sees why without opening the log.
+        const why = git.pushFailureLine(result);
+        outcome.error = `push to origin/${branchName} failed${why ? `: ${why}` : ""}`;
         outcome.pr = await findPr(branchName);
         // Keep what this run learned (PRs created or discovered below this
         // branch, and this branch's own PR) before aborting.
         if (metadataChanged) await writeMetadata(meta);
-        throw new SubmitAbort(`Push failed for ${pc.blue(branchName)}. Aborting.`);
+        const logFile = result.ok ? undefined : result.logFile;
+        throw new SubmitAbort(
+          `Push failed for ${pc.blue(branchName)}${why ? `: ${why}` : ""}.${logFile ? ` Full output: ${logFile}.` : ""} Aborting.`,
+          { hint, ...(logFile ? { log: logFile } : {}) },
+        );
       }
     }
 

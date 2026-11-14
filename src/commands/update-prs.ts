@@ -235,8 +235,8 @@ export function planTitleEdits<
  * count). Backfills any missing cached titles first (so we never clobber a real
  * GitHub title with a branch-name guess), then edits only the titles that
  * actually changed — a no-op re-submit makes zero edits, while a branch gaining
- * a PR or a reorder renumbers the whole stack. Run BEFORE refreshStackViz so the viz shows
- * numbered titles.
+ * a PR or a reorder renumbers the whole stack. Run BEFORE refreshStackViz so
+ * the viz shows numbered titles.
  *
  * `titleOverrides` (branch → new base title) lets `submit -t` set the current
  * branch's title; the override is renumbered like any other title and the

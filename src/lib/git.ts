@@ -1119,6 +1119,33 @@ export async function commitCount(from: string, to: string): Promise<number> {
 }
 
 /**
+ * The commits of `branch` that `exclude` can't reach, descendants before
+ * ancestors (`--topo-order`). Empty when either ref is missing.
+ */
+export async function commitsNotIn(branch: string, exclude: string): Promise<string[]> {
+  try {
+    const result = await $`git rev-list --topo-order ${branch} --not ${exclude}`.quiet().text();
+    return result.split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Every position a local branch's reflog recorded, newest first (the current
+ * tip is entry 0). Empty when it has no reflog. Branch reflogs live in the
+ * common git dir, so worktrees share them.
+ */
+export async function branchReflog(branch: string): Promise<string[]> {
+  try {
+    const result = await $`git reflog show --format=%H refs/heads/${branch} --`.quiet().text();
+    return result.split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Get all local branch names.
  */
 export async function allLocalBranches(): Promise<string[]> {

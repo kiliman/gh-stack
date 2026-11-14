@@ -316,6 +316,11 @@ gh-stack restack       # propagates the change UP through children
 edit several branches then restack once at the end (only the last branch ends
 up pushed).
 
+**Rebased or amended a branch with plain git?** `restack` still replays only
+each child's own commits: it finds the branch's old tip in its reflog. No
+`git rebase --onto` by hand. (Moving the stack onto a newer trunk is still
+`gh-stack sync`'s job.)
+
 **On rebase conflict:** resolve, `git add <files>`, `git rebase --continue`,
 then `gh-stack restack --resume` to finish the remaining branches. That's the
 command even when the conflict came from `sync`. If you forget `--resume`, a

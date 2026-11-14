@@ -215,8 +215,9 @@ ls
 ```
 restack [--resume | --fresh] [--dry-run] [--no-push|--push] [--overwrite-remote] [--verbose]
     Rebase the current branch and all descendants onto their parents.
-    Uses metadata snapshots to recover the correct rebase base even
-    after a parent's history has been rewritten.
+    Uses metadata snapshots and the parent's reflog to recover the
+    correct rebase base even after a parent's history has been
+    rewritten, by gh-stack or by plain git.
 
     --no-push (or GH_STACK_NO_PUSH=1, or `[restack] push = false` in
     config): rebase locally only, and list the refs left ahead of
@@ -681,6 +682,8 @@ The critical insight: after a parent branch's history is rewritten (e.g., rebase
 gh-stack solves this by snapshotting every branch's tip **before** any destructive operation. When restacking a child whose parent has been rewritten, gh-stack walks the snapshots newest-first and finds the most recent recorded tip that's no longer an ancestor of the parent's current tip. That orphaned SHA is the correct rebase base — `git rebase --onto <new-parent-tip> <orphaned-old-tip> <child>` replays only the child's unique commits.
 
 If the child sat **behind** the parent when the snapshot was taken (a placeholder branch created before any work landed on it), the recorded tip isn't in the child's history — but it still pins the parent's pre-rewrite history, so the boundary is derived as the child's fork point on it (`merge-base(child, recorded-tip)`). A child with no unique commits is simply moved to the parent's tip, no rebase involved. When no safe boundary can be determined at all, restack refuses with a manual `git rebase --onto` recipe rather than guessing.
+
+Snapshots only see what gh-stack did. A parent rebased or amended with plain git (`git rebase origin/main` on the bottom branch, say) leaves no snapshot of its old tip, or only a stale one from before later commits. Its old tip is still in its reflog, though, so gh-stack also walks the commits the child would replay, newest first, and stops at the first one the parent's reflog records as a former tip. When that sits above the boundary the snapshots or merge-base found, it wins: everything at or below a former parent tip was the parent's. One exception: a tip the parent was moved *back* from (its next reflog position is an ancestor) is skipped. That is the "committed the child's work on the parent, cut the child there, moved the parent back" fix, where the parent's old tip is the child's own work. The reflog only ever raises a boundary; when nothing else resolves, restack still refuses.
 
 Snapshots also power `gh-stack undo`, so the same data structure does double duty.
 

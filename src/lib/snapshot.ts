@@ -14,7 +14,7 @@ import { mkdir, readdir, unlink } from "node:fs/promises";
 const MAX_SNAPSHOTS_PER_STACK = 10;
 
 /** Where a resolved restack boundary came from. */
-export type BoundarySource = "snapshot" | "snapshot-derived" | "merge-base";
+export type BoundarySource = "snapshot" | "snapshot-derived" | "merge-base" | "reflog";
 
 export type RestackBoundary = { sha: string; source: BoundarySource };
 
@@ -47,6 +47,16 @@ export type RestackBoundary = { sha: string; source: BoundarySource };
  *
  * 3. `"merge-base"` — `merge-base(child, parent)`, correct whenever the parent
  *    has only had commits appended, never been rewritten.
+ *
+ * 4. `"reflog"` (issue #83) — snapshots only see what gh-stack did. A parent
+ *    rebased with plain git leaves none (so step 3 replays the parent's old
+ *    commits), or leaves a stale one from before later plain commits (so step 1
+ *    replays those). The parent's old tip is still in its reflog: the highest
+ *    former tip the child is built on and the parent no longer reaches (see
+ *    reflogBoundary) replaces the result of steps 1–3 whenever it sits above
+ *    it. Everything at or below a former parent tip was the parent's, so the
+ *    higher boundary is the safe one, as in step 2. It never stands alone:
+ *    when steps 1–3 find nothing, the result is still null.
  *
  * Returns null when nothing resolves (no snapshot evidence and no common
  * history) — the caller must refuse rather than guess.
@@ -89,6 +99,33 @@ export async function resolveRestackBoundary(
     }
   }
 
+  const recorded = await snapshotBoundary(
+    accepted,
+    rejected,
+    parentBranch,
+    childBranch,
+    currentChildTip,
+  );
+
+  // 4. A former tip from the parent's reflog wins whenever it sits above what
+  //    the snapshots and merge-base found (#83). It only raises a boundary:
+  //    with none from steps 1–3, the caller still refuses.
+  if (!recorded) return null;
+  const reflog = await reflogBoundary(parentBranch, childBranch);
+  if (reflog && reflog !== recorded.sha && (await git.isAncestor(recorded.sha, reflog))) {
+    return { sha: reflog, source: "reflog" };
+  }
+  return recorded;
+}
+
+/** Steps 1–3 of resolveRestackBoundary: snapshot, derived fork point, merge-base. */
+async function snapshotBoundary(
+  accepted: string | null,
+  rejected: string | null,
+  parentBranch: string,
+  childBranch: string,
+  currentChildTip: string | null,
+): Promise<RestackBoundary | null> {
   if (accepted) return { sha: accepted, source: "snapshot" };
 
   const mbCurrent = await git.mergeBase(childBranch, parentBranch);
@@ -104,6 +141,41 @@ export async function resolveRestackBoundary(
   }
 
   return mbCurrent ? { sha: mbCurrent, source: "merge-base" } : null;
+}
+
+/**
+ * The highest former tip of `parentBranch` that `childBranch` is built on but
+ * the parent no longer reaches, or null. That commit is where the child's own
+ * commits start after the parent was rewritten outside gh-stack.
+ *
+ * Candidates are the commits a merge-base rebase would replay (child minus
+ * parent), walked descendants-first, so the first one the reflog knows is the
+ * highest. A tip the parent ever retreated from (its next position an
+ * ancestor) is skipped: that is the "committed on the wrong branch, cut the
+ * child there, moved the parent back" fix, where the parent's old tip is the
+ * child's own work, and trusting it would drop that work from the child.
+ */
+async function reflogBoundary(parentBranch: string, childBranch: string): Promise<string | null> {
+  const positions = await git.branchReflog(parentBranch);
+  const known = new Set(positions);
+
+  for (const commit of await git.commitsNotIn(childBranch, parentBranch)) {
+    if (!known.has(commit)) continue;
+    if (!(await retreatedFrom(positions, commit))) return commit;
+  }
+  return null;
+}
+
+/**
+ * Whether the reflog ever moved from `tip` back to one of its ancestors.
+ * (`positions` is newest first, so the move away from entry i is entry i-1.
+ * Git writes no reflog entry for a no-op update, so a tip never follows itself.)
+ */
+async function retreatedFrom(positions: string[], tip: string): Promise<boolean> {
+  for (let i = 1; i < positions.length; i++) {
+    if (positions[i] === tip && (await git.isAncestor(positions[i - 1]!, tip))) return true;
+  }
+  return false;
 }
 
 /**

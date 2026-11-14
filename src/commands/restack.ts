@@ -206,7 +206,7 @@ OPTIONS
               Rewrite branches even though origin has commits they lack
               (see below). Those commits are dropped from origin
   --dry-run   Show what would happen without executing
-  --verbose   Show diagnostic info (snapshot vs merge-base)
+  --verbose   Show diagnostic info (where each rebase base came from)
 
 COMMITS ONLY ON ORIGIN
   Before rewriting anything, restack and sync check each branch's copy on
@@ -1343,8 +1343,9 @@ async function processChain(
     }
 
     // Resolve the rebase boundary — snapshot pre-rewrite tip, a fork point
-    // derived from a rejected snapshot (#30), or merge-base, in that order.
-    // See resolveRestackBoundary for the full strategy.
+    // derived from a rejected snapshot (#30), or merge-base, in that order,
+    // raised to the parent's former tip from its reflog when that sits higher
+    // (#83). See resolveRestackBoundary for the full strategy.
     //
     //   Re-read metadata fresh because previous iterations of this loop may
     //   have updated snapshots.
@@ -1396,7 +1397,11 @@ async function processChain(
       rewrite = await git.resetBranch(branch, parent);
     } else {
       const sourceLabel =
-        boundary.source === "snapshot-derived" ? "snapshot (derived fork-point)" : boundary.source;
+        boundary.source === "snapshot-derived"
+          ? "snapshot (derived fork-point)"
+          : boundary.source === "reflog"
+            ? `${parent}'s reflog`
+            : boundary.source;
       p.log.info(
         `Rebasing onto ${pc.yellow(parent)} (base: ${boundary.sha.slice(0, 8)} from ${sourceLabel})`,
       );
